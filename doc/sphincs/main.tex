@@ -426,6 +426,8 @@ There are $2^{256}$ possible messages. A second union bound shows that the proba
 Since signing is deterministic and stateless, this conclusion also covers repeated messages and messages chosen adaptively.
 \end{proof}
 
+The Lean 4 proof is in \texttt{formal/sphincs/}. It additionally proves correctness, i.e. the recovery argument of Section~\ref{sec:ver}, for every hash function.
+
 \appendix
 \section{Tweak encoding}
 \label{sec:tweaks}

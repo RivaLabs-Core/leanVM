@@ -2,6 +2,8 @@
 
 [Statement.lean](SphincsSecurity/Statement.lean) contains the complete scheme with a 32-byte master seed: parameters, serialized hash inputs, key generation, signing, verification, the consistent random-oracle game, and the 127-bit security target. Public parameters, signing secrets, and signing randomizers are derived in separate hash domains. Every hash call in the experiment counts, including derivation, signing failures, repeated calls and final verification.
 
+[Completeness.lean](SphincsSecurity/Completeness.lean) states the other side. Correctness, for every hash function: a signature the signer produces verifies. Completeness, against the same random oracle: the sum over all messages of the probability that sampling a seed, generating a key, signing and verifying fails is at most $2^{-256}$, where failing means the signer returned no signature or the verifier rejected it. This is the union-bound budget for one key signing every message. `sphincs_is_correct` and `sphincs_is_complete` prove the two statements; [PROOF.md](PROOF.md#completeness) outlines the route.
+
 The public adversary may use private randomness adaptively and has no running-time or memory bound. The probability is over the master seed, the shared consistent random oracle and the adversary's private randomness. Private sampling does not count toward the hash-query budget. [Proof/Adversary](SphincsSecurity/Proof/Adversary) identifies this game with the internal probabilistic game, preserving success probabilities and query counts exactly.
 
 The theorem `sphincs_has_127_bits_of_classical_security` proves this claim for at most `2^24` signing requests per key. The reduction in [Proof/Deterministic](SphincsSecurity/Proof/Deterministic) couples seed derivation to independent secrets and signing trials, handles repeated requests, bounds adaptive seed guesses, and transfers the query budget. The public-parameter derivation consumes a query, leaving enough slack to absorb the seed-guessing loss without weakening the 127-bit bound.
@@ -16,7 +18,7 @@ lake exe cache get
 lake build
 ```
 
-The cache command is needed on initial setup. The root module pins the axiom footprint of the theorem to `propext`, `Classical.choice` and `Quot.sound` with `#guard_msgs`, so the build fails if it ever grows. [scripts/Reach.lean](scripts/Reach.lean) is a maintenance script: `lake env lean scripts/Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorem reach it, which is how dead code is found before pruning.
+The cache command is needed on initial setup. The root module pins the axiom footprint of every theorem to `propext`, `Classical.choice` and `Quot.sound` with `#guard_msgs`, so the build fails if it ever grows. [scripts/Reach.lean](scripts/Reach.lean) is a maintenance script: `lake env lean scripts/Reach.lean` writes `reach.txt`, listing every local declaration with the line range of its source block and whether the proof terms of the public theorems reach it, which is how dead code is found before pruning.
 
 ## Where to work
 
@@ -24,7 +26,8 @@ The cache command is needed on initial setup. The root module pins the axiom foo
 
 | Entry | Purpose |
 | --- | --- |
-| [SphincsSecurity.lean](SphincsSecurity.lean) | The public theorem. |
+| [SphincsSecurity.lean](SphincsSecurity.lean) | The public theorems. |
+| [Completeness](SphincsSecurity/Completeness) | Correctness and completeness: recovery, the reduction of failure to signing returning `none`, and the bounds on signing's four searches. |
 | [Proof/Deterministic](SphincsSecurity/Proof/Deterministic) | Seed derivation, coupling to independent secrets, and the final security bound. |
 | [Proof/Security127Completion.lean](SphincsSecurity/Proof/Security127Completion.lean) | Combines the large-budget and small-budget bounds into `security127`. |
 | [Proof/Base](SphincsSecurity/Proof/Base) | Scheme-independent tooling: uniform tables and their exact adaptive posteriors, query caps, pauses and traces, oracle query charges, moment bounds. |

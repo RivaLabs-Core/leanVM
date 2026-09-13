@@ -109,3 +109,21 @@ The rest of the proof consumes the one-time signature through two results.
 **Different hypertree heights.** Layer heights enter the accounting only through [Hypertree/Parameters.lean](SphincsSecurity/Proof/Hypertree/Parameters.lean). The number of layers is fixed by the statement's three-layer sequencing, which the layer arithmetic of `StatementLemmas`, `Descent` and the verifier witnesses follows.
 
 In every case the closing arithmetic in [Forced/Security127SmallBudgetArithmetic.lean](SphincsSecurity/Proof/Forced/Security127SmallBudgetArithmetic.lean) and [Residual/Security127LargeBudget.lean](SphincsSecurity/Proof/Residual/Security127LargeBudget.lean) rechecks the bound with the new values.
+
+## Completeness
+
+`sphincs_is_correct` and `sphincs_is_complete` in [SphincsSecurity.lean](SphincsSecurity.lean) prove the two claims of [Completeness.lean](SphincsSecurity/Completeness.lean); the proofs are under [Completeness](SphincsSecurity/Completeness). `SphincsCorrectnessStatement`: for every hash function, a signature the signer produces for a generated key verifies; this is `verify_of_sign`, the recovery argument of `doc/sphincs` §sec:ver. `SphincsCompletenessStatement`: the sum over all messages of the probability that the honest experiment against the security game's random oracle fails is at most $2^{-256}$, where failing means signing returned $\bot$ or verification rejected. This is the union-bound budget for the theorem in `doc/sphincs` §sec:completeness, with the failure event widened to rejection. The proof takes from the security development only byte-layout lemmas, the replay lemmas for the lazy oracle, and two probabilities of a fresh answer.
+
+Unlike the security proof, completeness needs a lower bound on the size of the one-time code, so [Completeness/Code.lean](SphincsSecurity/Completeness/Code.lean) and [Completeness/Encoding.lean](SphincsSecurity/Completeness/Encoding.lean) use the target-sum code and its values directly, as a closer does. A different code means recounting there; the rest of the completeness proof reads the code only through the statement's algorithms.
+
+| File | Role |
+| --- | --- |
+| [Completeness/Assembly.lean](SphincsSecurity/Completeness/Assembly.lean) | Combines key generation, the signing bound and the closing arithmetic into `complete`. |
+| [Completeness/Recovery.lean](SphincsSecurity/Completeness/Recovery.lean) | `verify_of_sign`: under any answer function, a signature the signer produced verifies. |
+| [Completeness/Game.lean](SphincsSecurity/Completeness/Game.lean) | Pulls the seed out of the experiment; recovery then charges failure to signing returning `none`. |
+| [Completeness/Signing.lean](SphincsSecurity/Completeness/Signing.lean) | Union bound through `sign`: the randomizer search and three counter searches, each counter search starting on uncached inputs. |
+| [Completeness/Fresh.lean](SphincsSecurity/Completeness/Fresh.lean), [Completeness/Keygen.lean](SphincsSecurity/Completeness/Keygen.lean) | Domain separation: key generation and every earlier signing step avoid the inputs a later search hashes. |
+| [Completeness/Search.lean](SphincsSecurity/Completeness/Search.lean), [Completeness/Counter.lean](SphincsSecurity/Completeness/Counter.lean) | A search over fresh distinct inputs exhausts $n$ trials with probability at most its rejection share to the $n$; the counter search is one. |
+| [Completeness/Digest.lean](SphincsSecurity/Completeness/Digest.lean) | The randomizer search, whose digest query repeats when a randomizer does: the set of drawn randomizers charges at most $2^{32}/2^{128}$ per trial. |
+| [Completeness/Code.lean](SphincsSecurity/Completeness/Code.lean), [Completeness/Encoding.lean](SphincsSecurity/Completeness/Encoding.lean) | At least $2^{114}$ of the $2^{128}$ digests decode, counted as one big-number division in the kernel, so one counter trial rejects at most $1-2^{-14}$. |
+| [Completeness/Decay.lean](SphincsSecurity/Completeness/Decay.lean) | $(1-1/m)^m\le1/2$, and the closing sum below $2^{-256}$. |
