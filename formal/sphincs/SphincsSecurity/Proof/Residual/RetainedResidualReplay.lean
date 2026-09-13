@@ -9,7 +9,7 @@ attribute [local irreducible] hashInputs canonicalEncodingInputs canonicalGraphI
 set_option backward.isDefEq.respectTransparency false
 
 theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature) :
     (publicSignPlan memory.routing.known context.words context.auxiliary.selections signature.randomness index leaves).1.map
@@ -47,7 +47,6 @@ theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Con
     funext lay
     apply LayerSignature.ext
     · rfl
-    · rfl
     · funext level
       change knownTreePath memory.routing.known lay (treeIndexAt index lay) (leafIndexAt index lay)
         (level.castLE (layerHeight_le lay)) = (signature.layers lay).path level
@@ -66,7 +65,7 @@ theorem Compatible.honest_public_plan {inputs : Finset HashInput} {context : Con
   rw [hsecrets, hparts]
 
 theorem Compatible.honest_signAfterDigest {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (index : Index) (leaves : IndexGroup → FtsLeaf) (signature : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature) :
     evalWithAnswerFn context.oracle (signAfterDigest context.key signature.randomness index leaves) = some signature := by
@@ -86,7 +85,7 @@ theorem Compatible.honest_signAfterDigest {inputs : Finset HashInput} {context :
   exact hcompatible.honest_public_plan hdummy index leaves signature hfull
 
 theorem Compatible.honest_signature_eq {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
-    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hcompatible : Compatible context memory) (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (index : Index) (leaves : IndexGroup → FtsLeaf) (signature signed : Signature)
     (hfull : FullyHonestOpening context.oracle memory.external.cache context.key index leaves signature)
     (hsigned : evalWithAnswerFn context.oracle (signAfterDigest context.key signed.randomness index leaves) = some signed)

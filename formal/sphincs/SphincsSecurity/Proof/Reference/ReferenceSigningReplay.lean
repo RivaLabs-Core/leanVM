@@ -37,7 +37,6 @@ theorem known_honest_public_plan (key : SecretKey) (f : QueryImpl HashSpec Id) (
     funext lay
     apply LayerSignature.ext
     · rfl
-    · rfl
     · funext level
       change knownTreePath known lay (treeIndexAt index lay) (leafIndexAt index lay)
         (level.castLE (layerHeight_le lay)) = (signature.layers lay).path level

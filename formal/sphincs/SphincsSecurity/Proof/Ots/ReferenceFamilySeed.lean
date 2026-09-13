@@ -29,7 +29,7 @@ noncomputable def referenceFamilySeedLawAt (parameter : PublicParameter) (inputs
     (hencoding : canonicalEncodingInputs parameter ⊆ inputs) (selections : ReferenceFamily) :
     PMF (ReferenceFamilySeed parameter inputs hencoding) :=
   (PMF.uniformOfFintype (NonencodingRows parameter inputs hencoding)).bind (fun nonencoding =>
-    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections).bind
+    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
       (fun selectedRows => (PMF.uniformOfFintype (canonicalEncodingInputs parameter → HashOutput)).map
         (fun encoding => ⟨selections, nonencoding, selectedRows, encoding⟩)))
 
@@ -56,8 +56,7 @@ theorem referenceFamilyOracleSample_eq_seed (key : SecretKey) (inputs : Finset H
   apply congrArg (PMF.uniformOfFintype (NonencodingRows key.parameter inputs hencoding)).bind
   funext nonencoding
   rw [PMF.map_bind]
-  apply congrArg (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-    decodeEncodingOutput_invalid_nonempty selections).bind
+  apply congrArg (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
   funext selectedRows
   rw [← UniformTableSplit.uniform_outside
     (referenceFamilyCell key.parameter (outsideGraphMessage key inputs hencoding nonencoding))

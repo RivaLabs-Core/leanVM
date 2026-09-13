@@ -10,13 +10,16 @@ open Lean
 namespace TaintAudit
 
 def otsSeeds : Array Name := #[``SphincsSecurity.winternitzBits, ``SphincsSecurity.chainLength, ``SphincsSecurity.numChains,
-  ``SphincsSecurity.targetSum, ``SphincsSecurity.Digit, ``SphincsSecurity.ChainStep, ``SphincsSecurity.Encoding,
-  ``SphincsSecurity.TargetSum.sum, ``SphincsSecurity.TargetSum.Valid, ``SphincsSecurity.TargetSum.digitsPerHalf,
-  ``SphincsSecurity.TargetSum.digitOffset, ``SphincsSecurity.TargetSum.digestEncoding, ``SphincsSecurity.TargetSum.decodeDigest,
-  ``SphincsSecurity.encodingAttemptLimit, ``SphincsSecurity.HashDomain.chain, ``SphincsSecurity.HashDomain.encoding,
-  ``SphincsSecurity.Concrete.chainWalk, ``SphincsSecurity.Concrete.recoverChain, ``SphincsSecurity.Concrete.oneTimePublicKey,
-  ``SphincsSecurity.Concrete.encode, ``SphincsSecurity.Concrete.otsSignFrom, ``SphincsSecurity.Concrete.otsSign,
-  ``SphincsSecurity.Concrete.otsLeaf, ``SphincsSecurity.Concrete.leafPayload, ``SphincsSecurity.Concrete.leafHash]
+  ``SphincsSecurity.messageDigits, ``SphincsSecurity.checksumDigits, ``SphincsSecurity.Digit, ``SphincsSecurity.ChainStep,
+  ``SphincsSecurity.Encoding, ``SphincsSecurity.Checksum.messageDigit, ``SphincsSecurity.Checksum.value,
+  ``SphincsSecurity.Checksum.encode, ``SphincsSecurity.Checksum.weight, ``SphincsSecurity.Checksum.sum,
+  ``SphincsSecurity.Checksum.Repeated, ``SphincsSecurity.Checksum.Valid,
+  ``SphincsSecurity.Checksum.decodeDigest, ``SphincsSecurity.encodingAttemptLimit,
+  ``SphincsSecurity.HashDomain.chain, ``SphincsSecurity.HashDomain.encoding, ``SphincsSecurity.Concrete.chainWalk,
+  ``SphincsSecurity.Concrete.recoverChain, ``SphincsSecurity.Concrete.oneTimePublicKey, ``SphincsSecurity.Concrete.encode,
+  ``SphincsSecurity.Concrete.encodeAttempt, ``SphincsSecurity.Concrete.otsSignFrom, ``SphincsSecurity.Concrete.otsSign,
+  ``SphincsSecurity.Concrete.otsLeaf, ``SphincsSecurity.Concrete.otsLeafAttempt, ``SphincsSecurity.Concrete.leafPayload,
+  ``SphincsSecurity.Concrete.leafHash, ``SphincsSecurity.Seeded.oneTimePublicKey, ``SphincsSecurity.Seeded.otsSign]
 
 def ftsSeeds : Array Name := #[``SphincsSecurity.ftsTreeHeight, ``SphincsSecurity.ftsTrees, ``SphincsSecurity.FtsTree,
   ``SphincsSecurity.IndexGroup, ``SphincsSecurity.FtsLeaf, ``SphincsSecurity.digestAttemptLimit, ``SphincsSecurity.HashDomain.ftsLeaf,

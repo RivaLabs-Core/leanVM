@@ -25,31 +25,31 @@ def ChainException (trace : Trace) : Prop :=
     Seen (segment parameter words lay tree leaf index) (frontier f parameter words lay tree leaf secret index) trace)
 
 theorem otsLeaf_chain_run (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (candidate : Encoding) (trace : Trace)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hrun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values)) (index : ChainIndex) :
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hrun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values)) (index : ChainIndex) :
     ContainsRun f trace (recoverChain parameter lay tree leaf index (candidate index) (values index)) := by
   have htail := hrun.bind_right
   rw [hencode] at htail
   exact ContainsRun.sequenceFin_component _ htail.bind_left index
 
 theorem otsLeaf_marker (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (candidate : Encoding) (trace : Trace)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hrun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
-    (index : ChainIndex) (hneighbor : TargetSum.UnitNeighborAt (words lay tree leaf) candidate index) :
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hrun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values))
+    (index : ChainIndex) (hneighbor : Checksum.UnitNeighborAt (words lay tree leaf) candidate index) :
     OtsEncodingMarker.Seen parameter words ⟨lay, tree, leaf, index⟩ trace := by
   let input := tweakableHashInput parameter (.encoding lay tree leaf) (digestBytes message ++ counterBytes counter)
-  have hi : input ∈ queriedInputs f (encode parameter lay tree leaf message counter) := by
-    simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
+  have hi : input ∈ queriedInputs f (encodeAttempt parameter lay tree leaf message counter) := by
+    simp only [encodeAttempt, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
       List.append_nil, List.mem_singleton, input]
   refine ⟨(input, f input), hrun.bind_left input hi, ?_⟩
   apply (OtsEncodingMarker.entryMarker_encoding_iff parameter words ⟨lay, tree, leaf, index⟩ message counter (f input)).mpr
   refine ⟨candidate, ?_, hneighbor⟩
-  simpa only [encode, evalWithAnswerFn_bind, eval_tweakableHash, evalWithAnswerFn_pure, decodeEncodingOutput, input] using hencode
+  simpa only [encodeAttempt, evalWithAnswerFn_bind, eval_tweakableHash, evalWithAnswerFn_pure, decodeEncodingOutput, input] using hencode
 
 theorem otsLeaf_chain_classification (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
-    (candidate : Encoding) (trace : Trace) (hvalid : TargetSum.Valid (words lay tree leaf))
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hrun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
+    (candidate : Encoding) (trace : Trace) (hvalid : Checksum.Valid (words lay tree leaf))
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hrun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values))
     (hendpoints : ∀ index, evalWithAnswerFn f (recoverChain parameter lay tree leaf index (candidate index) (values index))
       = honestChain f parameter lay tree leaf index (secret index) (chainLength - 1)) :
     (candidate = words lay tree leaf ∧ ∀ index, values index = frontier f parameter words lay tree leaf secret index) ∨
@@ -68,7 +68,7 @@ theorem otsLeaf_chain_classification (message : Digest) (counter : Counter) (val
       Seen (segment parameter words lay tree leaf index) (frontier f parameter words lay tree leaf secret index) trace :=
     recover_contact f (segment parameter words lay tree leaf index) (values index) (candidate index) trace hb _ (hf index (Nat.le_of_lt hb)) (hc index)
   have hcandidate := valid_of_eval_encode_eq_some f parameter lay tree leaf message counter candidate hencode
-  rcases TargetSum.valid_encoding_classification hvalid hcandidate with heq | ⟨index, hneighbor⟩ | ⟨index, hlarge⟩ | ⟨left, right, hne, hl, hr⟩
+  rcases Checksum.valid_encoding_classification hvalid hcandidate with heq | ⟨index, hneighbor⟩ | ⟨index, hlarge⟩ | ⟨left, right, hne, hl, hr⟩
   · refine Or.inl ⟨heq.symm, ?_⟩
     intro index
     have hd := congrArg (fun word : Encoding => word index) heq
@@ -92,20 +92,20 @@ def LeafOutputMatch (trace : Trace) : Prop :=
     truncateHash (f (tweakableHashInput parameter (.leaf lay tree leaf) payload)) = canonicalLeaf f parameter lay tree leaf secret
 
 theorem otsLeaf_classification (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
-    (candidate : Encoding) (trace : Trace) (hvalid : TargetSum.Valid (words lay tree leaf))
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hrun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
-    (hleaf : evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter values)
+    (candidate : Encoding) (trace : Trace) (hvalid : Checksum.Valid (words lay tree leaf))
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hrun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values))
+    (hleaf : evalWithAnswerFn f (otsLeafAttempt parameter lay tree leaf message counter values)
       = some (canonicalLeaf f parameter lay tree leaf secret)) :
     (candidate = words lay tree leaf ∧ ∀ index, values index = frontier f parameter words lay tree leaf secret index) ∨
       LeafOutputMatch f parameter lay tree leaf secret trace ∨ ChainException f parameter words lay tree leaf secret trace := by
   let endpoints := fun index => evalWithAnswerFn f (recoverChain parameter lay tree leaf index (candidate index) (values index))
   have heval : evalWithAnswerFn f (leafHash parameter lay tree leaf endpoints) = canonicalLeaf f parameter lay tree leaf secret := by
-    simpa only [otsLeaf, evalWithAnswerFn_bind, hencode, evalWithAnswerFn_sequenceFin, evalWithAnswerFn_pure,
+    simpa only [otsLeafAttempt, evalWithAnswerFn_bind, hencode, evalWithAnswerFn_sequenceFin, evalWithAnswerFn_pure,
       Option.some.injEq, endpoints] using hleaf
   by_cases hp : leafPayload endpoints = leafPayload (fun index => honestChain f parameter lay tree leaf index (secret index) (chainLength - 1))
   · have hs := otsLeaf_chain_classification f parameter words lay tree leaf secret message counter values candidate trace hvalid hencode hrun
-      (fun index => congrFun (TargetSum.leafPayload_injective hp) index)
+      (fun index => congrFun (leafPayload_injective hp) index)
     exact hs.imp_right Or.inr
   · refine Or.inr (Or.inl ⟨leafPayload endpoints, leafPayload_mem_canonicalPayloadInputs endpoints, hp, ?_, ?_⟩)
     · apply hrun

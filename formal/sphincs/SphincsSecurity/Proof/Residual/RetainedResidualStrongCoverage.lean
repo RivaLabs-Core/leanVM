@@ -17,7 +17,7 @@ theorem SigningHistory.digestsCached {key : SecretKey} {oracle : QueryImpl HashS
 
 theorem SigningHistory.signing_payload_ne {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hhistory : SigningHistory context.key context.oracle memory) (hcompatible : Compatible context memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf)) (forgery : Forgery)
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf)) (forgery : Forgery)
     (hnew : ¬ SigningTranscript.Contains memory.log forgery)
     (hfull : let digest := truncateMessageDigest (context.oracle (signingInput context.key forgery.message forgery.signature))
       FullyHonestOpening context.oracle memory.external.cache context.key (digestIndex digest) (digestLeaves digest) forgery.signature)
@@ -34,7 +34,7 @@ theorem SigningHistory.signing_payload_ne {inputs : Finset HashInput} {context :
 
 theorem SigningHistory.strong_covered {inputs : Finset HashInput} {context : Context inputs} {memory : Memory}
     (hhistory : SigningHistory context.key context.oracle memory) (hcompatible : Compatible context memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf)) (forgery : Forgery)
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf)) (forgery : Forgery)
     (hnew : ¬ SigningTranscript.Contains memory.log forgery)
     (hfull : let digest := truncateMessageDigest (context.oracle (signingInput context.key forgery.message forgery.signature))
       FullyHonestOpening context.oracle memory.external.cache context.key (digestIndex digest) (digestLeaves digest) forgery.signature)
@@ -62,7 +62,7 @@ theorem SigningHistory.strong_covered {inputs : Finset HashInput} {context : Con
 
 theorem fixedSourceRun_rest_strong_covered {inputs : Finset HashInput} (context : Context inputs)
     (memory : Memory) (hcompatible : Compatible context memory) (hhistory : SigningHistory context.key context.oracle memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (adversary : Adversary) (forgery : Forgery) (after : Memory)
     (hresult : fixedSourceRun context
       (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩)
@@ -87,7 +87,7 @@ theorem fixedSourceRun_rest_strong_covered {inputs : Finset HashInput} (context 
 
 theorem fixedSourceRun_rest_certificate {inputs : Finset HashInput} (context : Context inputs)
     (memory : Memory) (hcompatible : Compatible context memory) (hhistory : SigningHistory context.key context.oracle memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (adversary : Adversary) (forgery : Forgery) (after : Memory)
     (hresult : fixedSourceRun context
       (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩)
@@ -115,7 +115,7 @@ theorem observedRun_rest_certificate {inputs : Finset HashInput} (context : Cont
       (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩) ⊆ inputs)
     (state : State inputs) (hcovered : ResidualByteFrontend.RowsCovered inputs (project state))
     (hcompatible : Compatible context state.memory) (hhistory : SigningHistory context.key context.oracle state.memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (forgery : Forgery) (after : State inputs)
     (hresult : observedRun context.environment context.actual context.auxiliary.seed
       (simulateQ (adversaryImpl inputs context.key.parameter context.key.root context.words context.auxiliary.selections)

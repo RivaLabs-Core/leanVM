@@ -22,30 +22,13 @@ theorem sequenceFin_restrictPath {m : Type → Type} [Monad m] [LawfulMonad m]
 
 theorem sequenceLayers_map {m : Type → Type} [Monad m] [LawfulMonad m]
     {α β : Layer → Type} (f : (lay : Layer) → α lay → β lay)
-    (computation : (lay : Layer) → m (Option (α lay))) :
-    Concrete.sequenceLayers (fun lay => Option.map (f lay) <$> computation lay) =
-      Option.map (fun parts lay => f lay (parts lay)) <$> Concrete.sequenceLayers computation := by
-  simp only [Concrete.sequenceLayers, bind_map_left, map_bind]
-  apply bind_congr
-  intro bottom
-  cases bottom with
-  | none => simp only [Option.map_none, map_pure]
-  | some bottom =>
-      simp only [Option.map_some, map_bind]
-      apply bind_congr
-      intro middle
-      cases middle with
-      | none => simp only [Option.map_none, map_pure]
-      | some middle =>
-          simp only [Option.map_some, map_bind]
-          apply bind_congr
-          intro top
-          cases top with
-          | none => simp only [Option.map_none, map_pure]
-          | some top =>
-              simp only [Option.map_some, map_pure]
-              congr 2
-              funext lay
-              fin_cases lay <;> rfl
+    (computation : (lay : Layer) → m (α lay)) :
+    Concrete.sequenceLayers (fun lay => f lay <$> computation lay) =
+      (fun parts lay => f lay (parts lay)) <$> Concrete.sequenceLayers computation := by
+  simp only [Concrete.sequenceLayers, bind_map_left, map_bind, map_pure]
+  refine bind_congr fun bottom => bind_congr fun middle => bind_congr fun top => ?_
+  congr 1
+  funext lay
+  fin_cases lay <;> rfl
 
 end SphincsSecurity

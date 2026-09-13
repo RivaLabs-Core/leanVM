@@ -1,6 +1,6 @@
 import SphincsSecurity.Proof.Ots.EncodingNeighbors
 import SphincsSecurity.Proof.Ots.EncodingProbability
-namespace SphincsSecurity.TargetSum
+namespace SphincsSecurity.Checksum
 
 open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
@@ -9,10 +9,8 @@ attribute [local irreducible] Finset.univ
 
 theorem digestEncoding_of_decode_some {digest : Digest} {word : Encoding}
     (h : decodeDigest digest = some word) : digestEncoding digest = word := by
-  rw [decodeDigest] at h
-  split at h
-  · exact Option.some.inj h
-  · contradiction
+  rw [decodeDigest_eq] at h
+  exact Option.some.inj h
 
 noncomputable def decodingDigests (words : Finset Encoding) : Finset Digest :=
   Finset.univ.filter fun digest => ∃ word ∈ words, decodeDigest digest = some word
@@ -39,4 +37,4 @@ theorem decodingDigests_uniform_le (words : Finset Encoding) :
   rw [probEvent_uniform_truncateHash_mem]
   exact ENNReal.div_le_div_right (Nat.cast_le.mpr (decodingDigests_card_le words)) _
 
-end SphincsSecurity.TargetSum
+end SphincsSecurity.Checksum

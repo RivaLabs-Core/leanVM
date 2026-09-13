@@ -114,7 +114,7 @@ theorem exceptionHistorySourceGame_prefix_le (dummy : OtsReferenceWords) (advers
   exact initialExceptionHistorySource_prefix_le _ adversary encoding dummy exposed high budget
 
 theorem forgeAdvantage_le_native_bound_add_cache_history (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) +

@@ -40,7 +40,7 @@ noncomputable def gameRest (parameter : PublicParameter) (root : Digest)
 noncomputable def game (parameter : PublicParameter) (external : QueryImpl HashSpec Id)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords)
     (frontier : OtsFrontierValues) (adversary : Adversary) : OracleComp OracleWorld (Bool × SigningBoundaryTrace) :=
-  (fun result => (result.1, (FreeMonoid.of none) ^ 1212415 * result.2)) <$>
+  (fun result => (result.1, (FreeMonoid.of none) ^ 1413119 * result.2)) <$>
     gameRest parameter (frontierRoot parameter (maskOtsPrefixes parameter words external) words frontier)
       external ftsSecret words frontier adversary
 

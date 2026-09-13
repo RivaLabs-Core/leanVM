@@ -15,7 +15,7 @@ structure ReferenceAuxiliary (inputs : Finset HashInput) where
 
 noncomputable def referenceAuxiliarySample (inputs : Finset HashInput) : PMF (ReferenceAuxiliary inputs) :=
   (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind (fun selections =>
-    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections).bind
+    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
       (fun rows => (PMF.uniformOfFintype (inputs → HashOutput)).map
         (fun seed => ⟨selections, Function.uncurry rows, seed⟩)))
 
@@ -41,8 +41,7 @@ theorem graphReferenceSample_eq_auxiliary (parameter : PublicParameter) (inputs 
   apply congrArg (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).bind
   funext selections
   rw [PMF.bind_comm]
-  apply congrArg (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-    decodeEncodingOutput_invalid_nonempty selections).bind
+  apply congrArg (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
   funext rows
   simp only [PMF.map, Function.comp_def]
   rw [PMF.bind_comm]

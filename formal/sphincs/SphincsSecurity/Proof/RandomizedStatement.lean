@@ -12,7 +12,7 @@ abbrev messageBytes (message : Message) : HashInput := bytesLE 32 message
 
 abbrev randomnessBytes (randomness : Randomness) : HashInput := bytesLE 16 randomness
 
-abbrev counterBytes (counter : Counter) : HashInput := bytesLE 4 counter
+abbrev counterBytes (counter : Counter) : HashInput := bytesLE 0 counter
 
 end Concrete
 

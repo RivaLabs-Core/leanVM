@@ -16,7 +16,7 @@ theorem ReferenceLayerOpening.honest {f : QueryImpl HashSpec Id} {key : SecretKe
 
 theorem verify_classification (f : QueryImpl HashSpec Id) (key : SecretKey) (words : OtsReferenceWords)
     (messages : EncodingPosition → Digest) (selections : ReferenceFamily) (message : Message) (signature : Signature) (trace : Trace)
-    (hvalid : ∀ lay tree leaf, TargetSum.Valid (words lay tree leaf))
+    (hvalid : ∀ lay tree leaf, Checksum.Valid (words lay tree leaf))
     (hmessages : ∀ index lay, messages ⟨lay, treeIndexAt index lay, leafIndexAt index lay⟩ = evalWithAnswerFn f (layerMessage key index lay))
     (hroot : key.root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
     (hverify : evalWithAnswerFn f (verify ⟨key.root, key.parameter⟩ message signature) = true)

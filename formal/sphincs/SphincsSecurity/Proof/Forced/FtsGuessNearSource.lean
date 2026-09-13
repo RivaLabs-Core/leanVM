@@ -150,7 +150,7 @@ namespace SphincsSecurity.Concrete
 open _root_.OracleComp ENNReal
 
 theorem forgeAdvantage_le_forcedNear_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
     (hsmall : q ≤ 3 * 2 ^ 114) :
     forgeAdvantage scheme adversary ≤

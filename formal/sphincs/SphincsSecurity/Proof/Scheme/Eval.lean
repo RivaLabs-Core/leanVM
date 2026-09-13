@@ -34,12 +34,12 @@ theorem evalWithAnswerFn_sequenceFin {n : Nat} (computation : Fin n → OracleCo
 
 @[simp]
 theorem evalWithAnswerFn_sequenceLayers (computation : Layer → OracleComp HashSpec (Option α)) :
-    evalWithAnswerFn f (sequenceLayers computation) =
+    evalWithAnswerFn f (sequenceLayersOpt computation) =
       sequenceFin (m := Option) (fun lay => evalWithAnswerFn f (computation lay)) := by
   cases hb : evalWithAnswerFn f (computation bottomLayer) <;>
     cases hm : evalWithAnswerFn f (computation middleLayer) <;>
     cases ht : evalWithAnswerFn f (computation topLayer) <;>
-    simp [sequenceLayers, sequenceFin, evalWithAnswerFn_bind,
+    simp [sequenceLayersOpt, sequenceFin, evalWithAnswerFn_bind,
       bottomLayer, middleLayer, topLayer, numLayers] at hb hm ht ⊢ <;>
     simp [hb, hm, ht] <;> rfl
 

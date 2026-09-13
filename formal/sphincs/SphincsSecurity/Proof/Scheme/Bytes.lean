@@ -84,7 +84,7 @@ theorem tweakBytes_injective {d1 d2 : HashDomain} (h1 : d1.InRange) (h2 : d2.InR
     have hbound : ∀ (i : ChainIndex) (s : ChainStep), chainLength * i.val + s.val < 2 ^ 32 := by
       intro i s
       have := i.isLt; have := s.isLt
-      simp only [numChains, chainLength, winternitzBits] at *
+      simp only [numChains, messageDigits, checksumDigits, chainLength, winternitzBits] at *
       omega
     have hpos := ofNat_inj_of_lt (hbound i1 s1) (hbound i2 s2) hp
     have hs1 := s1.isLt; have hs2 := s2.isLt

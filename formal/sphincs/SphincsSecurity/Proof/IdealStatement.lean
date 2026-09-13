@@ -56,7 +56,7 @@ def otsSignFrom (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (
     Nat → Nat → m (Option (Counter × (ChainIndex → Digest)))
   | 0, _ => pure none
   | attempts + 1, counter => do
-      match ← encode parameter lay tree leaf message (BitVec.ofNat counterBits counter) with
+      match ← encodeAttempt parameter lay tree leaf message (BitVec.ofNat counterBits counter) with
       | some encoding => do
           let values ← sequenceFin fun chainIdx =>
             chainWalk parameter lay tree leaf chainIdx 0 (encoding chainIdx).val (secret chainIdx)
@@ -193,7 +193,7 @@ noncomputable def sign (secretKey : SecretKey) (message : Message) :
         (ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index) :
           OracleComp HashSpec (FtsTree → Fin ftsTreeHeight → Digest))
       let layers ← liftM
-        (sequenceLayers (fun lay => signLayer secretKey index lay) :
+        (sequenceLayersOpt (fun lay => signLayer secretKey index lay) :
           OracleComp HashSpec
             (Option (Layer → Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
       match layers with
@@ -253,19 +253,15 @@ noncomputable def randomizedSign (secretKey : SecretKey) (message : Message) :
           OracleComp HashSpec (FtsTree → Fin ftsTreeHeight → Digest))
       let layers ← liftM
         (sequenceLayers (fun lay => signLayer secretKey index lay) :
-          OracleComp HashSpec
-            (Option ((lay : Layer) → LayerSignature lay)))
-      match layers with
-      | none => return none
-      | some parts => do
-          let _ ← liftM
-            (treeRoot secretKey.parameter topLayer rootTree secretKey.seed :
-              OracleComp HashSpec Digest)
-          return some
-            { randomness := randomness
-              ftsSecret := secrets
-              ftsPath := ftsPath
-              layers := parts }
+          OracleComp HashSpec ((lay : Layer) → LayerSignature lay))
+      let _ ← liftM
+        (treeRoot secretKey.parameter topLayer rootTree secretKey.seed :
+          OracleComp HashSpec Digest)
+      return some
+        { randomness := randomness
+          ftsSecret := secrets
+          ftsPath := ftsPath
+          layers := layers }
 
 end Seeded
 

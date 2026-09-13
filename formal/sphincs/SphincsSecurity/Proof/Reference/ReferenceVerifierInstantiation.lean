@@ -59,7 +59,7 @@ theorem run_success_atRoot (key : SecretKey) (f : QueryImpl HashSpec Id) (root :
     (hroot : root = honestNode f key.parameter topLayer rootTree (key.otsSecret topLayer rootTree) (layerHeight topLayer) 0)
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (result : ContactResult)
     (before : AdversaryTrace) (hselected : selections = referenceTableSelection key f)
-    (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
+    (hvalid : ∀ lay tree leaf, Checksum.Valid (referenceFamilyWords selections dummy lay tree leaf))
     (hb : before ∈ support (fixedTrace f (CausalFrontierProgram.adversaryRun key.parameter root f key.ftsSecret
       (referenceFamilyWords selections dummy)
       (canonicalGraphFrontier key.otsSecret (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f) (referenceFamilyWords selections dummy))

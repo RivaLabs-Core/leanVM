@@ -14,19 +14,19 @@ open OracleComp OracleSpec
 theorem decode_of_eval_encode_eq_some (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest)
     (counter : Counter) (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leafIdx message counter)
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leafIdx message counter)
       = some codeword) :
-    TargetSum.decodeDigest (truncateHash (f (tweakableHashInput parameter
+    Checksum.decodeDigest (truncateHash (f (tweakableHashInput parameter
       (.encoding lay tree leafIdx) (digestBytes message ++ counterBytes counter))))
         = some codeword := by
-  simpa only [encode, evalWithAnswerFn_bind, evalWithAnswerFn_pure, eval_tweakableHash] using hencode
+  simpa only [encodeAttempt, evalWithAnswerFn_bind, evalWithAnswerFn_pure, eval_tweakableHash] using hencode
 
 theorem valid_of_eval_encode_eq_some (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest)
     (counter : Counter) (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leafIdx message counter)
-      = some codeword) : TargetSum.Valid codeword :=
-  TargetSum.valid_of_decodeDigest_eq_some
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leafIdx message counter)
+      = some codeword) : Checksum.Valid codeword :=
+  Checksum.valid_of_decodeDigest_eq_some
     (decode_of_eval_encode_eq_some f parameter lay tree leafIdx message counter codeword hencode)
 
 end SphincsSecurity.Concrete

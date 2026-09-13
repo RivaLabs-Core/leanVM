@@ -16,7 +16,7 @@ def signatureAfterTrial (secretKey : SphincsSecurity.SecretKey) (attempt : Trial
   | none => pure none
   | some (randomness, index, leaves) => do
       let ftsPath ← Concrete.ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index)
-      match ← Concrete.sequenceLayers (fun lay => Concrete.signLayer secretKey index lay) with
+      match ← Concrete.sequenceLayersOpt (fun lay => Concrete.signLayer secretKey index lay) with
       | none => return none
       | some parts => do
           let _ ← Concrete.treeRoot secretKey.parameter topLayer Concrete.rootTree (secretKey.otsSecret topLayer Concrete.rootTree)

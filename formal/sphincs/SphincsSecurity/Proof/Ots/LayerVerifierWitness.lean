@@ -25,12 +25,12 @@ theorem canonicalLeaf_eq_honestNode (leaf : LeafIndex) :
 
 theorem layer_classification (leaf : LeafIndex) (hleafIndex : leaf.val < 2 ^ layerHeight lay)
     (path : Nat → Digest) (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
-    (candidate : Encoding) (leafValue : Digest) (trace : Trace) (hvalid : TargetSum.Valid (words lay tree leaf))
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hots : evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter values) = some leafValue)
+    (candidate : Encoding) (leafValue : Digest) (trace : Trace) (hvalid : Checksum.Valid (words lay tree leaf))
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hots : evalWithAnswerFn f (otsLeafAttempt parameter lay tree leaf message counter values) = some leafValue)
     (hfold : foldValue f parameter lay tree leaf path leafValue (layerHeight lay) =
       honestNode f parameter lay tree secret (layerHeight lay) 0)
-    (hotsRun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
+    (hotsRun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values))
     (hfoldRun : ContainsRun f trace (treeFold parameter lay tree leaf path (layerHeight lay) leafValue)) :
     (candidate = words lay tree leaf ∧
       (∀ index, values index = frontier f parameter words lay tree leaf (secret leaf) index) ∧
@@ -41,7 +41,7 @@ theorem layer_classification (leaf : LeafIndex) (hleafIndex : leaf.val < 2 ^ lay
       honestNode f parameter lay tree secret (layerHeight lay) (leaf.val / 2 ^ layerHeight lay) := by
     simpa only [Nat.div_eq_of_lt hleafIndex] using hfold
   rcases treeFold_extract f parameter lay tree secret leaf path leafValue (layerHeight lay) hroot with ⟨hleaf, hpath⟩ | ⟨level, hl, hh⟩
-  · have hcanonical : evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter values) =
+  · have hcanonical : evalWithAnswerFn f (otsLeafAttempt parameter lay tree leaf message counter values) =
         some (canonicalLeaf f parameter lay tree leaf (secret leaf)) := by
       rw [canonicalLeaf_eq_honestNode, hots, hleaf]
     rcases otsLeaf_classification f parameter words lay tree leaf (secret leaf) message counter values candidate trace hvalid hencode hotsRun hcanonical

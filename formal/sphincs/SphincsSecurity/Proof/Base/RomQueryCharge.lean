@@ -38,12 +38,12 @@ theorem romImpl_query_mass (query : OracleWorld.Domain) (cache : QueryCache Hash
     (∑' result, Pr[= result | (romImpl query).run cache]) = 1 := by
   cases query with
   | inl input =>
-      simp [romImpl, unifFwdImpl, QueryImpl.liftTarget, HasQuery.toQueryImpl,
-        StateT.run_monadLift]
-      rw [ENNReal.tsum_prod']
-      simp only [tsum_ite_eq, tsum_fintype, Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
-      simp [Fintype.card_fin]
-      exact ENNReal.mul_inv_cancel (by positivity) (by finiteness)
+      change (∑' result, Pr[= result | ((unifFwdImpl HashSpec) input).run cache]) = 1
+      have hrun := unifFwdImpl.simulateQ_run
+        (hashSpec := HashSpec) (liftM (unifSpec.query input) : ProbComp _) cache
+      simp only [simulateQ_spec_query] at hrun
+      rw [hrun]
+      simp
   | inr input =>
       change (∑' result, Pr[= result | (randomOracle input).run cache]) = 1
       by_cases hfresh : cache input = none
@@ -127,12 +127,15 @@ theorem expected_potential_romImpl_le_charge
       potential cache + hashQueryCharge charge cache query := by
   cases query with
   | inl input =>
-      simp [romImpl, unifFwdImpl, QueryImpl.liftTarget, HasQuery.toQueryImpl,
-        StateT.run_monadLift, hashQueryCharge]
-      rw [ENNReal.tsum_prod']
-      simp only [tsum_ite_eq, tsum_fintype, Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
-      simp [Fintype.card_fin]
-      rw [← mul_assoc, ENNReal.mul_inv_cancel (by positivity) (by finiteness), one_mul]
+      change (∑' result, Pr[= result | ((unifFwdImpl HashSpec) input).run cache] * potential result.2) ≤
+        potential cache + 0
+      have hrun := unifFwdImpl.simulateQ_run
+        (hashSpec := HashSpec) (liftM (unifSpec.query input) : ProbComp _) cache
+      simp only [simulateQ_spec_query] at hrun
+      rw [hrun, tsum_probOutput_map_mul]
+      dsimp only
+      rw [ENNReal.tsum_mul_right, add_zero]
+      exact mul_le_of_le_one_left' tsum_probOutput_le_one
   | inr input =>
       change (∑' result, Pr[= result | (randomOracle input).run cache] * potential result.2) ≤
         potential cache + charge cache input

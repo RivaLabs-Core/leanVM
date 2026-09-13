@@ -97,9 +97,9 @@ def children : Position → List Position
       List.ofFn fun tree : FtsTree =>
         .ftsNode index tree ⟨ftsTreeHeight - 1, by decide⟩ ⟨0, by positivity⟩
 
-/-- The widest payload of the instance is a one-time leaf's `v = 42` chain endpoints. -/
+/-- The widest payload of the instance is a one-time leaf's `v = 49` chain endpoints. -/
 theorem children_length_le (p : Position) : p.children.length ≤ numChains := by
-  cases p <;> simp only [children] <;> (try split_ifs) <;> simp [numChains, ftsTrees]
+  cases p <;> simp only [children] <;> (try split_ifs) <;> simp [numChains, messageDigits, checksumDigits, ftsTrees]
 
 /-! ### Children and parent agree
 

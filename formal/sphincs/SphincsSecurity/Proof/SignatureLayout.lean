@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Ots.Interface
 
 namespace SphincsSecurity
 
@@ -16,11 +16,11 @@ abbrev PaddedLayer := Counter × (ChainIndex → Digest) × (Fin maxLayerHeight 
 
 /-- Restrict an intermediate proof's padded path to the layer's actual height. -/
 abbrev LayerSignature.ofPadded (lay : Layer) (part : PaddedLayer) : LayerSignature lay :=
-  ⟨part.1, part.2.1, fun level => part.2.2 (level.castLE (layerHeight_le lay))⟩
+  ⟨part.2.1, fun level => part.2.2 (level.castLE (layerHeight_le lay))⟩
 
 @[ext]
 theorem LayerSignature.ext {lay : Layer} {left right : LayerSignature lay}
-    (hcounter : left.counter = right.counter) (hvalues : left.chainValues = right.chainValues)
+    (hvalues : left.chainValues = right.chainValues)
     (hpath : left.path = right.path) : left = right := by
   cases left
   cases right

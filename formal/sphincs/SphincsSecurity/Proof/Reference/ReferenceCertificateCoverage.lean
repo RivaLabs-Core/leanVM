@@ -205,7 +205,7 @@ theorem referenceForgeryGame_full_le (dummy : OtsReferenceWords) (adversary : Ad
       (certificateTraceProgram_full_le adversary)
 
 theorem forgeAdvantage_le_remainingFts_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
     (hsmall : q ≤ 3 * 2 ^ 114) :
     forgeAdvantage scheme adversary ≤

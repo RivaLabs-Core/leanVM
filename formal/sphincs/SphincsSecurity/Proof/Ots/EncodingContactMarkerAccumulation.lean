@@ -16,7 +16,7 @@ theorem contactMarker_lazyRun_le {Result : Type} (parameter : PublicParameter) (
     (∑' result, Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation) allowed] *
       (contactMarkerCount parameter (referenceFamilyWords selections dummy) frontier (history * result.1.2) : ENNReal)) ≤
       (contactMarkerCount parameter (referenceFamilyWords selections dummy) frontier history : ENNReal) +
-        (41 / (Fintype.card Digest : ENNReal)) * ∑' result,
+        (43 / (Fintype.card Digest : ENNReal)) * ∑' result,
           Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation) allowed] *
             (contactMarkerCost parameter (referenceFamilyWords selections dummy) frontier history result.1.2 : ENNReal) := by
   simp only [lazyRun_eq_simulate]
@@ -44,7 +44,7 @@ theorem contactMarker_initial_lazyRun_le {Result : Type} (parameter : PublicPara
     (∑' result, Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation)
       (referenceEncodingAllowed parameter messages selections)] *
       (contactMarkerCount parameter (referenceFamilyWords selections dummy) frontier result.1.2 : ENNReal)) ≤
-        (41 / (Fintype.card Digest : ENNReal)) * ∑' result,
+        (43 / (Fintype.card Digest : ENNReal)) * ∑' result,
           Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation)
             (referenceEncodingAllowed parameter messages selections)] *
               (contactMarkerCost parameter (referenceFamilyWords selections dummy) frontier 1 result.1.2 : ENNReal) := by

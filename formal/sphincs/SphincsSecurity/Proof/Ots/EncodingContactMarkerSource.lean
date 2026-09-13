@@ -35,7 +35,7 @@ theorem referenceEncodingLazyRest_contactMarker_le (key : SecretKey) (inputs : F
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) :
     (∑' result, Pr[= result | referenceEncodingLazyRest contactObserver key inputs hencoding outside selections dummy adversary] *
       (contactMarkerCount key.parameter (referenceFamilyWords selections dummy) result.1.frontier (result.1.before * result.1.after) : ENNReal)) ≤
-      (41 / (Fintype.card Digest : ENNReal)) * ∑' result,
+      (43 / (Fintype.card Digest : ENNReal)) * ∑' result,
         Pr[= result | referenceEncodingLazyRest contactObserver key inputs hencoding outside selections dummy adversary] *
           (contactMarkerCost key.parameter (referenceFamilyWords selections dummy) result.1.frontier 1 (result.1.before * result.1.after) : ENNReal) := by
   rw [referenceEncodingLazyRest_frontier_statistic key inputs hencoding outside selections dummy adversary
@@ -60,7 +60,7 @@ theorem referenceContactGame_contactMarker_count_le (inputs : Finset HashInput)
     (dummy : OtsReferenceWords) (adversary : Adversary) :
     (∑' result, Pr[= result | referenceContactGame inputs hencoding dummy adversary] *
       (contactMarkerCount result.1 (referenceFamilyWords result.2.1 dummy) result.2.2.frontier (result.2.2.before * result.2.2.after) : ENNReal)) ≤
-      (41 / (Fintype.card Digest : ENNReal)) * ∑' result,
+      (43 / (Fintype.card Digest : ENNReal)) * ∑' result,
         Pr[= result | referenceContactGame inputs hencoding dummy adversary] *
           (contactMarkerCost result.1 (referenceFamilyWords result.2.1 dummy) result.2.2.frontier 1 (result.2.2.before * result.2.2.after) : ENNReal) := by
   rw [referenceContactGame, ← referenceEncodingLazyGame_original contactObserver inputs hencoding hgraph dummy adversary]

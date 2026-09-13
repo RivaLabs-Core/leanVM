@@ -182,7 +182,7 @@ theorem fixedImpl_gameRest (segment : OtsPrefix) (tables : Fin segment.digit.val
 noncomputable def game (segment : OtsPrefix) (high : segment.Query → High) (outside : QueryImpl HashSpec Id)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords)
     (frontier : OtsFrontierValues) (adversary : Adversary) : OracleComp segment.World (Bool × SigningBoundaryTrace) :=
-  (fun result => (result.1, (FreeMonoid.of none) ^ 1212415 * result.2)) <$>
+  (fun result => (result.1, (FreeMonoid.of none) ^ 1413119 * result.2)) <$>
     segment.gameRest (frontierRoot segment.parameter (maskOtsPrefixes segment.parameter words outside) words frontier)
       high outside ftsSecret words frontier adversary
 

@@ -3,8 +3,8 @@ import SphincsSecurity.Proof.Fts.FewTimeUniform
 /-!
 # Encoding acceptance probability
 
-The target-sum decoder accepts a finite nonempty set of 128-bit digests. A fresh random-oracle
-answer has a uniform 128-bit truncation, so acceptance has exactly the corresponding finite ratio.
+A fresh random-oracle answer has a uniform 128-bit truncation, so the probability that it lands in
+a finite set of digests is exactly the corresponding finite ratio.
 -/
 
 namespace SphincsSecurity

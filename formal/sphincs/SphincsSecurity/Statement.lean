@@ -19,11 +19,11 @@ def hashOutputBits : Nat := 256
 def messageBits : Nat := 256
 def publicParameterBits : Nat := 128
 def randomnessBits : Nat := 128
-def counterBits : Nat := 32
 def winternitzBits : Nat := 3
 def chainLength : Nat := 2 ^ winternitzBits
-def numChains : Nat := 42
-def targetSum : Nat := 191
+def messageDigits : Nat := 43
+def checksumDigits : Nat := 3
+def numChains : Nat := messageDigits + 2 * checksumDigits
 def numLayers : Nat := 3
 def totalHeight : Nat := 26
 /-- The tallest layer, `h_0`, which bounds every layer's leaf index. -/
@@ -35,8 +35,6 @@ def ftsTrees : Nat := 15
 def signatureLimit : Nat := 2 ^ 24
 /-- Digest attempts per signature, `A_max`. -/
 def digestAttemptLimit : Nat := 2 ^ 32
-/-- Encoding counters tried per layer, `C_max`. -/
-def encodingAttemptLimit : Nat := 2 ^ 32
 
 abbrev MasterSeed := BitVec 256
 
@@ -45,7 +43,6 @@ abbrev HashOutput := BitVec hashOutputBits
 abbrev Message := BitVec messageBits
 abbrev PublicParameter := BitVec publicParameterBits
 abbrev Randomness := Digest
-abbrev Counter := BitVec counterBits
 abbrev Layer := Fin numLayers
 /-- `idx`, which few-time key signs. -/
 abbrev Index := Fin (2 ^ totalHeight)
@@ -98,12 +95,11 @@ deriving DecidableEq
 
 /-- One layer's WOTS signature and authentication path. -/
 structure LayerSignature (lay : Layer) where
-  counter : Counter
   chainValues : ChainIndex → Digest
   path : Fin (layerHeight lay) → Digest
 deriving DecidableEq
 
-/-- The randomizer, FORS openings, and three layer signatures, totaling 4924 bytes. -/
+/-- The randomizer, FORS openings, and three layer signatures, totaling 5248 bytes. -/
 structure Signature where
   randomness : Randomness
   ftsSecret : FtsTree → Digest
@@ -192,38 +188,25 @@ def keygenHashInput (parameter : PublicParameter) (domain : KeygenDomain)
     (seed : MasterSeed) : HashInput :=
   fieldBytes (keygenDomainFields domain) ++ bytesLE 16 parameter ++ bytesLE 32 seed
 
-/-! ### The target-sum code
+/-! ### The Winternitz checksum -/
 
-`v = 42` chunks of `w = 3` bits, 21 in each half of the digest, one pinned bit per half, and the code is the words of digit sum `T = 191`. Two distinct words of equal sum are incomparable, which is what removes the Winternitz checksum and the reason why we need the counter. -/
+namespace Checksum
 
-namespace TargetSum
+/-- The 43 base-8 message digits, least significant first. The last digit has two message bits. -/
+def messageDigit (digest : Digest) (i : Fin messageDigits) : Digit :=
+  (digest.extractLsb' (winternitzBits * i.val) winternitzBits).toFin
 
-/-- The digit sum of a word. -/
-def sum (x : Encoding) : Nat := ∑ i, (x i).val
+/-- The sum of the complements of the message digits. -/
+def value (digest : Digest) : Nat :=
+  ∑ i, (chainLength - 1 - (messageDigit digest i).val)
 
-/-- Membership in the code `C`: digit sum `T`. -/
-def Valid (x : Encoding) : Prop := sum x = targetSum
+/-- Append two copies of each of the three base-8 checksum digits. -/
+def encode (digest : Digest) : Encoding :=
+  fun i => if hi : i.val < messageDigits then messageDigit digest ⟨i.val, hi⟩
+    else ⟨value digest / chainLength ^ ((i.val - messageDigits) / 2) % chainLength,
+      Nat.mod_lt _ (Nat.two_pow_pos _)⟩
 
-instance : DecidablePred Valid :=
-  fun x => inferInstanceAs (Decidable (sum x = targetSum))
-
-/-- `v / 2 = 21` digits in each half of the digest. -/
-def digitsPerHalf : Nat := numChains / 2
-
-/-- Offset of a three-bit digit, skipping padding bits 63 and 127. -/
-def digitOffset (i : ChainIndex) : Nat :=
-  winternitzBits * i.val + if i.val < digitsPerHalf then 0 else 1
-
-/-- `x_i`, the three bits of the digest at the digit's offset. -/
-def digestEncoding (digest : Digest) : Encoding :=
-  fun i => (digest.extractLsb' (digitOffset i) winternitzBits).toFin
-
-/-- Decode the concrete little-endian layout: 21 three-bit digits, padding bit 63, 21 digits, and padding bit 127. A digest decodes exactly when both padding bits are clear and the digits reach the target sum. -/
-def decodeDigest (digest : Digest) : Option Encoding :=
-  if digest.getLsbD 63 = false ∧ digest.getLsbD 127 = false ∧ Valid (digestEncoding digest)
-  then some (digestEncoding digest) else none
-
-end TargetSum
+end Checksum
 
 /-! ## The algorithms
 
@@ -304,21 +287,19 @@ def leafHash (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (lea
     (endpoints : ChainIndex → Digest) : m Digest :=
   tweakableHash parameter (.leaf lay tree leaf) (leafPayload endpoints)
 
-/-- `Enc(P, lay, tau, e, M, c)`: hash the message with the counter under the leaf's encoding tweak, and decode. -/
+/-- `Enc(P, lay, tau, e, M)`: hash the message under the leaf's encoding tweak and append the checksum. -/
 def encode (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
-    (message : Digest) (counter : Counter) : m (Option Encoding) := do
-  let digest ← tweakableHash parameter (.encoding lay tree leaf)
-    (bytesLE 16 message ++ bytesLE 4 counter)
-  return TargetSum.decodeDigest digest
+    (message : Digest) : m Encoding := do
+  let digest ← tweakableHash parameter (.encoding lay tree leaf) (bytesLE 16 message)
+  return Checksum.encode digest
 
-/-- `OtsLeaf`: the verifier's leaf, or nothing if the counter does not encode the message. -/
+/-- `OtsLeaf`: the leaf recovered from the message and the revealed chain values. -/
 def otsLeaf (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
-    (message : Digest) (counter : Counter) (values : ChainIndex → Digest) : m (Option Digest) := do
-  let some encoding ← encode parameter lay tree leaf message counter | return none
+    (message : Digest) (values : ChainIndex → Digest) : m Digest := do
+  let encoding ← encode parameter lay tree leaf message
   let endpoints ← sequenceFin fun chainIdx =>
     recoverChain parameter lay tree leaf chainIdx (encoding chainIdx) (values chainIdx)
-  let value ← leafHash parameter lay tree leaf endpoints
-  return some value
+  leafHash parameter lay tree leaf endpoints
 
 /-! ### A layer -/
 
@@ -428,8 +409,7 @@ def verifyLayers (parameter : PublicParameter) (index : Index) (signature : Sign
         let tree := treeIndexAt index lay
         let leaf := leafIndexAt index lay
         let part := signature.layers lay
-        let some value ← otsLeaf parameter lay tree leaf message part.counter part.chainValues
-          | return none
+        let value ← otsLeaf parameter lay tree leaf message part.chainValues
         let root ← treeFold parameter lay tree leaf (signaturePath signature lay) (layerHeight lay) value
         verifyLayers parameter index signature remaining root
       else
@@ -451,13 +431,13 @@ def verify (publicKey : PublicKey) (message : Message) (signature : Signature) :
 /-- Layer `0` holds one tree, at index `0`. -/
 def rootTree : TreeIndex := ⟨0, Nat.two_pow_pos _⟩
 
-/-- Run layers from bottom to top, stopping on failure. -/
+/-- Run layers from bottom to top. -/
 def sequenceLayers {α : Layer → Type}
-    (computation : (lay : Layer) → m (Option (α lay))) : m (Option ((lay : Layer) → α lay)) := do
-  let some bottom ← computation bottomLayer | return none
-  let some middle ← computation middleLayer | return none
-  let some top ← computation topLayer | return none
-  return some (Fin.cases top (Fin.cases middle (Fin.cases bottom (fun i => Fin.elim0 i))))
+    (computation : (lay : Layer) → m (α lay)) : m ((lay : Layer) → α lay) := do
+  let bottom ← computation bottomLayer
+  let middle ← computation middleLayer
+  let top ← computation topLayer
+  return Fin.cases top (Fin.cases middle (Fin.cases bottom (fun i => Fin.elim0 i)))
 
 attribute [irreducible] verify
 
@@ -493,23 +473,13 @@ def oneTimePublicKey (parameter : PublicParameter) (lay : Layer) (tree : TreeInd
     let secret ← deriveKey parameter (.ots lay tree leaf chainIdx) seed
     chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) secret
 
-def otsSignFrom (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
-    (seed : MasterSeed) (message : Digest) :
-    Nat → Nat → m (Option (Counter × (ChainIndex → Digest)))
-  | 0, _ => pure none
-  | attempts + 1, counter => do
-      match ← encode parameter lay tree leaf message (BitVec.ofNat counterBits counter) with
-      | some encoding => do
-          let values ← sequenceFin fun chainIdx => do
-            let secret ← deriveKey parameter (.ots lay tree leaf chainIdx) seed
-            chainWalk parameter lay tree leaf chainIdx 0 (encoding chainIdx).val secret
-          return some (BitVec.ofNat counterBits counter, values)
-      | none => otsSignFrom parameter lay tree leaf seed message attempts (counter + 1)
-
+/-- `OtsSign`: reveal every chain at the digit the encoding selects. -/
 def otsSign (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
-    (seed : MasterSeed) (message : Digest) :
-    m (Option (Counter × (ChainIndex → Digest))) :=
-  otsSignFrom parameter lay tree leaf seed message encodingAttemptLimit 0
+    (seed : MasterSeed) (message : Digest) : m (ChainIndex → Digest) := do
+  let encoding ← encode parameter lay tree leaf message
+  sequenceFin fun chainIdx => do
+    let secret ← deriveKey parameter (.ots lay tree leaf chainIdx) seed
+    chainWalk parameter lay tree leaf chainIdx 0 (encoding chainIdx).val secret
 
 def treeNode (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex)
     (seed : MasterSeed) : Nat → Nat → m Digest
@@ -577,14 +547,13 @@ def layerMessage (secretKey : SecretKey) (index : Index) (lay : Layer) : m Diges
   else
     ftsKey secretKey.parameter index secretKey.seed
 
-def signLayer (secretKey : SecretKey) (index : Index) (lay : Layer) : m (Option (LayerSignature lay)) := do
+def signLayer (secretKey : SecretKey) (index : Index) (lay : Layer) : m (LayerSignature lay) := do
   let tree := treeIndexAt index lay
   let leaf := leafIndexAt index lay
   let message ← layerMessage secretKey index lay
-  let some (counter, values) ← otsSign secretKey.parameter lay tree leaf secretKey.seed message
-    | return none
+  let values ← otsSign secretKey.parameter lay tree leaf secretKey.seed message
   let path ← treePath secretKey.parameter lay tree secretKey.seed leaf
-  return some ⟨counter, values, path⟩
+  return ⟨values, path⟩
 
 /-- Derive trials in increasing order, stopping at the first admissible digest. -/
 def signDigestLoop (secretKey : SecretKey) (message : Message) : Nat → Nat →
@@ -602,7 +571,7 @@ def sign (secretKey : SecretKey) (message : Message) : m (Option Signature) := d
   let secrets ← sequenceFin fun tree =>
     deriveKey secretKey.parameter (.fts index tree (leaves (ftsIndexOf tree))) secretKey.seed
   let ftsPath ← ftsOpen secretKey.parameter index leaves secretKey.seed
-  let some layers ← sequenceLayers (fun lay => signLayer secretKey index lay) | return none
+  let layers ← sequenceLayers (fun lay => signLayer secretKey index lay)
   let _ ← treeRoot secretKey.parameter topLayer rootTree secretKey.seed
   return some ⟨randomness, secrets, ftsPath, layers⟩
 

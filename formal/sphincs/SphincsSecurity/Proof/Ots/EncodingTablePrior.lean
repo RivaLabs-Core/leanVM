@@ -18,7 +18,7 @@ theorem referenceEncodingAllowed_nonempty (parameter : PublicParameter) (message
 
 noncomputable def referenceEncodingPrior (parameter : PublicParameter) (messages : EncodingPosition → Digest)
     (selections : ReferenceFamily) : PMF (canonicalEncodingInputs parameter → HashOutput) :=
-  (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections).bind
+  (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
     (fun rows => (PMF.uniformOfFintype (UniformTableSplit.Outside (referenceFamilyCell parameter messages) → HashOutput)).map
       (UniformTableSplit.join (referenceFamilyCell parameter messages) (referenceFamilyCell_injective parameter messages)
         (Function.uncurry rows)))

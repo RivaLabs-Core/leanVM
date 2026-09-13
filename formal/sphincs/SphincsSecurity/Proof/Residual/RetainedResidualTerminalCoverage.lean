@@ -84,7 +84,7 @@ theorem expected_initialMonitoredSource_full_unit_count_le
           (∑' result, Pr[= result | initialMonitoredSource key adversary encoding dummy exposed high q Finset.univ (proposalStop stopAfter) stopped] *
             result.2.1.memory.messageCalls.length) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) := by
   let state : ProposalState (gameInputs adversary) :=
-    ([], initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed, initialCertificateMonitor 1212415 stopped)
+    ([], initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed, initialCertificateMonitor 1413119 stopped)
   let law := proposalRun key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
     (referenceFamilyWords encoding.selections dummy)
     (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
@@ -93,7 +93,7 @@ theorem expected_initialMonitoredSource_full_unit_count_le
   have hvalid : MonitoredValid (gameInputs adversary) state.2 :=
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
   have hinv : ProposalInvariant key fixedProposalLength state :=
-    certificateProposalInvariant_initial key fixedProposalLength 1212415 _ stopped (fun _ => le_rfl)
+    certificateProposalInvariant_initial key fixedProposalLength 1413119 _ stopped (fun _ => le_rfl)
   have hproject : Prod.map id Prod.snd <$> law =
       initialMonitoredSource key adversary encoding dummy exposed high q Finset.univ (proposalStop stopAfter) stopped :=
     proposalRun_erasure key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)

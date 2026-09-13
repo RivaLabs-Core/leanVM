@@ -38,7 +38,7 @@ theorem referenceForgeryGame_remainingFts_le (dummy : OtsReferenceWords) (advers
     (add_le_add (FtsGuessHash.referenceForgeryGame_two_guesses dummy adversary budget hbudget) le_rfl)
 
 theorem forgeAdvantage_le_nearGuess_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
     (hsmall : q ≤ 3 * 2 ^ 114) :
     forgeAdvantage scheme adversary ≤
@@ -51,7 +51,7 @@ theorem forgeAdvantage_le_nearGuess_small_budget (dummy : OtsReferenceWords)
   simpa only [add_assoc] using h
 
 theorem forgeAdvantage_le_nearGuess_normalized_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
     (hsmall : q ≤ 3 * 2 ^ 114) :
     forgeAdvantage scheme adversary ≤

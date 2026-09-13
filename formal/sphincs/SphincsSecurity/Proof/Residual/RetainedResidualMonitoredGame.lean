@@ -80,7 +80,7 @@ private theorem probEvent_bind_add_le_const_add {A B : Type} (law : SPMF A) (nex
     _ ≤ _ := add_le_add (mul_le_of_le_one_left' tsum_probOutput_le_one) le_rfl
 
 theorem monitoredSourceGame_stop_add_strong_le (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (stopAfter : CertificateStopRule)
     (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     Pr[fun result => result.1 = none | monitoredSourceGame dummy adversary budget stopAfter] +
@@ -108,7 +108,7 @@ theorem monitoredSourceGame_stop_add_strong_le (dummy : OtsReferenceWords)
     hparameter' hencoding' rfl hcost hbudget
 
 theorem forgeAdvantage_le_monitored_bound_add_exception (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (stopAfter : CertificateStopRule)
     (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary ≤

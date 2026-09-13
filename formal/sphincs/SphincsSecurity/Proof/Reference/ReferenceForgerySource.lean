@@ -16,7 +16,7 @@ noncomputable def completedReferenceContact (parameter : PublicParameter) (f : Q
   { frontier := frontier
     before := before.2
     output := (decide (SigningTranscript.Valid before.1.1.2 ∧ ¬SigningTranscript.Contains before.1.1.2 before.1.1.1) && checked.1,
-      (FreeMonoid.of none) ^ 1212415 * (before.1.2 * checked.2))
+      (FreeMonoid.of none) ^ 1413119 * (before.1.2 * checked.2))
     after := answerTrace f (verify ⟨root, parameter⟩ before.1.1.1.message before.1.1.1.signature) }
 
 noncomputable def referenceForgeryRest (key : SecretKey) (f : QueryImpl HashSpec Id) (labels : CanonicalGraphLabels)
@@ -164,7 +164,7 @@ theorem referenceForgeryGame_support (inputs : Finset HashInput)
 theorem referenceForgeryRest_success (key : SecretKey) (f : QueryImpl HashSpec Id)
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) (before : AdversaryTrace)
     (hselected : selections = referenceTableSelection key f)
-    (hvalid : ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords selections dummy lay tree leaf))
+    (hvalid : ∀ lay tree leaf, Checksum.Valid (referenceFamilyWords selections dummy lay tree leaf))
     (hb : before ∈ support (referenceForgeryRest key f (canonicalGraphLabels key.parameter key.otsSecret key.ftsSecret f)
       selections dummy adversary))
     (hsuccess : (completedReferenceContact key.parameter f (referenceFamilyWords selections dummy)
@@ -204,7 +204,7 @@ theorem graphPrimitiveEvent_of_outcome_atRoot (key : SecretKey) (root : Digest) 
 theorem referenceForgeryGame_success (inputs : Finset HashInput)
     (hencoding : ∀ parameter, canonicalEncodingInputs parameter ⊆ inputs)
     (hgraph : ∀ parameter, canonicalGraphInputs parameter ⊆ inputs)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (adversary : Adversary) (sample : ReferenceForgerySample inputs)
     (hsample : sample ∈ support (referenceForgeryGame inputs hencoding dummy adversary))
     (hsuccess : (sample.context dummy).2.2.2.output.1 = true) :
@@ -227,7 +227,7 @@ theorem referenceForgeryGame_success (inputs : Finset HashInput)
 theorem referenceForgeryGame_cases (inputs : Finset HashInput)
     (hencoding : ∀ parameter, canonicalEncodingInputs parameter ⊆ inputs)
     (hgraph : ∀ parameter, canonicalGraphInputs parameter ⊆ inputs)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary) :
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf)) (adversary : Adversary) :
     Pr[fun sample => (sample.context dummy).2.2.2.output.1 = true | referenceForgeryGame inputs hencoding dummy adversary] ≤
       Pr[ReferenceForgerySample.ftsOutcome dummy | referenceForgeryGame inputs hencoding dummy adversary] +
       Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver inputs hencoding dummy adversary] := by
@@ -239,7 +239,7 @@ theorem referenceForgeryGame_cases (inputs : Finset HashInput)
   exact referenceForgeryGame_success inputs hencoding hgraph dummy hdummy adversary sample hsample hsuccess
 
 theorem forgeAdvantage_le_referenceForgery_cases (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary) :
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf)) (adversary : Adversary) :
     forgeAdvantage scheme adversary ≤
       Pr[ReferenceForgerySample.ftsOutcome dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +

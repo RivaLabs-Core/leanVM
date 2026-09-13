@@ -71,7 +71,7 @@ theorem markers_lazyRun_le {Result : Type} (parameter : PublicParameter) (inputs
     (∑' result, Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation) allowed] *
       ((OtsEncodingMarker.markers parameter (referenceFamilyWords selections dummy) (history * result.1.2)).card : ENNReal)) ≤
       ((OtsEncodingMarker.markers parameter (referenceFamilyWords selections dummy) history).card : ENNReal) +
-        (1722 / (Fintype.card Digest : ENNReal)) * ∑' result,
+        (1849 / (Fintype.card Digest : ENNReal)) * ∑' result,
           Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation) allowed] *
             (encodingCalls parameter result.1.2 : ENNReal) := by
   simp only [lazyRun_eq_simulate]
@@ -97,7 +97,7 @@ theorem markers_initial_lazyRun_le {Result : Type} (parameter : PublicParameter)
     (∑' result, Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation)
       (referenceEncodingAllowed parameter messages selections)] *
       ((OtsEncodingMarker.markers parameter (referenceFamilyWords selections dummy) result.1.2).card : ENNReal)) ≤
-        (1722 / (Fintype.card Digest : ENNReal)) * ∑' result,
+        (1849 / (Fintype.card Digest : ENNReal)) * ∑' result,
           Pr[= result | lazyRun parameter inputs hencoding outside (QueryPause.traced hashObservationTrace computation)
             (referenceEncodingAllowed parameter messages selections)] * (encodingCalls parameter result.1.2 : ENNReal) := by
   simpa only [one_mul, OtsEncodingMarker.markers_one, Finset.card_empty, Nat.cast_zero, zero_add] using

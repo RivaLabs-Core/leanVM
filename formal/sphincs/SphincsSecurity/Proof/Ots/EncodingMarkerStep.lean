@@ -27,7 +27,7 @@ theorem queryNewMarker_any_le (parameter : PublicParameter) (inputs : Finset Has
     (input : OracleWorld.Domain) :
     Pr[fun result => QueryNewMarker parameter (referenceFamilyWords selections dummy) history input result.1 |
       (lazyWorldImpl parameter inputs hencoding outside input).run allowed] ≤
-      (1722 / (Fintype.card Digest : ENNReal)) * ((if QueryClass.EncodingHash parameter input then 1 else 0 : Nat) : ENNReal) := by
+      (1849 / (Fintype.card Digest : ENNReal)) * ((if QueryClass.EncodingHash parameter input then 1 else 0 : Nat) : ENNReal) := by
   cases input with
   | inl input =>
       have hz : Pr[fun result => QueryNewMarker parameter (referenceFamilyWords selections dummy) history (.inl input) result.1 |
@@ -64,7 +64,7 @@ theorem markers_query_potential_le (parameter : PublicParameter) (inputs : Finse
     (∑' result, Pr[= result | (lazyWorldImpl parameter inputs hencoding outside input).run allowed] *
       ((markers parameter (referenceFamilyWords selections dummy) (history * hashObservationTrace input result.1)).card : ENNReal)) ≤
       ((markers parameter (referenceFamilyWords selections dummy) history).card : ENNReal) +
-        (1722 / (Fintype.card Digest : ENNReal)) * ((if QueryClass.EncodingHash parameter input then 1 else 0 : Nat) : ENNReal) := by
+        (1849 / (Fintype.card Digest : ENNReal)) * ((if QueryClass.EncodingHash parameter input then 1 else 0 : Nat) : ENNReal) := by
   cases input with
   | inl input =>
       simp only [hashObservationTrace, mul_one, QueryClass.EncodingHash, if_false, Nat.cast_zero,

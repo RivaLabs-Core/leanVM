@@ -12,7 +12,7 @@ set_option backward.isDefEq.respectTransparency false
 
 theorem initialMonitoredSource_strong_certificate (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
     (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
     (budget : Nat) (required : Finset FtsTree) (stopAfter : CertificateStopRule) (stopped : Bool)
@@ -59,7 +59,7 @@ theorem initialMonitoredSource_strong_certificate (key : SecretKey) (adversary :
 
 theorem initialMonitoredSource_strong_count (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
     (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
     (budget : Nat) (stopAfter : CertificateStopRule) (stopped : Bool)
@@ -81,7 +81,7 @@ def MonitoredStrongException {inputs : Finset HashInput} (result : Option (Forge
 
 theorem initialMonitoredSource_strong_le_count_add_exception (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
     (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
     (budget : Nat) (stopAfter : CertificateStopRule) (stopped : Bool) :
@@ -114,7 +114,7 @@ theorem initialMonitoredSource_strong_le_count_add_exception (key : SecretKey) (
 
 theorem initialMonitoredSource_stop_add_strong_le (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (dummy lay tree leaf))
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
     (budget : Nat) (stopAfter : CertificateStopRule) (stopped : Bool)
     (hparameter : key.parameter ∈ support sampleParameter)

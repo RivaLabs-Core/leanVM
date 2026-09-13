@@ -25,7 +25,10 @@ theorem match_allowed_cases (parameter : PublicParameter) (messages : EncodingPo
         ¬Match parameter messages words selections cell.val answer := by
   by_cases hc : cell ∈ Set.range (referenceFamilyCell parameter messages)
   · obtain ⟨row, rfl⟩ := hc
-    rw [referenceEncodingAllowed, UniformTableSplit.join_embed, encodingFamilyAllowed]
+    rw [referenceEncodingAllowed, UniformTableSplit.join_embed, encodingFamilyAllowed, encodingSelectionAllowed]
+    split_ifs with hrows
+    swap
+    · exact Or.inl rfl
     cases hs : selections row.1 with
     | none =>
         right
@@ -36,21 +39,19 @@ theorem match_allowed_cases (parameter : PublicParameter) (messages : EncodingPo
         contradiction
     | some selected =>
         obtain ⟨index, word⟩ := selected
-        simp only [encodingSelectionAllowed]
-        split_ifs with hfiber
-        · rw [FirstSuccessTable.allowed]
-          split_ifs with hlt heq
-          · right
-            intro answer ha hm
-            have hi := (FirstSuccessTable.mem_invalid decodeEncodingOutput answer).mp ha
-            obtain ⟨_, _, _, hd⟩ := hm
-            rw [hi] at hd
-            contradiction
-          · right
-            intro answer _
-            apply reference_cell_not_match parameter messages words selections row word ?_ answer
-            simpa only [heq] using hs
-          · exact Or.inl rfl
+        simp only [encodingSelectionRows]
+        rw [FirstSuccessTable.allowed]
+        split_ifs with hlt heq
+        · right
+          intro answer ha hm
+          have hi := (FirstSuccessTable.mem_invalid decodeEncodingOutput answer).mp ha
+          obtain ⟨_, _, _, hd⟩ := hm
+          rw [hi] at hd
+          contradiction
+        · right
+          intro answer _
+          apply reference_cell_not_match parameter messages words selections row word ?_ answer
+          simpa only [heq] using hs
         · exact Or.inl rfl
   · left
     exact UniformTableSplit.join_outside (referenceFamilyCell parameter messages)

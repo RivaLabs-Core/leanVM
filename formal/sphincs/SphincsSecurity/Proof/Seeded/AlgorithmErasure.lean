@@ -5,6 +5,38 @@ import SphincsSecurity.Proof.Scheme.StatementLemmas
 
 open OracleComp OracleSpec
 
+namespace SphincsSecurity.Concrete
+
+variable {m : Type → Type} [Monad m] [LawfulMonad m] [HasQuery HashSpec m]
+
+/-- The chain values the independent-secret signer reveals. -/
+def otsValues (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+    (secret : ChainIndex → Digest) (message : Digest) : m (ChainIndex → Digest) := do
+  let encoding ← encode parameter lay tree leaf message
+  sequenceFin fun chainIdx => chainWalk parameter lay tree leaf chainIdx 0 (encoding chainIdx).val (secret chainIdx)
+
+/-- One layer of the independent-secret signer, which cannot fail. -/
+def signLayerParts (secretKey : SecretKey) (index : Index) (lay : Layer) : m PaddedLayer := do
+  let message ← layerMessage secretKey index lay
+  let values ← otsValues secretKey.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
+    (secretKey.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay)) message
+  let path ← treePath secretKey.parameter lay (treeIndexAt index lay)
+    (secretKey.otsSecret lay (treeIndexAt index lay)) (leafIndexAt index lay)
+  return (BitVec.ofNat counterBits 0, values, path)
+
+theorem otsSign_eq (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
+    (secret : ChainIndex → Digest) (message : Digest) :
+    otsSign (m := m) parameter lay tree leaf secret message =
+      (fun values => some (BitVec.ofNat counterBits 0, values)) <$> otsValues parameter lay tree leaf secret message := by
+  simp only [otsSign, encodingAttemptLimit, otsSignFrom, encodeAttempt_eq, otsValues, bind_map_left, map_bind,
+    bind_pure_comp]
+
+theorem signLayer_eq (secretKey : SecretKey) (index : Index) (lay : Layer) :
+    signLayer (m := m) secretKey index lay = some <$> signLayerParts secretKey index lay := by
+  simp only [signLayer, signLayerParts, otsSign_eq, bind_map_left, map_bind, map_pure]
+
+end SphincsSecurity.Concrete
+
 namespace SphincsSecurity.Seeded
 
 set_option backward.isDefEq.respectTransparency false
@@ -38,23 +70,17 @@ theorem Erases.sequenceFin {ι : Type} {spec : OracleSpec ι} {α : Type} {n : N
       exact .pure _
 
 theorem Erases.sequenceLayers {α : Layer → Type} (known : QueryCache HashSpec)
-    (left right : (lay : Layer) → OracleComp HashSpec (Option (α lay)))
+    (left right : (lay : Layer) → OracleComp HashSpec (α lay))
     (h : ∀ lay, Erases known (left lay) (right lay)) :
     Erases known (Concrete.sequenceLayers left) (Concrete.sequenceLayers right) := by
   unfold Concrete.sequenceLayers
   apply (h bottomLayer).bind
   intro bottom
-  cases bottom with
-  | none => exact .pure _
-  | some bottom =>
-      apply (h middleLayer).bind
-      intro middle
-      cases middle with
-      | none => exact .pure _
-      | some middle =>
-          apply (h topLayer).bind
-          intro top
-          cases top <;> exact .pure _
+  apply (h middleLayer).bind
+  intro middle
+  apply (h topLayer).bind
+  intro top
+  exact .pure _
 
 theorem Erases.bind_map_right {ι : Type} {spec : OracleSpec ι} {α β γ : Type}
     {known : QueryCache spec} {left : OracleComp spec α} {right : OracleComp spec β}
@@ -102,31 +128,18 @@ theorem erases_oneTimePublicKey (lay : Layer) (tree : TreeIndex) (leaf : LeafInd
     (fun secret => Concrete.chainWalk parameter lay tree leaf chain 0 (chainLength - 1) secret)
     (fun _ => Erases.refl known _)
 
-theorem erases_otsSignFrom (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (message : Digest)
-    (attempts counter : Nat) :
-    Erases known (otsSignFrom parameter lay tree leaf seed message attempts counter : OracleComp HashSpec _)
-      (Concrete.otsSignFrom parameter lay tree leaf (tableOts outputs lay tree leaf) message attempts counter) := by
-  induction attempts generalizing counter with
-  | zero => exact .pure _
-  | succ attempts ih =>
-      simp only [otsSignFrom, Concrete.otsSignFrom]
-      apply (Erases.refl known (Concrete.encode parameter lay tree leaf message (BitVec.ofNat counterBits counter))).bind
-      intro encoding
-      cases encoding with
-      | none => exact ih _
-      | some encoding =>
-          apply Erases.bind _ _ _ (fun _ => Erases.pure _)
-          apply Erases.sequenceFin
-          intro chain
-          simpa only [pure_bind, secretDomain, tableOts, tableFts] using (erases_deriveKey known parameter seed outputs hknown (.inl (lay, tree, leaf, chain))).bind
-            (fun secret => Concrete.chainWalk parameter lay tree leaf chain 0 (encoding chain).val secret)
-            (fun secret => Concrete.chainWalk parameter lay tree leaf chain 0 (encoding chain).val secret)
-            (fun _ => Erases.refl known _)
-
 theorem erases_otsSign (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (message : Digest) :
     Erases known (otsSign parameter lay tree leaf seed message : OracleComp HashSpec _)
-      (Concrete.otsSign parameter lay tree leaf (tableOts outputs lay tree leaf) message) :=
-  erases_otsSignFrom known parameter seed outputs hknown lay tree leaf message _ _
+      (Concrete.otsValues parameter lay tree leaf (tableOts outputs lay tree leaf) message) := by
+  unfold otsSign Concrete.otsValues
+  apply (Erases.refl known (Concrete.encode parameter lay tree leaf message)).bind
+  intro encoding
+  apply Erases.sequenceFin
+  intro chain
+  simpa only [pure_bind, secretDomain, tableOts, tableFts] using (erases_deriveKey known parameter seed outputs hknown (.inl (lay, tree, leaf, chain))).bind
+    (fun secret => Concrete.chainWalk parameter lay tree leaf chain 0 (encoding chain).val secret)
+    (fun secret => Concrete.chainWalk parameter lay tree leaf chain 0 (encoding chain).val secret)
+    (fun _ => Erases.refl known _)
 
 theorem erases_treeNode (lay : Layer) (tree : TreeIndex) (level node : Nat) :
     Erases known (treeNode parameter lay tree seed level node : OracleComp HashSpec _)
@@ -205,23 +218,18 @@ theorem erases_layerMessage (root : Digest) (index : Index) (lay : Layer) :
 
 theorem erases_signLayer (root : Digest) (index : Index) (lay : Layer) :
     Erases known (signLayer ⟨seed, parameter, root⟩ index lay : OracleComp HashSpec _)
-      (Option.map (LayerSignature.ofPadded lay) <$> Concrete.signLayer (tableKey parameter root outputs) index lay) := by
-  simp only [signLayer, Concrete.signLayer, map_bind]
+      (LayerSignature.ofPadded lay <$> Concrete.signLayerParts (tableKey parameter root outputs) index lay) := by
+  simp only [signLayer, Concrete.signLayerParts, map_bind]
   apply (erases_layerMessage known parameter seed outputs hknown root index lay).bind
   intro message
   apply (erases_otsSign known parameter seed outputs hknown lay _ _ message).bind
-  intro signed
-  cases signed with
-  | none => simpa only [map_pure, Option.map_none] using Erases.pure (known := known) none
-  | some signed =>
-      rcases signed with ⟨counter, values⟩
-      have h := (erases_treePath known parameter seed outputs hknown lay
-        (Concrete.treeIndexAt index lay) (Concrete.leafIndexAt index lay)).map
-          (fun path => some (LayerSignature.mk counter values path))
-      simp only [Option.map_some, LayerSignature.ofPadded,
-        bind_pure_comp, Functor.map_map, tableKey] at h ⊢
-      convert h using 2
-      rfl
+  intro values
+  have h := (erases_treePath known parameter seed outputs hknown lay
+    (Concrete.treeIndexAt index lay) (Concrete.leafIndexAt index lay)).map
+      (fun path => LayerSignature.mk values path)
+  simp only [bind_pure_comp, Functor.map_map, tableKey] at h ⊢
+  convert h using 2
+  rfl
 
 theorem erases_selectedSecrets (index : Index) (leaves : IndexGroup → FtsLeaf) :
     Erases known
@@ -252,6 +260,7 @@ theorem erases_sign (root : Digest) (message : Message) :
   | none => exact .pure _
   | some attempt =>
       rcases attempt with ⟨randomness, index, leaves⟩
+      simp only [Concrete.signLayer_eq, Concrete.sequenceLayersOpt_some, liftM_map, bind_map_left]
       have hselected := (erases_selectedSecrets known parameter seed outputs hknown index leaves).lift_hash
       simp only [liftM_pure] at hselected
       apply hselected.bind_known
@@ -263,13 +272,10 @@ theorem erases_sign (root : Digest) (message : Message) :
       have hlift := hlayers.lift_hash
       simp only [liftM_map] at hlift
       apply hlift.bind_map_right
-      intro layers
-      cases layers with
-      | none => exact .pure _
-      | some parts =>
-          apply (erases_treeRoot known parameter seed outputs hknown topLayer Concrete.rootTree).lift_hash.bind
-          intro rootValue
-          exact .pure _
+      intro parts
+      apply (erases_treeRoot known parameter seed outputs hknown topLayer Concrete.rootTree).lift_hash.bind
+      intro rootValue
+      exact .pure _
 
 end Algorithms
 end SphincsSecurity.Seeded

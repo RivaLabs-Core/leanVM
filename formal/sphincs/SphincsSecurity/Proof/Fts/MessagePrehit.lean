@@ -101,7 +101,7 @@ theorem Concrete.signAfterDigest_some_randomness (f : QueryImpl HashSpec Id)
       (Concrete.signAfterDigest secretKey randomness index leaves) = some signature) :
     signature.randomness = randomness := by
   simp only [Concrete.signAfterDigest, evalWithAnswerFn_bind] at heval
-  cases hparts : evalWithAnswerFn f (Concrete.sequenceLayers fun lay => Concrete.signLayer secretKey index lay) with
+  cases hparts : evalWithAnswerFn f (Concrete.sequenceLayersOpt fun lay => Concrete.signLayer secretKey index lay) with
   | none => simp only [hparts, evalWithAnswerFn_pure, reduceCtorEq] at heval
   | some parts =>
       simp only [hparts, evalWithAnswerFn_bind, evalWithAnswerFn_pure, Option.some.injEq] at heval

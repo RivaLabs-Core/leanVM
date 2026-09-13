@@ -115,7 +115,7 @@ theorem observedInitialSource_hashCalls_le (parameter : PublicParameter) (hparam
   have hroot : context.key.root = canonicalGraphRoot context.graph :=
     initialKnown_root (referenceFamilyWords encoding.selections dummy) exposed labels hlabels high
   obtain ⟨hcost, hbound⟩ := context.rest_queryBound hroot hparameter adversary q hq
-  have hsource := FtsProbeSimulation.expanded_unloggedRetainedRest_queryBound context.oracle adversary context.key (q - 1212415) hbound
+  have hsource := FtsProbeSimulation.expanded_unloggedRetainedRest_queryBound context.oracle adversary context.key (q - 1413119) hbound
   have hcompatible : Compatible context (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed).memory := by
     refine ⟨?_, ?_, ?_, ?_, ?_⟩
     · simpa only [context, auxiliary, Context.words, Context.actual, initialContext, coordinateGraphLabels_value, initialState, initialMemory] using
@@ -130,7 +130,7 @@ theorem observedInitialSource_hashCalls_le (parameter : PublicParameter) (hparam
       (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) result ≠ 0 := by
     simpa only [context, auxiliary, Context.environment, Context.actual, Context.words, initialContext, coordinateGraphLabels_value] using hresult
   have h := observedRun_source_hashCalls_le context (unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩)
-    (hinputs context.key) (q - 1212415) hsource
+    (hinputs context.key) (q - 1413119) hsource
     (initialState inputs (referenceFamilyWords encoding.selections dummy) exposed) (initialState_rowsCovered _ _ exposed)
     hcompatible result hrun
   simp only [initialState, initialMemory] at h
@@ -188,7 +188,7 @@ noncomputable def initialMonitoredSource : SPMF (Option (Forgery × Bool) × Mon
     encoding.selections encoding.rows q required stopAfter
     (unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
     (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed,
-      initialCertificateMonitor 1212415 stopped)
+      initialCertificateMonitor 1413119 stopped)
 
 theorem initialMonitoredSource_hashCalls_le (hparameter : key.parameter ∈ support sampleParameter)
     (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
@@ -214,7 +214,7 @@ theorem initialMonitoredSource_resources
     encoding.selections encoding.rows q required stopAfter
     (unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
     (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed,
-      initialCertificateMonitor 1212415 stopped)
+      initialCertificateMonitor 1413119 stopped)
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
     (sourceInputs_unlogged_subset_gameInputs adversary key) ⟨le_rfl, bot_le, Nat.zero_le _⟩ result hresult
 
@@ -238,7 +238,7 @@ theorem expected_initialMonitoredSource_count_le_creationCost :
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) (referenceFamilyWords encoding.selections dummy)
     (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
     encoding.selections encoding.rows q required stopAfter (unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
-    (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed) 1212415 stopped
+    (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed) 1413119 stopped
     (initialAllowed_nonempty _ exposed) (initialState_rowsCovered _ _ exposed)
     (sourceInputs_unlogged_subset_gameInputs adversary key) (fun _ _ => rfl)
 
@@ -251,7 +251,7 @@ theorem expected_initialMonitoredSource_creationMass_le_messageCalls :
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) (referenceFamilyWords encoding.selections dummy)
     (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
     encoding.selections encoding.rows q required stopAfter (unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
-    (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed) 1212415 stopped
+    (initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed) 1413119 stopped
     (initialAllowed_nonempty _ exposed) (initialState_rowsCovered _ _ exposed)
     (sourceInputs_unlogged_subset_gameInputs adversary key)
   apply hpayment.trans

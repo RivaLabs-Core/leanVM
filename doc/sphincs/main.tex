@@ -34,7 +34,6 @@
 \newcommand{\tw}{\mathit{tw}}
 \newcommand{\qs}{q_{\mathrm{s}}}
 \newcommand{\amax}{A_{\max}}
-\newcommand{\cmax}{C_{\max}}
 \newcommand{\idx}{\mathit{idx}}
 \newcommand{\lay}{\mathit{lay}}
 \newcommand{\OtsSign}{\mathsf{Ots.sign}}
@@ -63,14 +62,14 @@ This specification defines a SPHINCS$^+$ variant with a lifetime of $2^{24}$ sig
 \begin{itemize}
    \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The classical bound is proved (Section~\ref{sec:security}); the quantum one is a target, not a proved statement (Section~\ref{sec:quantum}).}
   \item \textbf{Public key: 32 bytes.}
-  \item \textbf{Signature: 4924 bytes.}
-  \item \textbf{Verification: 497 hashes.}
-  \item \textbf{Key generation: 1.38M hashes.}
-  \item \textbf{Signing: approximately 190K hashes on average}, with a 1024-byte public cache.
+  \item \textbf{Signature: 5248 bytes.}
+  \item \textbf{Verification: at most 1148 hashes, about 721 on average.}
+  \item \textbf{Key generation: 1.61M hashes.}
+  \item \textbf{Signing: approximately 171K hashes on average}, with a 1024-byte public cache.
 \end{itemize}
 \end{abstract}
 
-The construction uses compressed variants of the Winternitz one-time signature (WOTS) and forest of random subsets (FORS), called WOTS$^+$C and FORS$^+$C~\cite{HK22C,KN25}. They are combined within the SPHINCS$^+$ framework~\cite{SPHINCSPLUS}. The definitions below specify the concrete variant completely.
+The construction uses the Winternitz one-time signature (WOTS) with a repeated checksum and the compressed forest of random subsets FORS$^+$C~\cite{HK22C,KN25}. They are combined within the SPHINCS$^+$ framework~\cite{SPHINCSPLUS}. The definitions below specify the concrete variant completely.
 
 \section{Hashing and parameters}
 \label{sec:parameters}
@@ -83,7 +82,7 @@ Let $\hash:\bits{*}\to\bits{256}$ be the hash function. Most operations use its 
 \]
 Here $P$ is a 128-bit public parameter and $\tw$ is a 128-bit \emph{tweak}: an address identifying the operation and its position in the construction. Appendix~\ref{sec:tweaks} gives every tweak's exact bytes. $\Truncate_r$ always keeps the first $r$ bits, with bits read least significant first within each byte.
 
-The message $m$ and master secret $S$ are each 256 bits. WOTS signs 128-bit values $M$. The signature contains a 128-bit randomizer $\rho$ and one 32-bit counter $c$ per WOTS signature. Derived signing secrets, chain values and Merkle nodes are 128 bits; write $\mathcal H=\bits n$.
+The message $m$ and master secret $S$ are each 256 bits. WOTS signs 128-bit values $M$. The signature contains a 128-bit randomizer $\rho$. Derived signing secrets, chain values and Merkle nodes are 128 bits; write $\mathcal H=\bits n$.
 
 \begin{center}
 \begin{tabular}{@{}lll@{}}
@@ -91,8 +90,9 @@ The message $m$ and master secret $S$ are each 256 bits. WOTS signs 128-bit valu
 Symbol & Value & Meaning\\
 \midrule
 $w$ & $3$ & bit-size of WOTS chain positions\\
-$v$ & $42$ & chains per WOTS key\\
-$T$ & $191$ & sum of the signed chain positions\\
+$\ell_1$ & $43$ & message digits per WOTS encoding\\
+$\ell_2$ & $3$ & checksum digits per WOTS encoding\\
+$v$ & $49$ & chains per WOTS key, $v=\ell_1+2\ell_2$\\
 $d$ & $3$ & layers, numbered from the top\\
 $(h_0,h_1,h_2)$ & $(12,7,7)$ & tree heights at those layers\\
 $h$ & $26$ & total height, $h=h_0+h_1+h_2$\\
@@ -100,7 +100,6 @@ $a$ & $10$ & height of each FORS tree\\
 $k$ & $15$ & digest indices, of which $k-1$ open trees\\
 $\qs$ & $2^{24}$ & signing requests allowed per key pair\\
 $\amax$ & $2^{32}$ & maximum randomizer trials per signature\\
-$\cmax$ & $2^{32}$ & maximum encoding attempts per WOTS signature\\
 \bottomrule
 \end{tabular}
 \end{center}
@@ -114,7 +113,7 @@ The component definitions below derive signing secrets as needed from this fixed
 \section{WOTS: signing with hash chains}
 \label{sec:ots}
 
-A WOTS key is identified by a layer $\lay$, a tree $\tau$ and a leaf $e$. It contains $v=42$ chains, each with eight positions, numbered $0$ through $7$. Fix such a key. For $0\leq i<v$, derive chain $i$'s starting secret and hash forward:
+A WOTS key is identified by a layer $\lay$, a tree $\tau$ and a leaf $e$. It contains $v=49$ chains, each with eight positions, numbered $0$ through $7$. Fix such a key. For $0\leq i<v$, derive chain $i$'s starting secret and hash forward:
 \[
 \begin{aligned}
   C_{i,0}&=\sk_{\lay,\tau,e,i}
@@ -129,39 +128,46 @@ The endpoints $\pk_{\lay,\tau,e,i}=C_{i,7}$ form the WOTS public key. Hashing th
     C_{0,7}\concat\cdots\concat C_{v-1,7}\right).
 \]
 
-To sign $M$, the signer encodes it as positions $x_0,\ldots,x_{v-1}$ and reveals $C_{i,x_i}$ from each chain. The verifier hashes these values forward to recover the endpoints. All valid encodings have the same sum:
-\[
-  \mathcal C=\left\{x\in\{0,\ldots,2^w-1\}^{v}:\sum_{i=0}^{v-1}x_i=T\right\}.
-\]
-Hashing forward can only increase a position. Thus one valid encoding cannot be changed into a distinct valid encoding merely by advancing along the chains.
+To sign $M$, the signer encodes it as positions $x_0,\ldots,x_{v-1}$ and reveals $C_{i,x_i}$ from each chain. The verifier hashes these values forward to recover the endpoints.
 
 \paragraph{Encoding a message.}
-$\Enc(P,\lay,\tau,e,M,c)$ first computes
+$\Enc(P,\lay,\tau,e,M)$ first computes
 \[
-  D=\Th\!\left(P,\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e),M\concat\LE_{32}(c)\right).
+  D=\Th\!\left(P,\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e),M\right)
 \]
-Interpret the first and last eight bytes of $D$ as little-endian integers $d_0,d_1$. Each supplies 21 consecutive three-bit positions:
+and reads $D$ as a 128-bit little-endian integer. Its \emph{message digits} are its base-8 digits, least significant first:
 \[
-  x_{21q+r}=\left\lfloor d_q/2^{3r}\right\rfloor\bmod 8,
-  \qquad q\in\{0,1\},\quad 0\leq r<21.
+  m_i=\left\lfloor D/8^i\right\rfloor\bmod 8,\qquad 0\leq i<\ell_1.
 \]
-Return $x$ if bit 63 of each $d_q$ is zero and $\sum_i x_i=T$; otherwise return $\bot$. The two zero bits ensure that an accepted encoding specifies all 128 bits of $D$.
+Since $3\ell_1=129$, these digits determine all 128 bits of $D$, and $m_{42}<4$. The \emph{checksum} and its \emph{checksum digits} are
+\[
+  c=\sum_{i=0}^{\ell_1-1}(7-m_i),\qquad
+  c_j=\left\lfloor c/8^j\right\rfloor\bmod 8,\quad 0\leq j<\ell_2.
+\]
+Since $c\leq7\ell_1=301<8^{\ell_2}$, the checksum digits determine $c$. The encoding lists the message digits followed by two copies of each checksum digit:
+\[
+  x=(m_0,\ldots,m_{42},c_0,c_0,c_1,c_1,c_2,c_2),
+\]
+that is, $x_i=m_i$ for $i<\ell_1$ and $x_{\ell_1+2j}=x_{\ell_1+2j+1}=c_j$. Encoding always succeeds.
+
+Hashing forward can only increase a position. Suppose the encoding $x'$ of a digest $D'$ satisfies $x'_i\geq x_i$ at every chain. Its message digits give $c'\leq c$ and its checksum digits give $c'\geq c$, so $c'=c$; then the message digits have equal sums, so $m'=m$ and $D'=D$. Thus one encoding cannot be changed into a distinct encoding merely by advancing along the chains.
+
+Each checksum digit is revealed on two chains, so lowering it means going back on both. Consequently, if $x'$ lies below $x$ at exactly one chain and by exactly one position, that chain carries a message digit, and $x'$ agrees with $x$ everywhere else except that it raises either one other message digit by one or both copies of $c_0$ by one. The security proof relies on this small set of candidates: at most $\ell_1$ for each lowered chain.
 
 \paragraph{Signing.}
-$\OtsSign(P,\lay,\tau,e,M)$ tries $c=0,\ldots,\cmax-1$ in order. At the first successful encoding $x$, it returns
+$\OtsSign(P,\lay,\tau,e,M)$ computes $x=\Enc(P,\lay,\tau,e,M)$ and returns
 \[
-  (c,\sigma),\qquad \sigma_i=C_{i,x_i},\quad 0\leq i<v.
+  \sigma,\qquad \sigma_i=C_{i,x_i},\quad 0\leq i<v.
 \]
-It returns $\bot$ if every counter fails.
 
 \paragraph{Recovering the leaf.}
-$\OtsLeaf(P,\lay,\tau,e,M,c,\sigma)$ recomputes $x=\Enc(P,\lay,\tau,e,M,c)$ and returns $\bot$ if encoding fails. Otherwise, for each $i$, start with $C'_{i,x_i}=\sigma_i$ and apply the chain recurrence from position $x_i+1$ through $7$. Return
+$\OtsLeaf(P,\lay,\tau,e,M,\sigma)$ recomputes $x=\Enc(P,\lay,\tau,e,M)$. For each $i$, start with $C'_{i,x_i}=\sigma_i$ and apply the chain recurrence from position $x_i+1$ through $7$. Return
 \[
   \Th\!\left(P,\mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e),C'_{0,7}\concat\cdots\concat C'_{v-1,7}\right).
 \]
 
 \label{rem:once}
-Each WOTS key in this construction signs one fixed value: a child-tree root or a FORS public key. Choosing the least successful counter makes repeated signing of that value reveal the same positions. Revealing different positions for the same key would let an adversary combine the smaller positions from both signatures.
+Each WOTS key in this construction signs one fixed value: a child-tree root or a FORS public key. The encoding is deterministic, so repeated signing of that value reveals the same positions. Revealing different positions for the same key would let an adversary combine the smaller positions from both signatures.
 
 \section{Merkle trees: authenticating WOTS keys}
 \label{sec:layer}
@@ -289,18 +295,21 @@ Given $\sk=(P,\rootnode,S)$ and a 256-bit message $m$, $\Sig(\sk,m)$ proceeds as
 \]
 Stop at the first $a$ for which $\Digest(P,\rootnode,m,\rho_a)$ is admissible, set $\rho=\rho_a$, and extract $\idx,u$. Return $\bot$ if no trial succeeds.
 \item Compute $(s,B)=\FtsOpen(P,\idx,u)$ and $M_{d-1}=\FtsKey(P,\idx)$.
-\item For $\lay=d-1,d-2,\ldots,0$, set $\tau=\tau_\lay(\idx)$ and $e=e_\lay(\idx)$. Compute $(c_\lay,\sigma_\lay)=\OtsSign(P,\lay,\tau,e,M_\lay)$, returning $\bot$ immediately on failure. Then compute
+\item For $\lay=d-1,d-2,\ldots,0$, set $\tau=\tau_\lay(\idx)$ and $e=e_\lay(\idx)$, and compute
 \[
-  A_\lay=\TreePath(P,\lay,\tau,e),\qquad
-  M_{\lay-1}=\TreeRoot(P,\lay,\tau).
+\begin{aligned}
+  \sigma_\lay&=\OtsSign(P,\lay,\tau,e,M_\lay),\\
+  A_\lay&=\TreePath(P,\lay,\tau,e),\\
+  M_{\lay-1}&=\TreeRoot(P,\lay,\tau).
+\end{aligned}
 \]
 \item Return
 \[
   \sigma=\left(\rho,(s_\kappa,B_\kappa)_{\kappa<k-1},
-    (c_\lay,\sigma_\lay,A_\lay)_{\lay<d}\right).
+    (\sigma_\lay,A_\lay)_{\lay<d}\right).
 \]
 \end{enumerate}
-The final value $M_{-1}=\rootnode$ is computed and discarded. Signing is deterministic and changes no secret state. Repeating a message returns the same signature, or the same failure.
+The final value $M_{-1}=\rootnode$ is computed and discarded. Only the randomizer search can fail. Signing is deterministic and changes no secret state. Repeating a message returns the same signature, or the same failure.
 
 \subsection{Verification}
 \label{sec:ver}
@@ -311,9 +320,9 @@ $\Ver(\pk,m,\sigma)$ rejects $\bot$ and malformed inputs. Otherwise, parse $\pk=
 \item Set $M_{d-1}=\FtsRec(P,\idx,u,s,B)$.
 \item For $\lay=d-1,d-2,\ldots,0$, set $\tau=\tau_\lay(\idx)$ and $e=e_\lay(\idx)$. Compute
 \[
-  X=\OtsLeaf(P,\lay,\tau,e,M_\lay,c_\lay,\sigma_\lay).
+  X=\OtsLeaf(P,\lay,\tau,e,M_\lay,\sigma_\lay)
 \]
-Reject if $X=\bot$. Otherwise set $M_{\lay-1}=\TreeFold(P,\lay,\tau,e,X,A_\lay)$.
+and set $M_{\lay-1}=\TreeFold(P,\lay,\tau,e,X,A_\lay)$.
 \item Accept exactly when $M_{-1}=\rootnode$.
 \end{enumerate}
 For an honestly generated signature, each WOTS recovery yields its original leaf and each authentication path yields its original root. Induction through the three layers therefore gives acceptance whenever signing succeeds.
@@ -323,24 +332,24 @@ For an honestly generated signature, each WOTS recovery yields its original leaf
 
 Serialize the public key as $\rootnode\concat P$, 32 bytes. Store the secret key as $P\concat S$, 48 bytes; its root is recomputed from them.
 
-A signature starts with $\rho$, followed by FORS openings in increasing $\kappa$, then WOTS signatures and their paths in increasing $\lay$. Each FORS opening contains $s_\kappa$ followed by its siblings in increasing height. Each layer contains $\LE_{32}(c_\lay)$, its $v$ chain values in increasing chain index, then its path in increasing height. The size is
+A signature starts with $\rho$, followed by FORS openings in increasing $\kappa$, then WOTS signatures and their paths in increasing $\lay$. Each FORS opening contains $s_\kappa$ followed by its siblings in increasing height. Each layer contains its $v$ chain values in increasing chain index, then its path in increasing height. The size is
 \[
   \underbrace{16}_{\rho}
   +\underbrace{(k-1)(1+a)\,16}_{\text{FORS openings}}
-  +\underbrace{d(4+v\,16)}_{\text{WOTS signatures}}
+  +\underbrace{d\,v\,16}_{\text{WOTS signatures}}
   +\underbrace{h\,16}_{\text{layer paths}}
-  =4924\text{ bytes}.
+  =5248\text{ bytes}.
 \]
 
-Count one call to $\hash$ regardless of input length. A valid signature takes exactly
+Count one call to $\hash$ regardless of input length. For an encoding $x$, write $|x|=\sum_ix_i$ for the chain steps the signer walks to reveal it. A valid signature whose layers carry the encodings $x^{(0)},x^{(1)},x^{(2)}$ takes exactly
 \[
   \underbrace{1}_{\text{digest}}
   +\underbrace{(k-1)(a+1)+1}_{\text{FORS}}
-  +\underbrace{d\bigl((2^w-1)v-T+2\bigr)}_{\text{WOTS}}
+  +\underbrace{\sum_{\lay<d}\bigl((2^w-1)v-|x^{(\lay)}|+2\bigr)}_{\text{WOTS}}
   +\underbrace{h}_{\text{paths}}
-  =497
+  =1217-\sum_{\lay<d}|x^{(\lay)}|
 \]
-hash calls to verify. A WOTS leaf takes $v+v(2^w-1)+1=337$ calls to derive and build. Key generation therefore takes $1+2^{12}\cdot337+(2^{12}-1)=1{,}384{,}448$ calls, including derivation of $P$.
+hash calls to verify: each layer hashes the encoding, the remaining chain steps and the leaf. Every encoding has $23\leq|x|\leq308$, so verification takes at most 1148 calls. For a uniform digest $D$, the expected value of $|x|$ is about $165.3$, so verification takes about 721 calls on average. A WOTS leaf takes $v+v(2^w-1)+1=393$ calls to derive and build. Key generation therefore takes $1+2^{12}\cdot393+(2^{12}-1)=1{,}613{,}824$ calls, including derivation of $P$.
 
 \section{Security}
 \label{sec:security}
@@ -388,12 +397,12 @@ With probability at least $1-2^{-256}$ over the master seed and the random oracl
 \end{theorem}
 
 \begin{proof}
-Fix a message $m$. Signing fails only if the randomizer search or one of the $d=3$ WOTS counter searches is exhausted. Whenever signing succeeds, verification accepts by the recovery argument in Section~\ref{sec:ver}.
+Fix a message $m$. Encoding always succeeds, so signing fails only if the randomizer search is exhausted. Whenever signing succeeds, verification accepts by the recovery argument in Section~\ref{sec:ver}.
 
-\emph{Randomizer search.} Fix the seed and the oracle answers used by key generation. These calls use neither the randomizer-derivation tweak (type~12) nor the message-digest tweak (type~9). Each trial uses a distinct derivation input, so its 128-bit randomizer is uniform and independent of the earlier trials. After $j$ failed trials, the next randomizer repeats an earlier value with probability at most $j2^{-128}$. Otherwise its digest query is fresh, and the last FORS index is zero with probability $2^{-a}=2^{-10}$. Thus
+Fix the seed and the oracle answers used by key generation. These calls use neither the randomizer-derivation tweak (type~12) nor the message-digest tweak (type~9). Each trial uses a distinct derivation input, so its 128-bit randomizer is uniform and independent of the earlier trials. After $j$ failed trials, the next randomizer repeats an earlier value with probability at most $j2^{-128}$. Otherwise its digest query is fresh, and the last FORS index is zero with probability $2^{-a}=2^{-10}$. Thus
 \[
 \begin{aligned}
-  \Pr[\text{randomizer search fails}]
+  \Pr[\Sig(\sk,m)=\bot]
   &\leq\left(1-2^{-10}+\amax2^{-128}\right)^{\amax}\\
   &\leq\left(1-2^{-11}\right)^{2^{32}}
   \leq 2^{-2^{21}}.
@@ -401,27 +410,9 @@ Fix a message $m$. Signing fails only if the randomizer search or one of the $d=
 \]
 Here $\amax2^{-128}=2^{-96}$, and we use $(1-p)^N\leq e^{-pN}\leq2^{-pN}$.
 
-\emph{WOTS counter search.} An encoding accepts exactly when its 42 three-bit positions sum to 191 and its two remaining bits are zero. Hence a uniform 128-bit digest is accepted with probability
+There are $2^{256}$ possible messages. A union bound shows that the probability of any message failing under one key is at most
 \[
-  \alpha=\frac{[z^{191}](1+z+\cdots+z^7)^{42}}{2^{128}}
-  =\frac{27362001415540541846731060490886528}{2^{128}}
-  \geq2^{-14},
-\]
-where $[z^r]$ denotes the coefficient of $z^r$. Condition on the seed and all oracle answers outside the encoding domain (type~4). If the randomizer search succeeds, this fixes the selected route and the value signed by each WOTS key: a FORS public key or a child-tree root. For the analysis, consider all three searches even if signing would stop at an earlier failure. At each of these keys, distinct counters give distinct encoding inputs, whose answers remain independent and uniform. The probability that all $\cmax=2^{32}$ counters fail is therefore
-\[
-  (1-\alpha)^{\cmax}\leq2^{-\alpha\cmax}\leq2^{-2^{18}}.
-\]
-The bound applies to each of the three layers; it does not require their failures to be independent.
-
-\emph{Combining the searches.} A union bound gives, for every fixed message,
-\[
-  \Pr[\Sig(\sk,m)=\bot]
-  \leq2^{-2^{21}}+3\cdot2^{-2^{18}}
-  \leq2^{-2^{18}+2}.
-\]
-There are $2^{256}$ possible messages. A second union bound shows that the probability of any message failing under one key is at most
-\[
-  2^{256}\cdot2^{-2^{18}+2}=2^{-2^{18}+258}<2^{-256}.
+  2^{256}\cdot2^{-2^{21}}=2^{-2^{21}+256}<2^{-256}.
 \]
 Since signing is deterministic and stateless, this conclusion also covers repeated messages and messages chosen adaptively.
 \end{proof}

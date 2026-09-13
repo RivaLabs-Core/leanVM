@@ -11,9 +11,9 @@ set_option backward.isDefEq.respectTransparency false
 
 noncomputable def verdict (result : Completed) : Bool × SigningBoundaryTrace :=
   (decide (SigningTranscript.Valid result.1.1.1.2 ∧ ¬SigningTranscript.Contains result.1.1.1.2 result.1.1.1.1) && result.2.1.1,
-    (FreeMonoid.of none) ^ 1212415 * (result.1.1.2 * result.2.1.2))
+    (FreeMonoid.of none) ^ 1413119 * (result.1.1.2 * result.2.1.2))
 
-theorem verdict_work (result : Completed) : (verdict result).2.hashCalls = 1212415 + completedWork result := by
+theorem verdict_work (result : Completed) : (verdict result).2.hashCalls = 1413119 + completedWork result := by
   simp only [verdict, SigningBoundaryTrace.hashCalls_mul, SigningBoundaryTrace.hashCalls_pow_none, completedWork]
 
 theorem referenceForgeryRest_verdict (key : SecretKey) (f : QueryImpl HashSpec Id) (labels : CanonicalGraphLabels)
@@ -89,7 +89,7 @@ theorem original_completedWork_le (dummy : OtsReferenceWords) (adversary : Adver
     (result : Completed)
     (hr : 𝒟[simulateQ (fixedAnswers (originalAnswers dummy adversary parameter otsSecret labels auxiliary)
       (FtsGuessSigning.secretTable ftsSecret)) (completedRun parameter (canonicalGraphRoot labels) labels adversary)] result ≠ 0) :
-    1212415 + completedWork result ≤ q := by
+    1413119 + completedWork result ≤ q := by
   have hv : 𝒟[referenceFamilyFrontierRest ⟨parameter, 0, otsSecret, ftsSecret⟩
       (programmedHash parameter otsSecret ftsSecret labels
         (finiteHashAnswer ∅ (canonicalGraphGameInputs adversary)
@@ -112,7 +112,7 @@ theorem fixed_original_completedRun_budget (dummy : OtsReferenceWords) (adversar
     (state : State Coordinate Digest PUnit) (result : Completed × State Coordinate Digest PUnit)
     (hr : fixedRun (SecretGuessObservation.environment (originalAnswers dummy adversary parameter otsSecret labels auxiliary)) secrets
       (completedRun parameter (canonicalGraphRoot labels) labels adversary) state result ≠ 0) :
-    1212415 + completedWork result.1 ≤ q ∧ result.2.probes ≤ state.probes + completedWork result.1 := by
+    1413119 + completedWork result.1 ≤ q ∧ result.2.probes ≤ state.probes + completedWork result.1 := by
   classical
   have hp : 𝒟[simulateQ (fixedAnswers (originalAnswers dummy adversary parameter otsSecret labels auxiliary) secrets)
       (completedRun parameter (canonicalGraphRoot labels) labels adversary)] result.1 ≠ 0 := by
@@ -135,7 +135,7 @@ theorem lazy_original_completedRun_budget (dummy : OtsReferenceWords) (adversary
     (hr : SecretGuessObservation.lazyRun
       (SecretGuessObservation.environment (originalAnswers dummy adversary parameter otsSecret labels auxiliary))
       (completedRun parameter (canonicalGraphRoot labels) labels adversary) (SecretGuessObservation.initialState PUnit.unit) result ≠ 0) :
-    1212415 + completedWork result.1 ≤ q ∧ result.2.probes ≤ completedWork result.1 := by
+    1413119 + completedWork result.1 ≤ q ∧ result.2.probes ≤ completedWork result.1 := by
   rw [← SecretGuessObservation.run_erasure _ _ _ (fun _ => Finset.univ_nonempty), RetainedObservation.bind_nonzero] at hr
   obtain ⟨secrets, _, hr⟩ := hr
   have h := fixed_original_completedRun_budget dummy adversary q hbound parameter otsSecret secrets labels auxiliary hauxiliary
@@ -151,7 +151,7 @@ theorem lazy_original_completedRun_probes (dummy : OtsReferenceWords) (adversary
     (hr : SecretGuessObservation.lazyRun
       (SecretGuessObservation.environment (originalAnswers dummy adversary parameter otsSecret labels auxiliary))
       (completedRun parameter (canonicalGraphRoot labels) labels adversary) (SecretGuessObservation.initialState PUnit.unit) result ≠ 0) :
-    1212415 + result.2.probes ≤ q := by
+    1413119 + result.2.probes ≤ q := by
   obtain ⟨hw, hp⟩ := lazy_original_completedRun_budget dummy adversary q hbound parameter otsSecret labels auxiliary hauxiliary result hr
   omega
 

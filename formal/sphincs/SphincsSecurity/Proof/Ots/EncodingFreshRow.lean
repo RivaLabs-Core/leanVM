@@ -20,21 +20,21 @@ theorem firstSuccess_allowed_fresh {n : Nat} (index : Fin n) (reference : Encodi
 
 theorem freshEncodingSupport_probability_le (reference : Encoding) (targets : Finset Encoding) (href : reference ∉ targets)
     (allowed : Finset HashOutput) (ha : allowed.Nonempty) (hallowed : FreshEncodingSupport reference allowed) :
-    Pr[fun output : HashOutput => truncateHash output ∈ TargetSum.decodingDigests targets | PMF.uniformOfFinset allowed ha] ≤
+    Pr[fun output : HashOutput => truncateHash output ∈ Checksum.decodingDigests targets | PMF.uniformOfFinset allowed ha] ≤
       (targets.card : ENNReal) / Fintype.card Digest := by
   rcases hallowed with rfl | hrestricted
-  · have h := TargetSum.decodingDigests_uniform_le targets
+  · have h := Checksum.decodingDigests_uniform_le targets
     simpa only [probEvent_eq_tsum_ite, probOutput_uniformSample, PMF.probOutput_eq_apply, PMF.uniformOfFinset_apply,
       Finset.mem_univ, if_true, Finset.card_univ] using h
-  · have hzero : Pr[fun output : HashOutput => truncateHash output ∈ TargetSum.decodingDigests targets |
+  · have hzero : Pr[fun output : HashOutput => truncateHash output ∈ Checksum.decodingDigests targets |
         PMF.uniformOfFinset allowed ha] = 0 := by
       simp only [probEvent_eq_tsum_ite, PMF.probOutput_eq_apply]
       apply ENNReal.tsum_eq_zero.mpr
       intro output
       by_cases hm : output ∈ allowed
-      · have hn : truncateHash output ∉ TargetSum.decodingDigests targets := by
+      · have hn : truncateHash output ∉ Checksum.decodingDigests targets := by
           intro hd
-          obtain ⟨word, hw, hdecode⟩ := TargetSum.mem_decodingDigests.mp hd
+          obtain ⟨word, hw, hdecode⟩ := Checksum.mem_decodingDigests.mp hd
           change decodeEncodingOutput output = some word at hdecode
           rcases hrestricted output hm with hi | hr
           · rw [hi] at hdecode
@@ -48,24 +48,23 @@ theorem freshEncodingSupport_probability_le (reference : Encoding) (targets : Fi
 
 theorem freshEncodingSupport_neighbor_le (reference : Encoding) (lowered : ChainIndex)
     (allowed : Finset HashOutput) (ha : allowed.Nonempty) (hallowed : FreshEncodingSupport reference allowed) :
-    Pr[fun output : HashOutput => truncateHash output ∈ TargetSum.decodingDigests (TargetSum.unitNeighbors reference lowered) |
-      PMF.uniformOfFinset allowed ha] ≤ 41 / (Fintype.card Digest : ENNReal) := by
-  have href : reference ∉ TargetSum.unitNeighbors reference lowered := by
+    Pr[fun output : HashOutput => truncateHash output ∈ Checksum.decodingDigests (Checksum.unitNeighbors reference lowered) |
+      PMF.uniformOfFinset allowed ha] ≤ 43 / (Fintype.card Digest : ENNReal) := by
+  have href : reference ∉ Checksum.unitNeighbors reference lowered := by
     intro h
-    obtain ⟨raised, ht⟩ := TargetSum.mem_unitNeighbors.mp h
-    exact ht.ne rfl
+    exact (Checksum.mem_unitNeighbors.mp h).ne rfl
   exact (freshEncodingSupport_probability_le reference _ href allowed ha hallowed).trans
-    (ENNReal.div_le_div_right (Nat.cast_le.mpr (TargetSum.unitNeighbors_card_le reference lowered)) _)
+    (ENNReal.div_le_div_right (Nat.cast_le.mpr (Checksum.unitNeighbors_card_le reference lowered)) _)
 
 theorem freshEncodingSupport_all_neighbors_le (reference : Encoding)
     (allowed : Finset HashOutput) (ha : allowed.Nonempty) (hallowed : FreshEncodingSupport reference allowed) :
-    Pr[fun output : HashOutput => truncateHash output ∈ TargetSum.decodingDigests (TargetSum.allUnitNeighbors reference) |
-      PMF.uniformOfFinset allowed ha] ≤ 1722 / (Fintype.card Digest : ENNReal) := by
-  have href : reference ∉ TargetSum.allUnitNeighbors reference := by
+    Pr[fun output : HashOutput => truncateHash output ∈ Checksum.decodingDigests (Checksum.allUnitNeighbors reference) |
+      PMF.uniformOfFinset allowed ha] ≤ 1849 / (Fintype.card Digest : ENNReal) := by
+  have href : reference ∉ Checksum.allUnitNeighbors reference := by
     intro h
-    obtain ⟨lowered, raised, ht⟩ := TargetSum.mem_allUnitNeighbors.mp h
+    obtain ⟨lowered, ht⟩ := Checksum.mem_allUnitNeighbors.mp h
     exact ht.ne rfl
   exact (freshEncodingSupport_probability_le reference _ href allowed ha hallowed).trans
-    (ENNReal.div_le_div_right (Nat.cast_le.mpr (TargetSum.allUnitNeighbors_card_le reference)) _)
+    (ENNReal.div_le_div_right (Nat.cast_le.mpr (Checksum.allUnitNeighbors_card_le reference)) _)
 
 end SphincsSecurity.Concrete

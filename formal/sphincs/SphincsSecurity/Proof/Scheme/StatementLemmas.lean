@@ -88,12 +88,12 @@ theorem verifyLayers_zero_eq (parameter : PublicParameter) (index : Index) (sign
     (message : Digest) :
     verifyLayers (m := m) parameter index signature 0 message = pure (some message) := rfl
 
-theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (signature : Signature)
+theorem verifyLayers_succ_eq [LawfulMonad m] (parameter : PublicParameter) (index : Index) (signature : Signature)
     (remaining : Nat) (message : Digest) :
     verifyLayers (m := m) parameter index signature (remaining + 1) message
       = (if hlayer : remaining < numLayers then
           (do
-            match ← otsLeaf parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
+            match ← otsLeafAttempt parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
                 (leafIndexAt index ⟨remaining, hlayer⟩) message
                 (signature.counter ⟨remaining, hlayer⟩)
                 (signature.chainValue ⟨remaining, hlayer⟩) with
@@ -107,9 +107,7 @@ theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (sign
         else pure none) := by
   rw [verifyLayers]
   split
-  · apply bind_congr
-    intro result
-    cases result <;> rfl
+  · simp only [otsLeafAttempt_eq, bind_map_left]
   · rfl
 
 attribute [local irreducible] verifyLayers
@@ -148,7 +146,7 @@ theorem sign_eq (secretKey : SecretKey) (message : Message) :
                 (ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index) :
                   OracleComp HashSpec (FtsTree → Fin ftsTreeHeight → Digest))
               let layers ← liftM
-                (sequenceLayers (fun lay => signLayer secretKey index lay) :
+                (sequenceLayersOpt (fun lay => signLayer secretKey index lay) :
                   OracleComp HashSpec
                     (Option (Layer → Counter × (ChainIndex → Digest) × (Fin maxLayerHeight → Digest))))
               match layers with
@@ -168,7 +166,7 @@ theorem sampleRandomness_eq :
     sampleRandomness = ($ᵗ Randomness : ProbComp Randomness) := rfl
 
 example : ∀ failure : Fin 4,
-    let result := (sequenceLayers (m := WriterT (List Nat) Id) fun lay =>
+    let result := (sequenceLayersOpt (m := WriterT (List Nat) Id) fun lay =>
       WriterT.mk (pure (if lay.val = failure.val then none else some lay.val, [lay.val]))).run
     (result.2, result.1.map List.ofFn) =
       ![([2, 1, 0], none), ([2, 1], none), ([2], none), ([2, 1, 0], some [0, 1, 2])] failure := by

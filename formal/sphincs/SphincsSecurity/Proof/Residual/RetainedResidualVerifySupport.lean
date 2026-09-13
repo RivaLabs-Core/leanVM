@@ -104,7 +104,7 @@ theorem fixedSourceRun_hash_success {Result : Type} {inputs : Finset HashInput} 
 
 theorem fixedSourceRun_verify_honest {inputs : Finset HashInput} (context : Context inputs)
     (memory : Memory) (hcompatible : Compatible context memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (message : Message) (signature : Signature) (after : Memory)
     (hresult : fixedSourceRun context
       (FtsProbeSimulation.liftOracleWorldLeft (scheme.verify ⟨context.key.root, context.key.parameter⟩ message signature))
@@ -120,7 +120,7 @@ theorem fixedSourceRun_verify_honest {inputs : Finset HashInput} (context : Cont
 
 theorem fixedSourceRun_rest_honest {inputs : Finset HashInput} (context : Context inputs)
     (memory : Memory) (hcompatible : Compatible context memory)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (context.dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, Checksum.Valid (context.dummy lay tree leaf))
     (hroot : context.key.root = canonicalGraphRoot context.graph) (adversary : Adversary) (forgery : Forgery) (after : Memory)
     (hresult : fixedSourceRun context
       (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨context.key.root, context.key.parameter⟩)

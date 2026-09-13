@@ -13,10 +13,10 @@ def publicSignLayer (known : Labels) (words : OtsReferenceWords) (selections : R
   let cost := layerMessageHashCost lay + search.2
   match search.1 with
   | none => (none, cost)
-  | some (counter, _) =>
+  | some (counter, word) =>
       (some (counter, knownFrontier known words lay (treeIndexAt index lay) (leafIndexAt index lay),
         knownTreePath known lay (treeIndexAt index lay) (leafIndexAt index lay)),
-        cost + 191 + authenticationHashCost lay)
+        cost + Checksum.signingSteps word + authenticationHashCost lay)
 
 structure PublicSigningPlan where
   randomness : Randomness
@@ -35,7 +35,7 @@ def publicSignPlan (known : Labels) (words : OtsReferenceWords) (selections : Re
   ((sequenceFin (m := Option) (fun lay => (layers lay).1)).map (fun parts =>
       ⟨randomness, knownFtsPath known index leaves, parts⟩),
     28504 + sequenceLayersHashCost layers +
-      if (sequenceFin (m := Option) (fun lay => (layers lay).1)).isSome then 1212415 else 0)
+      if (sequenceFin (m := Option) (fun lay => (layers lay).1)).isSome then 1413119 else 0)
 
 variable (key : SecretKey) (f : QueryImpl HashSpec Id) (words : OtsReferenceWords)
   (disclosed : Index → FtsTree → FtsLeaf → Prop) (known : Labels)

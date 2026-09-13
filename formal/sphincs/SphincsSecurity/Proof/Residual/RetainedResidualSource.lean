@@ -14,9 +14,9 @@ set_option backward.isDefEq.respectTransparency false
 noncomputable instance signatureFintype : Fintype Signature := by
   classical
   letI (lay : Layer) : Fintype (LayerSignature lay) := Fintype.ofEquiv
-    (Counter × (ChainIndex → Digest) × (Fin (layerHeight lay) → Digest))
-    { toFun := fun part => ⟨part.1, part.2.1, part.2.2⟩
-      invFun := fun part => (part.counter, part.chainValues, part.path)
+    ((ChainIndex → Digest) × (Fin (layerHeight lay) → Digest))
+    { toFun := fun part => ⟨part.1, part.2⟩
+      invFun := fun part => (part.chainValues, part.path)
       left_inv := fun _ => rfl
       right_inv := fun _ => rfl }
   exact Fintype.ofEquiv

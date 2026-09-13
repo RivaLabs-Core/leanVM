@@ -62,12 +62,12 @@ theorem protected_not_match (parameter : PublicParameter) (inputs : Finset HashI
 theorem prob_decode_word_le (word : Encoding) :
     Pr[fun answer => decodeEncodingOutput answer = some word | (liftM (PMF.uniformOfFintype HashOutput) : SPMF HashOutput)] ≤
       (Fintype.card Digest : ENNReal)⁻¹ := by
-  by_cases hexists : ∃ digest, TargetSum.decodeDigest digest = some word
+  by_cases hexists : ∃ digest, Checksum.decodeDigest digest = some word
   · obtain ⟨digest, hdigest⟩ := hexists
     calc
       _ ≤ Pr[fun answer => truncateHash answer = digest |
           (liftM (PMF.uniformOfFintype HashOutput) : SPMF HashOutput)] :=
-        probEvent_mono fun _ _ hdecode => TargetSum.decodeDigest_some_injective hdecode hdigest
+        probEvent_mono fun _ _ hdecode => Checksum.decodeDigest_some_injective hdecode hdigest
       _ = _ := HiddenLabelProbe.prob_truncate_eq digest
   · have hfalse (answer : HashOutput) : ¬decodeEncodingOutput answer = some word :=
       fun hdecode => hexists ⟨truncateHash answer, hdecode⟩

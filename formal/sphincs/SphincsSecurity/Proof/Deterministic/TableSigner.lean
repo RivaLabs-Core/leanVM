@@ -25,7 +25,7 @@ def tableSign (randomizers : RandomizerOutputs) (secretKey : SphincsSecurity.Sec
   | none => return none
   | some (randomness, index, leaves) => do
       let ftsPath ← Concrete.ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index)
-      match ← sequenceLayers (fun lay => Concrete.signLayer secretKey index lay) with
+      match ← sequenceLayersOpt (fun lay => Concrete.signLayer secretKey index lay) with
       | none => return none
       | some parts => do
           let _ ← Concrete.treeRoot secretKey.parameter topLayer rootTree (secretKey.otsSecret topLayer rootTree)
@@ -76,6 +76,7 @@ theorem erases_deterministicSign (known : QueryCache HashSpec) (parameter : Publ
   | none => exact .pure _
   | some attempt =>
       rcases attempt with ⟨randomness, index, leaves⟩
+      simp only [Concrete.signLayer_eq, Concrete.sequenceLayersOpt_some, bind_map_left]
       apply (erases_selectedSecrets known parameter seed outputs hsecrets index leaves).bind_known
       apply (erases_ftsOpen known parameter seed outputs hsecrets index leaves).bind
       intro path
@@ -83,12 +84,9 @@ theorem erases_deterministicSign (known : QueryCache HashSpec) (parameter : Publ
         (fun lay => erases_signLayer known parameter seed outputs hsecrets root index lay)
       rw [sequenceLayers_map] at hlayers
       apply hlayers.bind_map_right
-      intro layers
-      cases layers with
-      | none => exact .pure _
-      | some parts =>
-          apply (erases_treeRoot known parameter seed outputs hsecrets topLayer Concrete.rootTree).bind
-          intro rootValue
-          exact .pure _
+      intro parts
+      apply (erases_treeRoot known parameter seed outputs hsecrets topLayer Concrete.rootTree).bind
+      intro rootValue
+      exact .pure _
 
 end SphincsSecurity.Seeded

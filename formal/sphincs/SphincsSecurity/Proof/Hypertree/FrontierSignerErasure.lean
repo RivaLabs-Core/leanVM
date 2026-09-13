@@ -42,11 +42,11 @@ def frontierSignLayer (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
   let cost := layerMessageHashCost lay + search.2
   match search.1 with
   | none => (none, cost)
-  | some (counter, _) =>
+  | some (counter, word) =>
       (some (counter, frontier lay (treeIndexAt index lay) (leafIndexAt index lay),
         evalWithAnswerFn f (frontierTreePath parameter lay (treeIndexAt index lay)
           (words lay (treeIndexAt index lay)) (frontier lay (treeIndexAt index lay)) (leafIndexAt index lay))),
-        cost + 191 + authenticationHashCost lay)
+        cost + Checksum.signingSteps word + authenticationHashCost lay)
 
 theorem eval_frontierLayerMessage (key : SecretKey) (f : QueryImpl HashSpec Id)
     (words : OtsReferenceWords) (frontier : OtsFrontierValues)
@@ -75,7 +75,7 @@ theorem boundaryEval_signLayer_frontier (key : SecretKey) (f : QueryImpl HashSpe
       (otsSign key.parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
         (key.otsSecret lay (treeIndexAt index lay) (leafIndexAt index lay)) message) =
       (search.1.map (fun selected => (selected.1, values)),
-        (FreeMonoid.of none) ^ (search.2 + if search.1.isSome then 191 else 0)) := by
+        (FreeMonoid.of none) ^ (search.2 + search.1.elim 0 (fun selected => Checksum.signingSteps selected.2))) := by
     apply boundaryEval_otsSignFrom_frontier
     intro counter word hw chainIdx
     rw [hword counter word hw]
@@ -88,20 +88,20 @@ theorem boundaryEval_signLayer_frontier (key : SecretKey) (f : QueryImpl HashSpe
   simp only [signLayer, boundaryEval_bind, boundaryEval_layerMessage, hm, hots, hotsValue]
   change _ = ((match search.1 with
     | none => (none, layerMessageHashCost lay + search.2)
-    | some (counter, _) => (some (counter, values,
+    | some (counter, word) => (some (counter, values,
         evalWithAnswerFn f (frontierTreePath key.parameter lay (treeIndexAt index lay)
           (words lay (treeIndexAt index lay)) (frontier lay (treeIndexAt index lay)) (leafIndexAt index lay))),
-        layerMessageHashCost lay + search.2 + 191 + authenticationHashCost lay)).1,
+        layerMessageHashCost lay + search.2 + Checksum.signingSteps word + authenticationHashCost lay)).1,
       (FreeMonoid.of none) ^ (frontierSignLayer key.parameter f key.ftsSecret words frontier index lay).2)
   cases hs : search.1 with
   | none =>
       change (frontierLayerSearch key.parameter f key.ftsSecret words frontier index lay).1 = none at hs
-      simp only [Option.map_none, Option.isSome_none, Bool.false_eq_true, ↓reduceIte, Nat.add_zero,
+      simp only [Option.map_none, Option.elim_none, Nat.add_zero,
         boundaryEval_pure, frontierSignLayer, search, hs, mul_one, pow_add]
   | some selected =>
       obtain ⟨counter, word⟩ := selected
       change (frontierLayerSearch key.parameter f key.ftsSecret words frontier index lay).1 = some (counter, word) at hs
-      simp only [Option.map_some, Option.isSome_some, ↓reduceIte, boundaryEval_bind,
+      simp only [Option.map_some, Option.elim_some, boundaryEval_bind,
         boundaryEval_treePath, boundaryEval_pure, hpath, mul_one, frontierSignLayer,
         search, hs, pow_add, mul_assoc]
 
@@ -117,7 +117,7 @@ def frontierSignAfterDigest (parameter : PublicParameter) (f : QueryImpl HashSpe
         ftsPath := paths
         layers := fun lay => LayerSignature.ofPadded lay (parts lay) }),
     28504 + sequenceLayersHashCost layers +
-      if (sequenceFin (m := Option) (fun lay => (layers lay).1)).isSome then 1212415 else 0)
+      if (sequenceFin (m := Option) (fun lay => (layers lay).1)).isSome then 1413119 else 0)
 
 theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl HashSpec Id)
     (words : OtsReferenceWords) (frontier : OtsFrontierValues)
@@ -136,7 +136,7 @@ theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl H
   have hlayers := boundaryEval_sequenceLayers key.parameter f (fun lay => signLayer key index lay)
     (fun lay => frontierSignLayer key.parameter f key.ftsSecret words frontier index lay)
     (fun lay => boundaryEval_signLayer_frontier key f words frontier hfrontier index lay (hwords lay))
-  have hlayersValue : evalWithAnswerFn f (sequenceLayers (fun lay => signLayer key index lay)) =
+  have hlayersValue : evalWithAnswerFn f (sequenceLayersOpt (fun lay => signLayer key index lay)) =
       sequenceFin (m := Option) (fun lay => (frontierSignLayer key.parameter f key.ftsSecret words frontier index lay).1) := by
     rw [evalWithAnswerFn_sequenceLayers, hparts]
   simp only [signAfterDigest, frontierSignAfterDigest, boundaryEval_bind, boundaryEval_ftsOpen,
@@ -148,6 +148,6 @@ theorem boundaryEval_signAfterDigest_frontier (key : SecretKey) (f : QueryImpl H
   | some parts =>
       simp only [boundaryEval_bind, treeRoot, boundaryEval_treeNode, boundaryEval_pure,
         Option.map_some, Option.isSome_some, ↓reduceIte, mul_one, pow_add,
-        show 296 * 2 ^ layerHeight topLayer - 1 = 1212415 from rfl, mul_assoc]
+        show 345 * 2 ^ layerHeight topLayer - 1 = 1413119 from rfl, mul_assoc]
 
 end SphincsSecurity.Concrete

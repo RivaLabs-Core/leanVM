@@ -1,23 +1,14 @@
 import SphincsSecurity.Proof.Ots.EncodingNeighbors
-namespace SphincsSecurity.TargetSum
+namespace SphincsSecurity.Checksum
 
 open scoped BigOperators
 set_option backward.isDefEq.respectTransparency false
 attribute [local instance] Classical.propDecidable
 attribute [local irreducible] Finset.univ
 
+/-- The chain steps an adversary must invert to turn `reference` into `candidate`. -/
 def backwardWeight (reference candidate : Encoding) : Nat :=
   ∑ index : ChainIndex, ((reference index).val - (candidate index).val)
-
-theorem backwardWeight_balance {reference candidate : Encoding} (hsum : sum reference = sum candidate) :
-    backwardWeight reference candidate = backwardWeight candidate reference := by
-  have hpoint : ∀ index : ChainIndex,
-      ((reference index).val - (candidate index).val) + (candidate index).val =
-        ((candidate index).val - (reference index).val) + (reference index).val := by intro index; omega
-  have h := congrArg (fun f : ChainIndex → Nat => ∑ index, f index) (funext hpoint)
-  simp only [Finset.sum_add_distrib] at h
-  change backwardWeight reference candidate + sum candidate = backwardWeight candidate reference + sum reference at h
-  omega
 
 private theorem two_terms_le_sum (f : ChainIndex → Nat) {left right : ChainIndex} (hne : left ≠ right) :
     f left + f right ≤ ∑ index, f index := by
@@ -41,21 +32,12 @@ private theorem single_of_sum_one (f : ChainIndex → Nat) (hsum : (∑ index, f
   omega
 
 theorem unitNeighbor_of_backwardWeight_one {reference candidate : Encoding}
-    (hsum : sum reference = sum candidate) (hweight : backwardWeight reference candidate = 1) :
+    (hreference : Valid reference) (hcandidate : Valid candidate) (hweight : backwardWeight reference candidate = 1) :
     ∃ lowered, UnitNeighborAt reference candidate lowered := by
   obtain ⟨lowered, hlower, hothers⟩ := single_of_sum_one (fun index => (reference index).val - (candidate index).val) hweight
-  have hreverse : backwardWeight candidate reference = 1 := (backwardWeight_balance hsum).symm.trans hweight
-  obtain ⟨raised, hraise, hotherRaised⟩ := single_of_sum_one (fun index => (candidate index).val - (reference index).val) hreverse
-  refine ⟨lowered, raised, ?_, ?_, ?_, ?_⟩
-  · intro he
-    subst raised
-    omega
+  refine ⟨lowered, hreference, hcandidate, ?_, fun index hne => ?_⟩
   · omega
-  · omega
-  · intro index hl hr
-    have hdown := hothers index hl
-    have hup := hotherRaised index hr
-    apply Fin.ext
+  · have hdown := hothers index hne
     omega
 
 theorem eq_of_backwardWeight_zero {reference candidate : Encoding}
@@ -97,15 +79,15 @@ theorem backwardWeight_two_witness {reference candidate : Encoding} (hweight : 2
     have hn := not_exists.mp hlarge left
     omega
 
+/-- Two valid encodings are equal, unit neighbors, or apart by two backward steps on one chain or one step on each of two chains. -/
 theorem valid_encoding_classification {reference candidate : Encoding} (hreference : Valid reference) (hcandidate : Valid candidate) :
     reference = candidate ∨ (∃ lowered, UnitNeighborAt reference candidate lowered) ∨
       (∃ index, (candidate index).val + 2 ≤ (reference index).val) ∨
       ∃ left right, left ≠ right ∧ (candidate left).val < (reference left).val ∧ (candidate right).val < (reference right).val := by
-  have hsum : sum reference = sum candidate := hreference.trans hcandidate.symm
   by_cases hzero : backwardWeight reference candidate = 0
-  · exact Or.inl (eq_of_backwardWeight_zero hsum hzero)
+  · exact Or.inl (eq_of_backwardWeight_zero (hreference.1.trans hcandidate.1.symm) hzero)
   by_cases hone : backwardWeight reference candidate = 1
-  · exact Or.inr (Or.inl (unitNeighbor_of_backwardWeight_one hsum hone))
+  · exact Or.inr (Or.inl (unitNeighbor_of_backwardWeight_one hreference hcandidate hone))
   exact Or.inr (Or.inr (backwardWeight_two_witness (by omega)))
 
-end SphincsSecurity.TargetSum
+end SphincsSecurity.Checksum

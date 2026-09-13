@@ -115,8 +115,8 @@ theorem avoidsMessage_treePath (parameter : PublicParameter) (f : QueryImpl Hash
 theorem avoidsMessage_encode (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
     (message : Digest) (counter : Counter) :
-    AvoidsMessageQueries parameter f (encode parameter lay tree leafIdx message counter) := by
-  simp only [encode]
+    AvoidsMessageQueries parameter f (encodeAttempt parameter lay tree leafIdx message counter) := by
+  simp only [encodeAttempt]
   apply AvoidsMessageQueries.bind
   · exact AvoidsMessageQueries.tweakableHash parameter f _ (by simp) _
   · exact AvoidsMessageQueries.pure parameter f _
@@ -214,7 +214,7 @@ theorem avoidsMessage_signLayer (f : QueryImpl HashSpec Id) (secretKey : SecretK
 def signAfterDigest (secretKey : SecretKey) (randomness : Randomness) (index : Index)
     (leaves : IndexGroup → FtsLeaf) : OracleComp HashSpec (Option Signature) := do
   let ftsPath ← ftsOpen secretKey.parameter index leaves (secretKey.ftsSecret index)
-  let layers ← sequenceLayers fun lay => signLayer secretKey index lay
+  let layers ← sequenceLayersOpt fun lay => signLayer secretKey index lay
   match layers with
   | none => return none
   | some parts => do
@@ -233,7 +233,7 @@ theorem avoidsMessage_signAfterDigest (f : QueryImpl HashSpec Id) (secretKey : S
   apply AvoidsMessageQueries.bind
   · exact avoidsMessage_ftsOpen secretKey.parameter f index leaves (secretKey.ftsSecret index)
   apply AvoidsMessageQueries.bind
-  · unfold sequenceLayers
+  · unfold sequenceLayersOpt
     apply AvoidsMessageQueries.bind (avoidsMessage_signLayer f secretKey index bottomLayer)
     split
     · apply AvoidsMessageQueries.bind (avoidsMessage_signLayer f secretKey index middleLayer)

@@ -47,8 +47,8 @@ theorem honestNode_zero_eq_leafHash :
 /-- **The one-time signature.** -/
 theorem otsLeaf_extract (message : Digest) (counter : Counter) (values : ChainIndex → Digest)
     (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some codeword)
-    (hleaf : evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter values)
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some codeword)
+    (hleaf : evalWithAnswerFn f (otsLeafAttempt parameter lay tree leaf message counter values)
       = some (honestNode f parameter lay tree secret 0 leaf.val)) :
     (∀ chainIdx, values chainIdx
         = honestChain f parameter lay tree leaf chainIdx (secret leaf chainIdx)
@@ -68,13 +68,13 @@ theorem otsLeaf_extract (message : Digest) (counter : Counter) (values : ChainIn
         (fun chainIdx => walkValue f parameter lay tree leaf chainIdx (codeword chainIdx).val
           (values chainIdx) (chainLength - 1 - (codeword chainIdx).val)))
       = honestNode f parameter lay tree secret 0 leaf.val := by
-    simp only [otsLeaf, evalWithAnswerFn_bind, evalWithAnswerFn_pure, hencode,
+    simp only [otsLeafAttempt, evalWithAnswerFn_bind, evalWithAnswerFn_pure, hencode,
       evalWithAnswerFn_sequenceFin] at hleaf
     simpa [walkValue, recoverChain] using hleaf
   by_cases hpayload : (leafPayload fun chainIdx => walkValue f parameter lay tree leaf chainIdx
       (codeword chainIdx).val (values chainIdx) (chainLength - 1 - (codeword chainIdx).val))
       = leafPayload (honestEndpoints f parameter lay tree secret leaf)
-  · have hendpoints := TargetSum.leafPayload_injective hpayload
+  · have hendpoints := leafPayload_injective hpayload
     have hchains : ∀ chainIdx : ChainIndex,
         values chainIdx = honestChain f parameter lay tree leaf chainIdx (secret leaf chainIdx)
             (codeword chainIdx).val

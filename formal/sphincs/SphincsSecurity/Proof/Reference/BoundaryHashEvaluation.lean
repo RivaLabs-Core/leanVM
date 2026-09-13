@@ -9,11 +9,11 @@ open _root_.OracleComp OracleSpec ENNReal
 set_option backward.isDefEq.respectTransparency false
 
 def authenticationHashCost (lay : Layer) : Nat :=
-  ∑ level : Fin maxLayerHeight, if level.val < layerHeight lay then 296 * 2 ^ level.val - 1 else 0
+  ∑ level : Fin maxLayerHeight, if level.val < layerHeight lay then 345 * 2 ^ level.val - 1 else 0
 
 def layerMessageHashCost (lay : Layer) : Nat :=
   if hbelow : lay.val + 1 < numLayers then
-    296 * 2 ^ layerHeight ⟨lay.val + 1, hbelow⟩ - 1
+    345 * 2 ^ layerHeight ⟨lay.val + 1, hbelow⟩ - 1
   else 28659
 
 end SphincsSecurity.Concrete
@@ -124,8 +124,8 @@ theorem boundaryEval_sequenceLayers {α : Type} (parameter : PublicParameter)
     (layers : Layer → Option α × Nat)
     (hlayers : ∀ lay, boundaryEval parameter f (computation lay) =
       ((layers lay).1, (FreeMonoid.of none) ^ (layers lay).2)) :
-    boundaryEval parameter f (sequenceLayers computation) =
-      (evalWithAnswerFn f (sequenceLayers computation),
+    boundaryEval parameter f (sequenceLayersOpt computation) =
+      (evalWithAnswerFn f (sequenceLayersOpt computation),
         (FreeMonoid.of none) ^ sequenceLayersHashCost layers) := by
   have hvalues (lay : Layer) : evalWithAnswerFn f (computation lay) = (layers lay).1 := by
     rw [← boundaryEval_fst parameter f, hlayers]
@@ -133,7 +133,7 @@ theorem boundaryEval_sequenceLayers {α : Type} (parameter : PublicParameter)
   cases hb : (layers bottomLayer).1 <;>
     cases hm : (layers middleLayer).1 <;>
     cases ht : (layers topLayer).1 <;>
-    simp [sequenceLayers, boundaryEval_bind, hvalues, hlayers, hb, hm, ht,
+    simp [sequenceLayersOpt, boundaryEval_bind, hvalues, hlayers, hb, hm, ht,
       sequenceLayersHashCost, pow_add]
 
 theorem boundaryEval_chainWalk (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
@@ -153,20 +153,20 @@ theorem boundaryEval_chainWalk (parameter : PublicParameter) (f : QueryImpl Hash
 theorem boundaryEval_oneTimePublicKey (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (secret : ChainIndex → Digest) :
     boundaryEval parameter f (oneTimePublicKey parameter lay tree leaf secret) =
-      (evalWithAnswerFn f (oneTimePublicKey parameter lay tree leaf secret), (FreeMonoid.of none) ^ 294) := by
+      (evalWithAnswerFn f (oneTimePublicKey parameter lay tree leaf secret), (FreeMonoid.of none) ^ 343) := by
   rw [oneTimePublicKey]
   have h := boundaryEval_sequenceFin parameter f
     (fun chainIdx => chainWalk parameter lay tree leaf chainIdx 0 (chainLength - 1) (secret chainIdx))
     (fun _ => chainLength - 1)
     (fun chainIdx => congrArg Prod.snd (boundaryEval_chainWalk _ _ _ _ _ _ _ _ _ (by omega)))
   simpa only [evalWithAnswerFn_sequenceFin, Finset.sum_const, Finset.card_univ, Fintype.card_fin,
-    smul_eq_mul, show numChains * (chainLength - 1) = 294 from rfl] using h
+    smul_eq_mul, show numChains * (chainLength - 1) = 343 from rfl] using h
 
 theorem boundaryEval_treeNode (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest) (level nodeIdx : Nat) :
     boundaryEval parameter f (treeNode parameter lay tree secret level nodeIdx) =
       (evalWithAnswerFn f (treeNode parameter lay tree secret level nodeIdx),
-        (FreeMonoid.of none) ^ (296 * 2 ^ level - 1)) := by
+        (FreeMonoid.of none) ^ (345 * 2 ^ level - 1)) := by
   apply boundaryEval_eq_of_snd
   induction level generalizing nodeIdx with
   | zero =>

@@ -11,7 +11,7 @@ noncomputable def forcedNearDeferredGame (dummy : OtsReferenceWords) (adversary 
   let parameter ← 𝒟[sampleParameter]
   let otsSecret ← 𝒟[sampleOtsSecrets]
   let selections ← 𝒟[FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit]
-  let rows ← 𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections]
+  let rows ← 𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections]
   let labels ← 𝒟[PMF.uniformOfFintype CanonicalGraphLabels]
   (fun result => decide (completedNearCertificate parameter (canonicalGraphRoot labels) result.1.1)) <$>
     deferredForcedRun parameter (canonicalGraphRoot labels) otsSecret labels (canonicalGraphGameInputs adversary)
@@ -27,8 +27,7 @@ theorem forcedNearGame_deferred (dummy : OtsReferenceWords) (adversary : Adversa
   funext otsSecret
   apply congrArg (𝒟[FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit] >>= ·)
   funext selections
-  apply congrArg (𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-    decodeEncodingOutput_invalid_nonempty selections] >>= ·)
+  apply congrArg (𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections] >>= ·)
   funext rows
   rw [RetainedObservation.bind_comm]
   apply congrArg (𝒟[PMF.uniformOfFintype CanonicalGraphLabels] >>= ·)
@@ -62,7 +61,7 @@ theorem deferredForcedRun_original_budget (dummy : OtsReferenceWords) (adversary
       (canonicalGraphGameInputs adversary → Finset HashOutput))
     (hr : deferredForcedRun parameter (canonicalGraphRoot labels) otsSecret labels (canonicalGraphGameInputs adversary)
       (canonicalEncodingInputs_subset_gameInputs adversary parameter) auxiliary.selections auxiliary.rows dummy slot adversary result ≠ 0) :
-    1212415 + completedWork result.1.1 ≤ q ∧ result.1.2.probes ≤ completedWork result.1.1 := by
+    1413119 + completedWork result.1.1 ≤ q ∧ result.1.2.probes ≤ completedWork result.1.1 := by
   have hp : (Prod.fst <$> deferredForcedRun parameter (canonicalGraphRoot labels) otsSecret labels
       (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary parameter)
       auxiliary.selections auxiliary.rows dummy slot adversary) result.1 ≠ 0 := by

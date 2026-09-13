@@ -450,14 +450,14 @@ theorem stop_add_messages_le_expected_primitivePotential {Result : Type} {inputs
   | some answer => simp only [reduceCtorEq, if_false, zero_le]
 
 theorem primitiveLivePotential_initial_le (inputs : Finset HashInput) (words : OtsReferenceWords)
-    (exposed : InitialPublicLabels words) (budget : Nat) (hcost : 1212415 ≤ budget)
+    (exposed : InitialPublicLabels words) (budget : Nat) (hcost : 1413119 ≤ budget)
     (hbudget : 2 * budget ≤ 2 ^ digestBits) :
     primitiveLivePotential budget (initialState inputs words exposed).memory ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) := by
-  have hc : (1212415 : ℝ) ≤ budget := by exact_mod_cast hcost
+  have hc : (1413119 : ℝ) ≤ budget := by exact_mod_cast hcost
   have hb : 2 * (budget : ℝ) ≤ 2 ^ digestBits := by exact_mod_cast hbudget
   have hs : (0 : ℝ) < 2 ^ digestBits := by positivity
-  have hm := PrimitiveMessagePotential.mono_remaining (2 ^ digestBits) 0 ((budget : ℝ) - 1212415) budget
+  have hm := PrimitiveMessagePotential.mono_remaining (2 ^ digestBits) 0 ((budget : ℝ) - 1413119) budget
     (by linarith) (by linarith) (by linarith)
   rw [PrimitiveMessagePotential.initial _ (budget : ℝ) hs.ne'] at hm
   simpa only [primitiveLivePotential, primitiveContinuation, initialState, initialMemory, List.length_nil,
@@ -489,7 +489,7 @@ theorem initialMonitoredSource_joint_primitive_messages (key : SecretKey) (adver
       initialMonitoredSource key adversary encoding dummy exposed high budget required stopAfter stopped = native := by
     exact monitoredRun_erasure key inputs (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
       words publicReplies encoding.selections encoding.rows budget required stopAfter source
-      (initial, initialCertificateMonitor 1212415 stopped)
+      (initial, initialCertificateMonitor 1413119 stopped)
   have hnativeCost (result : Option (Forgery × Bool) × State inputs) (hr : native result ≠ 0) :
       result.2.memory.external.hashCalls ≤ budget := by
     rw [← herasure, map_eq_bind_pure_comp, RetainedObservation.bind_nonzero] at hr
@@ -510,7 +510,7 @@ theorem initialMonitoredSource_joint_primitive_messages (key : SecretKey) (adver
     (ResidualByteFrontend.replyClean_empty _) (Nat.zero_le _) hd hnativeCost
   obtain ⟨result, hr⟩ := lazyRun_supported_result key.parameter inputs
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) words publicReplies encoding.selections encoding.rows computation initial ha
-  have hminimum : 1212415 ≤ budget :=
+  have hminimum : 1413119 ≤ budget :=
     (lazyRun_source_hashCalls_mono inputs words publicReplies encoding.selections encoding.rows key
       (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) source hin initial ha hc result hr).trans (hnativeCost result hr)
   have h := (stop_add_messages_le_expected_primitivePotential budget native).trans

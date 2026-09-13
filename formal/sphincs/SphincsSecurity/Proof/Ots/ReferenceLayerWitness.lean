@@ -15,8 +15,8 @@ def EncodingOutputMatch (trace : Trace) : Prop :=
 
 theorem equal_word_reference (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (trace : Trace)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some (words lay tree leaf))
-    (hrun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values)) :
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some (words lay tree leaf))
+    (hrun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values)) :
     (∃ selected, selections ⟨lay, tree, leaf⟩ = some selected ∧ message = messages ⟨lay, tree, leaf⟩ ∧
       counter = BitVec.ofNat counterBits selected.1.val) ∨ EncodingOutputMatch parameter words messages selections trace := by
   let position : EncodingPosition := ⟨lay, tree, leaf⟩
@@ -32,7 +32,7 @@ theorem equal_word_reference (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
         exact Or.inl ⟨selected, rfl, (digestBytes_injective hm).symm, (bytesLE_injective hc).symm⟩
   · refine Or.inr ⟨(input, f input), ?_, ?_, position, ⟨_, rfl⟩, hreference, ?_⟩
     · apply hrun.bind_left
-      simp only [encode, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
+      simp only [encodeAttempt, queriedInputs_bind, queriedInputs_tweakableHash, queriedInputs_pure,
         List.append_nil, List.mem_singleton, input, position, EncodingPosition.domain]
     · have hcounter : counter.toNat < encodingAttemptLimit := by
         simpa only [encodingAttemptLimit, counterBits] using counter.isLt
@@ -43,11 +43,11 @@ theorem equal_word_reference (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
 theorem layer_reference_classification (lay : Layer) (tree : TreeIndex) (secret : LeafIndex → ChainIndex → Digest)
     (leaf : LeafIndex) (hleafIndex : leaf.val < 2 ^ layerHeight lay) (path : Nat → Digest)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (candidate : Encoding) (leafValue : Digest) (trace : Trace)
-    (hvalid : TargetSum.Valid (words lay tree leaf))
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leaf message counter) = some candidate)
-    (hots : evalWithAnswerFn f (otsLeaf parameter lay tree leaf message counter values) = some leafValue)
+    (hvalid : Checksum.Valid (words lay tree leaf))
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) = some candidate)
+    (hots : evalWithAnswerFn f (otsLeafAttempt parameter lay tree leaf message counter values) = some leafValue)
     (hfold : foldValue f parameter lay tree leaf path leafValue (layerHeight lay) = honestNode f parameter lay tree secret (layerHeight lay) 0)
-    (hotsRun : ContainsRun f trace (otsLeaf parameter lay tree leaf message counter values))
+    (hotsRun : ContainsRun f trace (otsLeafAttempt parameter lay tree leaf message counter values))
     (hfoldRun : ContainsRun f trace (treeFold parameter lay tree leaf path (layerHeight lay) leafValue)) :
     (∃ selected, selections ⟨lay, tree, leaf⟩ = some selected ∧ message = messages ⟨lay, tree, leaf⟩ ∧
       counter = BitVec.ofNat counterBits selected.1.val ∧ candidate = words lay tree leaf ∧

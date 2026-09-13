@@ -266,7 +266,7 @@ theorem verifyLayers_succ_extract (f : QueryImpl HashSpec Id) (parameter : Publi
     (message : Digest) (target : Digest)
     (hverify : evalWithAnswerFn f
         (verifyLayers parameter index signature (remaining + 1) message) = some target) :
-    ∃ leafValue, evalWithAnswerFn f (otsLeaf parameter ⟨remaining, hlayer⟩
+    ∃ leafValue, evalWithAnswerFn f (otsLeafAttempt parameter ⟨remaining, hlayer⟩
           (treeIndexAt index ⟨remaining, hlayer⟩) (leafIndexAt index ⟨remaining, hlayer⟩) message
           (signature.counter ⟨remaining, hlayer⟩) (signature.chainValue ⟨remaining, hlayer⟩))
         = some leafValue
@@ -274,7 +274,7 @@ theorem verifyLayers_succ_extract (f : QueryImpl HashSpec Id) (parameter : Publi
           (foldValue f parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
             (leafIndexAt index ⟨remaining, hlayer⟩) (signaturePath signature ⟨remaining, hlayer⟩)
             leafValue (layerHeight ⟨remaining, hlayer⟩))) = some target := by
-  rcases hleaf : evalWithAnswerFn f (otsLeaf parameter ⟨remaining, hlayer⟩
+  rcases hleaf : evalWithAnswerFn f (otsLeafAttempt parameter ⟨remaining, hlayer⟩
       (treeIndexAt index ⟨remaining, hlayer⟩) (leafIndexAt index ⟨remaining, hlayer⟩) message
       (signature.counter ⟨remaining, hlayer⟩) (signature.chainValue ⟨remaining, hlayer⟩))
     with _ | leafValue

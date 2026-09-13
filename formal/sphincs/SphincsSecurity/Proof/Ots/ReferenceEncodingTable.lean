@@ -8,11 +8,7 @@ open _root_.OracleComp OracleSpec ENNReal
 attribute [local instance] Classical.propDecidable
 set_option backward.isDefEq.respectTransparency false
 
-def decodeEncodingOutput (output : HashOutput) : Option Encoding := TargetSum.decodeDigest (truncateHash output)
-
-theorem decodeEncodingOutput_invalid_nonempty : (FirstSuccessTable.invalid decodeEncodingOutput).Nonempty := by
-  refine ⟨0, (FirstSuccessTable.mem_invalid _ _).mpr ?_⟩
-  decide
+def decodeEncodingOutput (output : HashOutput) : Option Encoding := Checksum.decodeDigest (truncateHash output)
 
 def referenceEncodingTable (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (position : EncodingPosition) (message : Digest) (attempts start : Nat) : Fin attempts → HashOutput :=
@@ -25,10 +21,10 @@ def encodingTableResult {n : Nat} (table : Fin n → HashOutput) (start : Nat) :
 
 theorem eval_encode_eq_decodeEncodingOutput (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (position : EncodingPosition) (message : Digest) (counter : Nat) :
-    evalWithAnswerFn f (encode parameter position.lay position.tree position.leafIdx message
+    evalWithAnswerFn f (encodeAttempt parameter position.lay position.tree position.leafIdx message
       (BitVec.ofNat counterBits counter)) =
         decodeEncodingOutput (f (encodingRetryInput parameter position message counter)) := by
-  simp only [encode, evalWithAnswerFn_bind, eval_tweakableHash, evalWithAnswerFn_pure]
+  simp only [encodeAttempt, evalWithAnswerFn_bind, eval_tweakableHash, evalWithAnswerFn_pure]
   rfl
 
 theorem referenceEncodingSearch_eq_table (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
