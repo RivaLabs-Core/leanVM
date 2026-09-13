@@ -4,86 +4,21 @@ open OracleComp OracleSpec ENNReal
 namespace XmssSecurity.Security
 set_option backward.isDefEq.respectTransparency false
 
-def embedQueries : QueryImpl (HashSpec + SigningSpec) (OracleComp (OracleWorld + SigningSpec)) :=
-  fun | .inl input => liftM ((OracleWorld + SigningSpec).query (.inl (.inr input)))
-      | .inr input => liftM ((OracleWorld + SigningSpec).query (.inr input))
-
 def embed (adversary : Adversary) : XmssSecurity.Adversary :=
-  ⟨fun pk => simulateQ embedQueries (adversary.main pk)⟩
-
-theorem logged_embed {α : Type} (sk : Seeded.SecretKey)
-    (computation : OracleComp (HashSpec + SigningSpec) α) :
-    (simulateQ (forwardOracles + XmssSecurity.signingOracle Seeded.scheme sk)
-      (simulateQ embedQueries computation)).run =
-    (liftM (simulateQ (QueryImpl.ofLift HashSpec (WriterT (QueryLog SigningSpec) (OracleComp HashSpec)) + signingOracle sk)
-      computation).run : OracleComp OracleWorld _) := by
-  rw [← QueryImpl.simulateQ_compose]
-  change _ = simulateQ (QueryImpl.ofLift HashSpec (OracleComp OracleWorld))
-    (simulateQ (QueryImpl.ofLift HashSpec (WriterT (QueryLog SigningSpec) (OracleComp HashSpec)) + signingOracle sk) computation).run
-  rw [QueryImpl.simulateQ_writerTMapBase_run]
-  congr 2
-  funext input
-  cases input <;> apply WriterT.ext <;>
-    simp [QueryImpl.writerTMapBase, QueryImpl.compose, embedQueries, forwardOracles,
-      XmssSecurity.signingOracle, signingOracle, Seeded.scheme, WriterT.run_bind, WriterT.run_liftM, WriterT.run_tell,
-      map_eq_bind_pure_comp, bind_assoc]
-  all_goals rfl
+  ⟨adversary.main⟩
 
 theorem game_embed (adversary : Adversary) :
-    XmssSecurity.gameCore Seeded.scheme (embed adversary) = (do
-      let seed ← liftM sampleMasterSeed
-      liftM (gameCore seed adversary)) := by
+    XmssSecurity.gameCore Seeded.scheme (embed adversary) = gameCore adversary := by
   unfold XmssSecurity.gameCore Seeded.gameRest
   change (Seeded.keygen >>= _) = _
-  unfold Seeded.keygen
-  simp only [bind_assoc, gameCore, liftM_bind, liftM_pure]
-  apply bind_congr
-  intro seed
-  apply bind_congr
-  rintro ⟨pk, sk⟩
-  simp only [embed, logged_embed]
-  rfl
-
-noncomputable def countAll {α : Type} (computation : OracleComp HashSpec α) :=
-  QueryCounting.counted (fun _ => True) computation
-
-theorem count_lift {α : Type} (computation : OracleComp HashSpec α) :
-    countHashQueries (liftM computation : OracleComp OracleWorld α) = liftM (countAll computation) := by
-  induction computation using OracleComp.inductionOn with
-  | pure value => rfl
-  | query_bind input next ih =>
-      rw [liftM_bind]
-      change countHashQueries (liftM (OracleWorld.query (.inr input)) >>= _) = _
-      simp only [countHashQueries_query_bind, ih, countAll, QueryCounting.counted_query_bind,
-        liftM_bind, liftM_pure, ↓reduceIte]
-      rfl
-
-theorem simulate_countAll {α : Type} (computation : OracleComp HashSpec α) :
-    simulateQ (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))
-      (countAll computation) = (simulateQ countedOracle computation).run := by
-  simpa only [countAll, countedOracle, ite_true] using
-    QueryCounting.simulate_withCost (fun _ => True)
-      (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)) computation
-
-theorem run_counted_seed {α β : Type} (sample : ProbComp α)
-    (computation : α → OracleComp HashSpec β) (cache : QueryCache HashSpec) :
-    (simulateQ countedRomImpl (do
-      let seed ← liftM sample
-      liftM (computation seed) : OracleComp OracleWorld β)).run.run' cache = (do
-      let seed ← sample
-      (simulateQ countedOracle (computation seed)).run.run' cache) := by
-  rw [← simulateQ_countHashQueries]
-  simp only [countHashQueries_bind, countHashQueries_lift_prob, count_lift,
-    bind_map_left, Nat.zero_add, simulateQ_bind]
-  simp only [romImpl, QueryImpl.simulateQ_add_liftM_left, QueryImpl.simulateQ_add_liftM_right,
-    simulateQ_pure, StateT.run'_eq, StateT.run_bind, unifFwdImpl.simulateQ_run,
-    bind_map_left, simulate_countAll, map_bind]
+  unfold Seeded.keygen gameCore
+  simp only [bind_assoc]
   rfl
 
 theorem experiment_embed (adversary : Adversary) :
     (simulateQ countedRomImpl (XmssSecurity.gameCore Seeded.scheme (embed adversary))).run.run' ∅ =
       experiment adversary := by
-  rw [game_embed, run_counted_seed]
+  rw [game_embed]
   rfl
 
 theorem advantage_embed (adversary : Adversary) :

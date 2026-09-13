@@ -232,6 +232,9 @@ end TargetSum
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
 
+/-- Private uniform sampling and the shared hash oracle. Only hash calls count toward the query budget. -/
+abbrev OracleWorld := unifSpec + HashSpec
+
 namespace Concrete
 
 /-- Run the `n` computations in index order and collect their results. -/
@@ -636,32 +639,32 @@ end SigningTranscript
 
 namespace Security
 
-/-- A deterministic adaptive adversary with access to hashing and signing. -/
+/-- A probabilistic adaptive adversary with private randomness and access to hashing and signing. -/
 structure Adversary where
-  main : PublicKey → OracleComp (HashSpec + SigningSpec) Forgery
+  main : PublicKey → OracleComp (OracleWorld + SigningSpec) Forgery
 
 /-- Record each signing request and its answer. -/
 def signingOracle (sk : Seeded.SecretKey) :
-    QueryImpl SigningSpec (WriterT (QueryLog SigningSpec) (OracleComp HashSpec)) :=
-  QueryImpl.withLogging fun request => Seeded.sign sk request
+    QueryImpl SigningSpec (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) :=
+  QueryImpl.withLogging fun request => liftM (Seeded.sign sk request : OracleComp HashSpec _)
 
-/-- For a fixed seed, all parties share the same hash oracle. -/
-def gameCore (seed : MasterSeed) (adversary : Adversary) : OracleComp HashSpec Bool := do
-  let (pk, sk) ← Seeded.keygenFromSeed seed
+/-- Sample the master seed, then run all parties with one shared hash oracle. -/
+noncomputable def gameCore (adversary : Adversary) : OracleComp OracleWorld Bool := do
+  let seed ← liftM sampleMasterSeed
+  let (pk, sk) ← liftM (Seeded.keygenFromSeed seed)
   let ((forgery, log) : Forgery × QueryLog SigningSpec) ←
-    (simulateQ (QueryImpl.ofLift HashSpec (WriterT (QueryLog SigningSpec) (OracleComp HashSpec)) + signingOracle sk) (adversary.main pk)).run
-  let verified ← Concrete.verify pk forgery.message forgery.signature
+    (simulateQ (QueryImpl.ofLift OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) + signingOracle sk) (adversary.main pk)).run
+  let verified ← liftM (Concrete.verify pk forgery.message forgery.signature : OracleComp HashSpec Bool)
   return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 
-/-- Answer hash queries consistently and count every call, including cache hits. -/
+/-- Forward private sampling for free; answer hash queries consistently and count every call, including cache hits. -/
 noncomputable def countedOracle :=
-  (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)).withAddCost (fun _ => (1 : Nat))
+  (unifFwdImpl HashSpec + (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))).withAddCost
+    (fun | .inl _ => (0 : Nat) | .inr _ => 1)
 
-/-- Sample the master seed and run the game with an initially empty random-oracle cache.
-The result records whether the adversary won and the total number of hash calls. -/
-noncomputable def experiment (adversary : Adversary) : ProbComp (Bool × Nat) := do
-  let seed ← sampleMasterSeed
-  (simulateQ countedOracle (gameCore seed adversary)).run.run' ∅
+/-- Run the game from an empty random-oracle cache, recording success and the total number of hash calls. -/
+noncomputable def experiment (adversary : Adversary) : ProbComp (Bool × Nat) :=
+  (simulateQ countedOracle (gameCore adversary)).run.run' ∅
 
 /-- The probability of a successful forgery. -/
 noncomputable def forgeAdvantage (adversary : Adversary) : ℝ≥0∞ :=

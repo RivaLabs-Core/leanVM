@@ -14,9 +14,6 @@ abbrev randomnessBytes (randomness : Randomness) : HashInput := bytesLE 24 rando
 
 end Concrete
 
-/-- `unifSpec` for uniform sampling, `HashSpec` for the random oracle (hash). A query is `.inl` to sample or `.inr` to hash, so `HasHashQueryBound` counts only the hash side. -/
-abbrev OracleWorld := unifSpec + HashSpec
-
 noncomputable def Seeded.keygen : OracleComp OracleWorld (PublicKey × Seeded.SecretKey) := do
   let seed ← liftM sampleMasterSeed
   liftM (Seeded.keygenFromSeed seed)
