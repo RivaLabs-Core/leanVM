@@ -8,6 +8,8 @@ The public adversary may use private randomness adaptively and has no running-ti
 
 The theorem `sphincs_has_127_bits_of_classical_security` proves this claim for at most `2^24` signing requests per key. The reduction in [Proof/Deterministic](SphincsSecurity/Proof/Deterministic) couples seed derivation to independent secrets and signing trials, handles repeated requests, bounds adaptive seed guesses, and transfers the query budget. The public-parameter derivation consumes a query, leaving enough slack to absorb the seed-guessing loss without weakening the 127-bit bound.
 
+[ConcreteBounds.lean](SphincsSecurity/ConcreteBounds.lean) states the concrete parameter, size and hash-cost claims: a lifetime of `2^24` signatures, 32-byte public keys, 48-byte stored secret keys, 4924-byte signatures, 497 verification hashes, 1,384,448 key-generation hashes, a 1024-byte public cache, and a nominal average signing cost strictly between 191,270 and 191,271 hashes. [Proof/ConcreteBounds.lean](SphincsSecurity/Proof/ConcreteBounds.lean) contains their derivations. The approximately 64-bit quantum-security figure remains explicitly a target, not a proved claim.
+
 ## Build and audit
 
 Use the pinned Lean toolchain and VCVio revision:
@@ -27,6 +29,8 @@ The cache command is needed on initial setup. The root module pins the axiom foo
 | Entry | Purpose |
 | --- | --- |
 | [SphincsSecurity.lean](SphincsSecurity.lean) | The public theorems. |
+| [ConcreteBounds.lean](SphincsSecurity/ConcreteBounds.lean) | The concrete parameter, size and cost claims. |
+| [Proof/ConcreteBounds.lean](SphincsSecurity/Proof/ConcreteBounds.lean) | The serialization and arithmetic derivations of the concrete claims. |
 | [Completeness](SphincsSecurity/Completeness) | Correctness and completeness: recovery, the reduction of failure to signing returning `none`, and the bounds on signing's four searches. |
 | [Proof/Deterministic](SphincsSecurity/Proof/Deterministic) | Seed derivation, coupling to independent secrets, and the final security bound. |
 | [Proof/Security127Completion.lean](SphincsSecurity/Proof/Security127Completion.lean) | Combines the large-budget and small-budget bounds into `security127`. |

@@ -2,6 +2,7 @@ import SphincsSecurity.Statement
 import SphincsSecurity.Completeness
 import SphincsSecurity.Proof.Adversary.Security
 import SphincsSecurity.Completeness.Assembly
+import SphincsSecurity.ConcreteBounds
 
 namespace SphincsSecurity
 
@@ -17,6 +18,10 @@ theorem sphincs_is_correct : SphincsCorrectnessStatement :=
 theorem sphincs_is_complete : SphincsCompletenessStatement :=
   Completeness.complete
 
+/-- The concrete parameter, serialization-size and hash-cost bounds. -/
+theorem sphincs_concrete_bounds : ConcreteBounds.Claims :=
+  ConcreteBounds.claims
+
 /-! The build fails if the axiom footprint ever grows beyond Lean's three standard axioms, so a `sorry` or `native_decide` anywhere in the proof cannot go unnoticed. -/
 
 /-- info: 'SphincsSecurity.sphincs_has_127_bits_of_classical_security' depends on axioms: [propext, Classical.choice, Quot.sound] -/
@@ -30,5 +35,9 @@ theorem sphincs_is_complete : SphincsCompletenessStatement :=
 /-- info: 'SphincsSecurity.sphincs_is_complete' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in
 #print axioms sphincs_is_complete
+
+/-- info: 'SphincsSecurity.sphincs_concrete_bounds' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms sphincs_concrete_bounds
 
 end SphincsSecurity
