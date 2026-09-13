@@ -106,8 +106,8 @@ theorem hidden_slot_unary (words : OtsReferenceWords) (disclosed : Index → Fts
       simp only [slots, Position.children, List.map_ofFn, List.mem_ofFn] at hcoordinate
       obtain ⟨chain, rfl⟩ := hcoordinate
       have hdigit := (words lay tree leaf chain).isLt
-      norm_num [Hidden, Position.lastChainStep, chainLength, winternitzBits, Function.comp_def] at hhidden
-      simp only [chainLength, winternitzBits] at hdigit
+      norm_num [Hidden, Position.lastChainStep, Function.comp_def] at hhidden
+      have := OtsCode.two_le_chainLength
       omega
   | node lay tree level index =>
       simp only [slots, Position.children] at hcoordinate

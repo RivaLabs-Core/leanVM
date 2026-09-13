@@ -44,7 +44,7 @@ theorem expected_fixedCertificateGame_count_le_message_excess (adversary : Adver
   calc
     _ ≤ ∑' result, Pr[= result | law] *
         (result.1.2.2.2.creationMass * terminalCertificatePrice required result.2) := by
-      simpa [fixedCertificateGame, law, fixedProposalLength] using
+      simpa [fixedCertificateGame, law] using
         expected_certificateTerminalGame_count_le_mass_price adversary q fixedProposalLength required stopAfter hbudget
     _ ≤ ∑' result, Pr[= result | law] *
         (result.1.2.2.2.creationMass * (baseline + (terminalCertificatePrice required result.2 - baseline))) := by

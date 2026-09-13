@@ -33,7 +33,7 @@ theorem markerCheckpointGame_contact_shared_bound (dummy : OtsReferenceWords) (a
       (∑ address : OtsPrefix.ChainAddress,
         Pr[fun result => result.2.2.ContactAfterStop (OtsEncodingMarker.stopAt address) result.1 (referenceFamilyWords result.2.1 dummy) address |
           markerCheckpointGame address (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary]) ≤
-      (3444 * ((budget : ENNReal) / Fintype.card Digest)) * ∑' result,
+      ((2 * (OtsCode.neighborBound : ENNReal)) * ((budget : ENNReal) / Fintype.card Digest)) * ∑' result,
         Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] *
           (result.encodingCalls : ENNReal) := by
   have hsum := Finset.sum_le_sum (s := (Finset.univ : Finset OtsPrefix.ChainAddress))

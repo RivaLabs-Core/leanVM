@@ -66,7 +66,7 @@ theorem domain_injective {p q : Position} (h : p.domain = q.domain) : p = q := b
   cases p <;> cases q <;> simp only [domain] at h <;> simp_all [Fin.ext_iff]
 
 /-- The last chain step, the one whose answer is the chain's endpoint. -/
-def lastChainStep : ChainStep := ⟨chainLength - 2, by decide⟩
+def lastChainStep : ChainStep := ⟨chainLength - 2, by have := OtsCode.two_le_chainLength; omega⟩
 
 /-- The positions whose values the payload at this one is built from. -/
 def children : Position → List Position
@@ -97,9 +97,12 @@ def children : Position → List Position
       List.ofFn fun tree : FtsTree =>
         .ftsNode index tree ⟨ftsTreeHeight - 1, by decide⟩ ⟨0, by positivity⟩
 
-/-- The widest payload of the instance is a one-time leaf's `v = 42` chain endpoints. -/
+/-- The widest payload of the instance is a one-time leaf's `v` chain endpoints. -/
 theorem children_length_le (p : Position) : p.children.length ≤ numChains := by
-  cases p <;> simp only [children] <;> (try split_ifs) <;> simp [numChains, ftsTrees]
+  have htwo := OtsCode.two_le_numChains
+  have hroots := OtsCode.ftsRoots_le_numChains
+  cases p <;> simp only [children] <;> (try split_ifs) <;>
+    simp only [List.length_ofFn, List.length_cons, List.length_nil] <;> omega
 
 /-! ### Children and parent agree
 
@@ -130,7 +133,9 @@ theorem depth_lt_of_mem_children {c d : Position} (hmem : c ∈ d.children) :
       simp only [children, List.mem_ofFn] at hmem
       obtain ⟨chainIdx, hmem⟩ := hmem
       subst hmem
-      simp [depth, lastChainStep, chainLength, winternitzBits]
+      have := OtsCode.two_le_chainLength
+      simp only [depth, lastChainStep]
+      omega
   | node lay tree level nodeIdx =>
       rw [children] at hmem
       split at hmem

@@ -127,7 +127,7 @@ theorem certificateCacheProposal_prefix_le {Result : Type} (key : SecretKey) (bu
 theorem certificateContextGame_prefix_le (adversary : Adversary) (budget : Nat) (required : Finset FtsTree)
     (stopAfter : SecretKey → CertificateStopRule) (stopped : Bool) :
     Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
-      certificateContextGame adversary budget required stopAfter stopped] ≤ (2 ^ 700 : ENNReal)⁻¹ := by
+      certificateContextGame adversary budget required stopAfter stopped] ≤ proposalPrefixExceptionBound := by
   rw [certificateContextGame, probEvent_bind_eq_tsum]
   calc
     _ ≤ ∑' generated, Pr[= generated | (liftM (boundaryRun 0 scheme.keygen ∅) : PMF _)] * proposalPrefixWeight 0 0 := by
@@ -143,12 +143,12 @@ theorem certificateContextGame_prefix_le (adversary : Adversary) (budget : Nat) 
 
 theorem original_primitive_add_full_certificate_small_budget (dummy : OtsReferenceWords)
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
       (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
       Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ :=
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound :=
   (original_primitive_add_full_certificate_le_small_budget_add_prefix dummy adversary q hbound hsmall).trans
     (add_le_add le_rfl (certificateContextGame_prefix_le adversary q Finset.univ (fun _ => proposalPrefixStop) false))
 

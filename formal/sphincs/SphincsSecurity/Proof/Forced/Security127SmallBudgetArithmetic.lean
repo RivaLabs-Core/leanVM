@@ -3,10 +3,10 @@ namespace SphincsSecurity.Concrete
 
 open ENNReal
 
-/-- The per-slot bound on the forced FTS near-certificate probability at hash budget `budget`: fourteen omitted trees, each paying the average terminal certificate price, the cache exception and the proposal prefix exception. -/
+/-- The per-slot bound on the forced FTS near-certificate probability at hash budget `budget`: every omitted tree pays the average terminal certificate price, the cache exception and the proposal prefix exception. -/
 noncomputable def nearCertificateBound (budget : Nat) : ENNReal :=
-  14 * ((budget : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
-    ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹))
+  (Fintype.card FtsTree : ENNReal) * ((budget : ENNReal) * nearCertificatePrice +
+    ((budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound))
 
 set_option exponentiation.threshold 1024
 
@@ -22,10 +22,12 @@ private theorem smallRangeClosing (x : ℝ) (hlow : 1 / 2 ^ 128 ≤ x) (hhigh : 
   norm_num at hsq htail ⊢
   nlinarith [hsq, htail, hn, hlow, hhigh]
 
-theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ 3 * 2 ^ 114) :
-    (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
+theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budgetSplit) :
+    primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
       ((2 ^ 128 - q : Nat) : ENNReal)⁻¹ * ((q : ENNReal) * nearCertificateBound q) ≤ (q : ENNReal) / 2 ^ 127 := by
+  rw [budgetSplit_def] at hsmall
+  rw [primitiveCoefficient_def, fullCertificateExcessRate_def, proposalPrefixExceptionBound_def]
   have hx : (q : ENNReal) / 2 ^ 128 ≤ 3 / 16384 := by
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     rw [ENNReal.toReal_div, ENNReal.toReal_div, ENNReal.toReal_pow, ENNReal.toReal_natCast, ENNReal.toReal_ofNat,
@@ -58,6 +60,8 @@ theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ 3 * 
       14 * ((q : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
         ((q : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ + (2 ^ 700 : ENNReal)⁻¹)) := by
     unfold nearCertificateBound
+    rw [nearCertificatePrice_def, proposalPrefixExceptionBound_def, show Fintype.card FtsTree = 14 from Fintype.card_fin _,
+      Nat.cast_ofNat]
     gcongr
     exact certificateCacheExceptionRate_le
   refine le_trans (add_le_add (add_le_add le_rfl hsquare) (mul_le_mul' hinv (mul_le_mul' le_rfl hrate))) ?_

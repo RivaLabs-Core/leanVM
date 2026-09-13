@@ -62,23 +62,23 @@ theorem referenceEncodingSearch_valid (parameter : PublicParameter) (f : QueryIm
     (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (message : Digest)
     (attempts start : Nat) (counter : Counter) (word : Encoding)
     (hword : (referenceEncodingSearch parameter f lay tree leaf message attempts start).1 = some (counter, word)) :
-    TargetSum.Valid word := by
+    OtsCode.Valid word := by
   induction attempts generalizing start with
   | zero => simp [referenceEncodingSearch] at hword
   | succ attempts ih =>
       cases hencode : evalWithAnswerFn f
-          (encode parameter lay tree leaf message (BitVec.ofNat counterBits start)) with
+          (encodeAttempt parameter lay tree leaf message (BitVec.ofNat counterBits start)) with
       | none =>
           apply ih (start + 1)
           simpa only [referenceEncodingSearch, hencode] using hword
       | some selected =>
           simp only [referenceEncodingSearch, hencode, Option.some.injEq, Prod.mk.injEq] at hword
-          apply TargetSum.valid_of_decodeDigest_eq_some
-          simpa only [encode, evalWithAnswerFn_bind, evalWithAnswerFn_pure, hword.2] using hencode
+          apply OtsCode.decode_valid
+          simpa only [encodeAttempt, evalWithAnswerFn_bind, evalWithAnswerFn_pure, hword.2] using hencode
 
 theorem canonicalReferenceWords_valid (key : SecretKey) (f : QueryImpl HashSpec Id)
-    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) :
-    ∀ lay tree leaf, TargetSum.Valid (canonicalReferenceWords key f dummy lay tree leaf) := by
+    (dummy : OtsReferenceWords) (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf)) :
+    ∀ lay tree leaf, OtsCode.Valid (canonicalReferenceWords key f dummy lay tree leaf) := by
   intro lay tree leaf
   cases hsearch : (canonicalEncodingSearch key f lay tree leaf).1 with
   | none => simpa only [canonicalReferenceWords, hsearch, Option.map_none, Option.getD_none] using hdummy lay tree leaf

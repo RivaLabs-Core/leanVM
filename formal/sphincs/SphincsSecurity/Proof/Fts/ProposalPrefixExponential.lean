@@ -49,24 +49,24 @@ theorem proposalTailBase_one_le : 1 ≤ proposalTailBase := by
 
 noncomputable def proposalPrefixWeight (proposals completed : Nat) : ENNReal :=
   proposalTailBase ^ (2 * proposals) * proposalTailMoment ^ (signatureLimit - completed) /
-    proposalTailBase ^ (3 * signatureLimit + 262144)
+    proposalTailBase ^ (3 * signatureLimit + 2 * proposalPrefixSlack)
 
 theorem proposalPrefixWeight_bad (proposals completed : Nat) (hcap : completed ≤ signatureLimit)
     (hbad : ProposalPrefixExceptional proposals completed) : 1 ≤ proposalPrefixWeight proposals completed := by
-  have hcount : 3 * completed + 262144 ≤ 2 * proposals := by
+  have hcount : 3 * completed + 2 * proposalPrefixSlack ≤ 2 * proposals := by
     have h := (ENNReal.toReal_lt_toReal (by unfold targetProposalOverhead; finiteness) (by finiteness)).mpr hbad
     rw [ENNReal.toReal_add (by unfold targetProposalOverhead; finiteness) (by finiteness), ENNReal.toReal_mul] at h
     norm_num [targetProposalOverhead, ENNReal.toReal_div] at h
     have hc : (0 : ℝ) ≤ completed := Nat.cast_nonneg _
-    have h' : (3 : ℝ) * completed + 262144 ≤ 2 * proposals := by linarith
+    have h' : (3 : ℝ) * completed + 2 * proposalPrefixSlack ≤ 2 * proposals := by linarith
     exact_mod_cast h'
-  have hexp : 3 * signatureLimit + 262144 ≤ 2 * proposals + 3 * (signatureLimit - completed) := by omega
+  have hexp : 3 * signatureLimit + 2 * proposalPrefixSlack ≤ 2 * proposals + 3 * (signatureLimit - completed) := by omega
   have hbase : proposalTailBase ≠ 0 := by norm_num [proposalTailBase]
   have hfinite : proposalTailBase ≠ ⊤ := by unfold proposalTailBase; finiteness
   rw [proposalPrefixWeight]
   calc
-    1 = proposalTailBase ^ (3 * signatureLimit + 262144) /
-        proposalTailBase ^ (3 * signatureLimit + 262144) := (ENNReal.div_self (pow_ne_zero _ hbase) (by finiteness)).symm
+    1 = proposalTailBase ^ (3 * signatureLimit + 2 * proposalPrefixSlack) /
+        proposalTailBase ^ (3 * signatureLimit + 2 * proposalPrefixSlack) := (ENNReal.div_self (pow_ne_zero _ hbase) (by finiteness)).symm
     _ ≤ _ := ENNReal.div_le_div_right (calc
       _ ≤ proposalTailBase ^ (2 * proposals + 3 * (signatureLimit - completed)) :=
         pow_le_pow_right₀ proposalTailBase_one_le hexp
@@ -80,7 +80,7 @@ theorem expected_proposalPrefixWeight (proposals completed : Nat) (hcap : comple
   simp only [proposalPrefixWeight, Nat.mul_add]
   calc
     _ = (proposalTailBase ^ (2 * proposals) * proposalTailMoment ^ (signatureLimit - (completed + 1)) /
-        proposalTailBase ^ (3 * signatureLimit + 262144)) *
+        proposalTailBase ^ (3 * signatureLimit + 2 * proposalPrefixSlack)) *
         ∑' length, proposalBlockLength targetProposalAcceptance targetProposalAcceptance_ne_zero targetProposalAcceptance_lt_one.le length *
           (proposalTailBase ^ 2) ^ length := by
       rw [← ENNReal.tsum_mul_left]
@@ -93,18 +93,19 @@ theorem expected_proposalPrefixWeight (proposals completed : Nat) (hcap : comple
       simp only [pow_add, pow_one, div_eq_mul_inv]
       ac_rfl
 
-theorem proposalPrefixWeight_initial_le : proposalPrefixWeight 0 0 ≤ (2 ^ 700 : ENNReal)⁻¹ := by
+theorem proposalPrefixWeight_initial_le : proposalPrefixWeight 0 0 ≤ proposalPrefixExceptionBound := by
+  rw [proposalPrefixExceptionBound_def]
   let z : ℝ := 257 / 256
   let ratio : ℝ := 17179869184 / 17179343615
   have hz : 0 < z := by norm_num [z]
   have hr : 0 < ratio := by norm_num [ratio]
-  have hlog : (signatureLimit : ℝ) * Real.log ratio - 262144 * Real.log z ≤ -700 * Real.log 2 := by
+  have hlog : (signatureLimit : ℝ) * Real.log ratio - 2 * 2 ^ 17 * Real.log z ≤ -700 * Real.log 2 := by
     have hratio := Real.log_le_sub_one_of_pos hr
     have hbase := Real.one_sub_inv_le_log_of_pos hz
     have htwo := Real.log_two_lt_d9
     norm_num [ratio, z, signatureLimit] at hratio hbase ⊢
     linarith
-  have hreal : (ratio * z ^ 3) ^ signatureLimit / z ^ (3 * signatureLimit + 262144) ≤ (2 ^ 700 : ℝ)⁻¹ := by
+  have hreal : (ratio * z ^ 3) ^ signatureLimit / z ^ (3 * signatureLimit + 2 * 2 ^ 17) ≤ (2 ^ 700 : ℝ)⁻¹ := by
     apply (Real.log_le_log_iff (by positivity) (by positivity)).mp
     rw [Real.log_div (by positivity) (by positivity), Real.log_pow, Real.log_mul hr.ne' (by positivity),
       Real.log_pow, Real.log_pow, Real.log_inv, Real.log_pow]
@@ -120,7 +121,7 @@ theorem proposalPrefixWeight_initial_le : proposalPrefixWeight 0 0 ≤ (2 ^ 700 
         (ENNReal.pow_ne_top (by unfold proposalTailMoment; finiteness))
     · exact pow_ne_zero _ (by norm_num [proposalTailBase])
   apply (ENNReal.toReal_le_toReal hfinite (by finiteness)).mp
-  simpa only [proposalPrefixWeight, Nat.mul_zero, pow_zero, one_mul, Nat.sub_zero, ENNReal.toReal_div,
+  simpa only [proposalPrefixWeight, proposalPrefixSlack_def, Nat.mul_zero, pow_zero, one_mul, Nat.sub_zero, ENNReal.toReal_div,
     ENNReal.toReal_pow, ENNReal.toReal_inv, ENNReal.toReal_ofNat, hmoment, hbase] using hreal
 
 end SphincsSecurity.Concrete

@@ -12,7 +12,7 @@ theorem entryMarker_allowed_le (parameter : PublicParameter) (messages : Encodin
     (cell : canonicalEncodingInputs parameter) :
     Pr[fun output : HashOutput => EntryMarker parameter (referenceFamilyWords selections dummy) address (cell.val, output) |
       PMF.uniformOfFinset (referenceEncodingAllowed parameter messages selections cell)
-        (referenceEncodingAllowed_nonempty parameter messages selections cell)] ≤ 41 / (Fintype.card Digest : ENNReal) := by
+        (referenceEncodingAllowed_nonempty parameter messages selections cell)] ≤ (OtsCode.unitNeighborBound : ENNReal) / (Fintype.card Digest : ENNReal) := by
   by_cases hp : AtEncodingPosition parameter cell.val ⟨address.1, address.2.1, address.2.2.1⟩
   · refine (_root_.probEvent_mono (mx := (liftM (PMF.uniformOfFinset (referenceEncodingAllowed parameter messages selections cell)
       (referenceEncodingAllowed_nonempty parameter messages selections cell)) : SPMF HashOutput)) ?_).trans (freshEncodingSupport_neighbor_le
@@ -20,7 +20,7 @@ theorem entryMarker_allowed_le (parameter : PublicParameter) (messages : Encodin
       (referenceEncodingAllowed_fresh parameter messages selections dummy cell _ hp))
     intro output _ hm
     obtain ⟨_, _, candidate, hd, hn⟩ := hm
-    exact TargetSum.mem_decodingDigests.mpr ⟨candidate, TargetSum.mem_unitNeighbors.mpr hn, hd⟩
+    exact OtsCode.mem_decodingDigests.mpr ⟨candidate, OtsCode.mem_unitNeighbors.mpr hn, hd⟩
   · have he : (fun output : HashOutput => EntryMarker parameter (referenceFamilyWords selections dummy) address (cell.val, output)) =
         fun _ => False := by
       funext output
@@ -40,7 +40,7 @@ theorem entryMarker_any_allowed_le (parameter : PublicParameter) (messages : Enc
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (cell : canonicalEncodingInputs parameter) :
     Pr[fun output : HashOutput => ∃ address, EntryMarker parameter (referenceFamilyWords selections dummy) address (cell.val, output) |
       PMF.uniformOfFinset (referenceEncodingAllowed parameter messages selections cell)
-        (referenceEncodingAllowed_nonempty parameter messages selections cell)] ≤ 1722 / (Fintype.card Digest : ENNReal) := by
+        (referenceEncodingAllowed_nonempty parameter messages selections cell)] ≤ (OtsCode.neighborBound : ENNReal) / (Fintype.card Digest : ENNReal) := by
   obtain ⟨position, hp⟩ := encodingInput_position parameter cell.val cell.property
   refine (_root_.probEvent_mono (mx := (liftM (PMF.uniformOfFinset (referenceEncodingAllowed parameter messages selections cell)
       (referenceEncodingAllowed_nonempty parameter messages selections cell)) : SPMF HashOutput)) ?_).trans (freshEncodingSupport_all_neighbors_le
@@ -50,6 +50,6 @@ theorem entryMarker_any_allowed_le (parameter : PublicParameter) (messages : Enc
   obtain ⟨⟨lay, tree, leaf, chain⟩, hposition, _, candidate, hd, hn⟩ := hm
   have he := atEncodingPosition_unique hposition hp
   subst position
-  exact TargetSum.mem_decodingDigests.mpr ⟨candidate, TargetSum.mem_allUnitNeighbors.mpr ⟨chain, hn⟩, hd⟩
+  exact OtsCode.mem_decodingDigests.mpr ⟨candidate, OtsCode.mem_allUnitNeighbors.mpr ⟨chain, hn⟩, hd⟩
 
 end SphincsSecurity.Concrete.OtsEncodingMarker

@@ -247,14 +247,14 @@ theorem originalCertificateSource_full_le_original_message_add_prefix (adversary
     (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
     Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
       ((2 ^ 128 : ENNReal)⁻¹ + certificateCacheExceptionRate) * originalCertificateMessageCost adversary +
-      (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
+      (q : ENNReal) * fullCertificateExcessRate +
       Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
         certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] := by
   have he := (certificateContextGame_exception_le_cache_add_prefix adversary q Finset.univ (fun _ => proposalPrefixStop) false).trans
     (add_le_add (certificateContextGame_cache_hit_le_original_message adversary q Finset.univ (fun _ => proposalPrefixStop) false) le_rfl)
   apply (originalCertificateSource_full_le_original_message_add_exception adversary q hbudget hbound).trans
   calc
-    _ ≤ (2 ^ 128 : ENNReal)⁻¹ * originalCertificateMessageCost adversary + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
+    _ ≤ (2 ^ 128 : ENNReal)⁻¹ * originalCertificateMessageCost adversary + (q : ENNReal) * fullCertificateExcessRate +
         (originalCertificateMessageCost adversary * certificateCacheExceptionRate +
           Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
             certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false]) := add_le_add le_rfl he
@@ -262,20 +262,21 @@ theorem originalCertificateSource_full_le_original_message_add_prefix (adversary
 
 theorem original_primitive_add_full_certificate_le_small_budget_add_prefix (dummy : OtsReferenceWords)
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
       (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
       Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
       Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
         certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] := by
-  have hbudget : q ≤ 2 ^ 127 := hsmall.trans (by norm_num)
+  have hbudget : q ≤ 2 ^ 127 := hsmall.trans budgetSplit_le
   have hcard : Fintype.card Digest = 2 ^ 128 := by simp [digestBits]
   have hp := referenceGraphContextGame_primitive_small_budget dummy adversary q hbound hsmall
   rw [hcard] at hp
   simp only [Nat.cast_pow, Nat.cast_ofNat] at hp
-  have hrate : (2 ^ 128 : ENNReal)⁻¹ + certificateCacheExceptionRate ≤ (7 / 4 : ENNReal) / 2 ^ 128 := by
+  have hrate : (2 ^ 128 : ENNReal)⁻¹ + certificateCacheExceptionRate ≤ primitiveCoefficient / 2 ^ 128 := by
     apply (add_le_add le_rfl certificateCacheExceptionRate_le).trans
+    rw [primitiveCoefficient_def]
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     norm_num [ENNReal.toReal_add, ENNReal.toReal_inv, ENNReal.toReal_div]
   have hc := (originalCertificateSource_full_le_original_message_add_prefix adversary q hbudget hbound).trans
@@ -283,10 +284,10 @@ theorem original_primitive_add_full_certificate_le_small_budget_add_prefix (dumm
   calc
     _ ≤ Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
           (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-        (((7 / 4 : ENNReal) / 2 ^ 128) *
+        ((primitiveCoefficient / 2 ^ 128) *
           (∑' result, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
             (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.messageCalls : ENNReal)) +
-          (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
+          (q : ENNReal) * fullCertificateExcessRate +
           Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
             certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false]) := add_le_add le_rfl hc
     _ ≤ _ := by

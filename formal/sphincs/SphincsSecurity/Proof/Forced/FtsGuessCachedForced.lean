@@ -167,7 +167,7 @@ theorem cachedForcedRun_original_budget (dummy : OtsReferenceWords) (adversary :
     (hr : cachedForcedRun parameter (canonicalGraphRoot labels) otsSecret labels (canonicalGraphGameInputs adversary)
       (canonicalEncodingInputs_subset_gameInputs adversary parameter) auxiliary.selections auxiliary.rows dummy slot
       (completedRun parameter (canonicalGraphRoot labels) labels adversary) (∅, initialState PUnit.unit) result ≠ 0) :
-    1212415 + completedWork result.1 ≤ q ∧ result.2.2.probes ≤ completedWork result.1 := by
+    keygenHashCost + completedWork result.1 ≤ q ∧ result.2.2.probes ≤ completedWork result.1 := by
   have hp : (Prod.fst <$> deferredForcedRun parameter (canonicalGraphRoot labels) otsSecret labels
       (canonicalGraphGameInputs adversary) (canonicalEncodingInputs_subset_gameInputs adversary parameter)
       auxiliary.selections auxiliary.rows dummy slot adversary) (result.1, result.2.2) ≠ 0 := by
@@ -184,8 +184,7 @@ theorem cachedForcedRun_original_budget (dummy : OtsReferenceWords) (adversary :
 theorem referenceAuxiliary_mem_support (inputs : Finset HashInput) (selections : ReferenceFamily)
     (hselections : selections ∈ (FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit).support)
     (rows : EncodingPosition → Fin encodingAttemptLimit → HashOutput)
-    (hrows : rows ∈ (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-      decodeEncodingOutput_invalid_nonempty selections).support) (seed : inputs → HashOutput) :
+    (hrows : rows ∈ (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).support) (seed : inputs → HashOutput) :
     (⟨selections, Function.uncurry rows, seed⟩ : ReferenceAuxiliary inputs) ∈ (referenceAuxiliarySample inputs).support := by
   rw [referenceAuxiliarySample, PMF.mem_support_bind_iff]
   refine ⟨selections, hselections, ?_⟩
@@ -198,7 +197,7 @@ noncomputable def cachedNearGame (dummy : OtsReferenceWords) (adversary : Advers
   let parameter ← 𝒟[sampleParameter]
   let otsSecret ← 𝒟[sampleOtsSecrets]
   let selections ← 𝒟[FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit]
-  let rows ← 𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections]
+  let rows ← 𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections]
   let labels ← 𝒟[PMF.uniformOfFintype CanonicalGraphLabels]
   (fun result => decide (completedNearCertificate parameter (canonicalGraphRoot labels) result.1)) <$>
     cachedForcedRun parameter (canonicalGraphRoot labels) otsSecret labels (canonicalGraphGameInputs adversary)
@@ -215,8 +214,7 @@ theorem forcedNearGame_cached (dummy : OtsReferenceWords) (adversary : Adversary
   funext otsSecret
   apply congrArg (𝒟[FirstSuccessFamily.selected decodeEncodingOutput encodingAttemptLimit] >>= ·)
   funext selections
-  apply congrArg (𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-    decodeEncodingOutput_invalid_nonempty selections] >>= ·)
+  apply congrArg (𝒟[FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections] >>= ·)
   funext rows
   apply congrArg (𝒟[PMF.uniformOfFintype CanonicalGraphLabels] >>= ·)
   funext labels

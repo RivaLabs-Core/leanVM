@@ -8,9 +8,9 @@ namespace SphincsSecurity.Concrete
 
 open _root_.OracleComp OracleSpec ENNReal
 
-theorem security127_of_small_budget (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ 3 * 2 ^ 114) (adversary : Adversary)
+theorem security127_of_small_budget (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budgetSplit) (adversary : Adversary)
     (hbound : HasHashQueryBound scheme adversary q) : forgeAdvantage scheme adversary ≤ (q : ENNReal) / 2 ^ 127 := by
-  have hbudget : q ≤ 2 ^ 127 := by omega
+  have hbudget : q ≤ 2 ^ 127 := hsmall.trans budgetSplit_le
   have hslots : (∑ slot ∈ Finset.range q, Pr[fun hit => hit = true | FtsGuessHash.forcedNearGame fixedReferenceDummy adversary slot]) ≤
       (q : ENNReal) * nearCertificateBound q := by
     refine (Finset.sum_le_card_nsmul _ _ _ fun slot _ =>
@@ -25,7 +25,7 @@ theorem security127_of_small_budget (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ 3 *
 theorem security127 : HasClassicalSecurityBits scheme 127 := by
   intro q hq adversary hbound
   rw [Nat.cast_pow, Nat.cast_ofNat]
-  by_cases hsmall : q ≤ 3 * 2 ^ 114
+  by_cases hsmall : q ≤ budgetSplit
   · exact security127_of_small_budget q hq hsmall adversary hbound
   · exact security127_of_large_budget q (by omega) adversary hbound
 

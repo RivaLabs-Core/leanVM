@@ -109,8 +109,8 @@ theorem erases_otsSignFrom (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex) (
   induction attempts generalizing counter with
   | zero => exact .pure _
   | succ attempts ih =>
-      simp only [otsSignFrom, Concrete.otsSignFrom]
-      apply (Erases.refl known (Concrete.encode parameter lay tree leaf message (BitVec.ofNat counterBits counter))).bind
+      simp only [otsSignFrom, Concrete.otsSignFrom, Concrete.encode_eq]
+      apply (Erases.refl known (Concrete.encodeAttempt parameter lay tree leaf message (BitVec.ofNat counterBits counter))).bind
       intro encoding
       cases encoding with
       | none => exact ih _

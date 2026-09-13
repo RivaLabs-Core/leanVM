@@ -50,12 +50,12 @@ theorem graphPrimitiveEvent_of_outcome (key : SecretKey) (f : QueryImpl HashSpec
 noncomputable def primitivePrefixRate (q : Nat) : ENNReal :=
   let n : ENNReal := Fintype.card Digest
   let x := (q : ENNReal) / n
-  prefixTwoEdgeRate q / (1 - x) + (4 * x) / ((1 - x)^2 * n) + (82 * x) / ((1 - x) * n)
+  prefixTwoEdgeRate q / (1 - x) + (4 * x) / ((1 - x)^2 * n) + ((2 * (OtsCode.unitNeighborBound : ENNReal)) * x) / ((1 - x) * n)
 
 noncomputable def primitiveEncodingRate (q : Nat) : ENNReal :=
   let n : ENNReal := Fintype.card Digest
   let x := (q : ENNReal) / n
-  n⁻¹ + (3444 * x) / ((1 - x) * n)
+  n⁻¹ + ((2 * (OtsCode.neighborBound : ENNReal)) * x) / ((1 - x) * n)
 
 theorem primitivePrefixRate_mono {q r : Nat} (h : q ≤ r) : primitivePrefixRate q ≤ primitivePrefixRate r := by
   dsimp only [primitivePrefixRate, prefixTwoEdgeRate]
@@ -65,9 +65,11 @@ theorem primitiveEncodingRate_mono {q r : Nat} (h : q ≤ r) : primitiveEncoding
   dsimp only [primitiveEncodingRate]
   gcongr
 
-theorem primitive_rates_small (q : Nat) (hq : q ≤ 3 * 2 ^ 114) :
-    primitivePrefixRate q ≤ (7 / 4 : ENNReal) / Fintype.card Digest ∧
-      primitiveEncodingRate q ≤ (7 / 4 : ENNReal) / Fintype.card Digest := by
+theorem primitive_rates_small (q : Nat) (hq : q ≤ budgetSplit) :
+    primitivePrefixRate q ≤ primitiveCoefficient / Fintype.card Digest ∧
+      primitiveEncodingRate q ≤ primitiveCoefficient / Fintype.card Digest := by
+  rw [budgetSplit_def] at hq
+  rw [primitiveCoefficient_def]
   have hcard : Fintype.card Digest = 2 ^ 128 := by simp [digestBits]
   have hn : (Fintype.card Digest : ENNReal) ≠ 0 := by positivity
   have hx : ((3 * 2 ^ 114 : Nat) : ENNReal) / Fintype.card Digest < 1 := by
@@ -83,14 +85,14 @@ theorem primitive_rates_small (q : Nat) (hq : q ≤ 3 * 2 ^ 114) :
     simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_pow, hs,
       ENNReal.toReal_natCast, ENNReal.toReal_ofNat, ENNReal.toReal_one]
     repeat rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
-    norm_num [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_pow, hcard]
+    norm_num [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_pow, hcard, OtsCode.unitNeighborBound_eq]
   · apply (primitiveEncodingRate_mono hq).trans
     dsimp only [primitiveEncodingRate]
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     repeat rw [ENNReal.toReal_add (by finiteness) (by finiteness)]
     simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, hs,
       ENNReal.toReal_natCast, ENNReal.toReal_ofNat, ENNReal.toReal_one]
-    norm_num [hcard]
+    norm_num [hcard, OtsCode.neighborBound_eq]
 
 theorem referenceGraphContextGame_primitive_le (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
     (hbound : HasHashQueryBound scheme adversary q) (hsmall : q < Fintype.card Digest) :
@@ -158,17 +160,18 @@ theorem referenceGraphContextGame_primitive_joint_budget (dummy : OtsReferenceWo
           exact mul_le_of_le_one_left' tsum_probOutput_le_one
 
 theorem referenceGraphContextGame_primitive_small_budget (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat)
-    (hbound : HasHashQueryBound scheme adversary q) (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hbound : HasHashQueryBound scheme adversary q) (hsmall : q ≤ budgetSplit) :
     Pr[GraphPrimitiveEvent dummy | referenceGraphContextGame contactObserver (canonicalGraphGameInputs adversary)
       (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] +
-      ((7 / 4 : ENNReal) / Fintype.card Digest) *
+      (primitiveCoefficient / Fintype.card Digest) *
         (∑' result, Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
           (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.messageCalls : ENNReal)) ≤
-        (7 / 4 : ENNReal) * ((q : ENNReal) / Fintype.card Digest) := by
+        primitiveCoefficient * ((q : ENNReal) / Fintype.card Digest) := by
   have hcard : Fintype.card Digest = 2 ^ 128 := by simp [digestBits]
-  have hq : q < Fintype.card Digest := hsmall.trans_lt (by rw [hcard]; norm_num)
+  have hq : q < Fintype.card Digest := hsmall.trans_lt (budgetSplit_le.trans_lt (by rw [hcard]; norm_num))
   have hr := primitive_rates_small q hsmall
-  have ho : (Fintype.card Digest : ENNReal)⁻¹ ≤ (7 / 4 : ENNReal) / Fintype.card Digest := by
+  have ho : (Fintype.card Digest : ENNReal)⁻¹ ≤ primitiveCoefficient / Fintype.card Digest := by
+    rw [primitiveCoefficient_def]
     apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
     norm_num [ENNReal.toReal_inv, ENNReal.toReal_div, hcard]
   simpa only [div_eq_mul_inv, mul_right_comm, mul_assoc] using

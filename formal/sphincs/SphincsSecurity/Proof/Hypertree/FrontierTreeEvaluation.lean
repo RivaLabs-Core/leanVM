@@ -114,7 +114,6 @@ theorem eval_frontierTreeNode_congr (parameter : PublicParameter) (f g : QueryIm
     funext chainIdx
     apply eval_chainWalk_congr_tail _ _ _ _ _ _ _ _ _ _ _ (hchain leaf chainIdx)
     have hdigit := (digits leaf chainIdx).isLt
-    simp only [chainLength, winternitzBits] at hdigit ⊢
     omega
   induction level generalizing nodeIdx with
   | zero =>

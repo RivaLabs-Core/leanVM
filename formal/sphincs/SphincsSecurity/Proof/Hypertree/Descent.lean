@@ -95,11 +95,11 @@ theorem verifyLayers_succ_extract_cached (index : Index) (signature : Signature)
       let leafIdx := leafIndexAt index lay
       let rootValue := foldValue f parameter lay tree leafIdx (signaturePath signature lay)
         leafValue (layerHeight lay)
-      evalWithAnswerFn f (otsLeaf parameter lay tree leafIdx message (signature.counter lay)
+      evalWithAnswerFn f (otsLeafAttempt parameter lay tree leafIdx message (signature.counter lay)
           (signature.chainValue lay)) = some leafValue
         ∧ evalWithAnswerFn f (verifyLayers parameter index signature remaining rootValue)
           = some target
-        ∧ CachedRun cache f (otsLeaf parameter lay tree leafIdx message (signature.counter lay)
+        ∧ CachedRun cache f (otsLeafAttempt parameter lay tree leafIdx message (signature.counter lay)
           (signature.chainValue lay))
         ∧ CachedRun cache f (treeFold parameter lay tree leafIdx (signaturePath signature lay)
           (layerHeight lay) leafValue)
@@ -116,14 +116,14 @@ def LayerFrame (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
     (parameter : PublicParameter) (index : Index) (signature : Signature)
     (lay : Layer) (message target leafValue : Digest) : Prop :=
   evalWithAnswerFn f
-        (otsLeaf parameter lay (treeIndexAt index lay) (leafIndexAt index lay) message
+        (otsLeafAttempt parameter lay (treeIndexAt index lay) (leafIndexAt index lay) message
           (signature.counter lay) (signature.chainValue lay)) = some leafValue
       ∧ evalWithAnswerFn f
         (verifyLayers parameter index signature lay.val
           (foldValue f parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
             (signaturePath signature lay) leafValue (layerHeight lay))) = some target
       ∧ CachedRun cache f
-        (otsLeaf parameter lay (treeIndexAt index lay) (leafIndexAt index lay) message
+        (otsLeafAttempt parameter lay (treeIndexAt index lay) (leafIndexAt index lay) message
           (signature.counter lay) (signature.chainValue lay))
       ∧ CachedRun cache f
         (treeFold parameter lay (treeIndexAt index lay) (leafIndexAt index lay)
@@ -197,7 +197,7 @@ def HonestLayerOpening (f : QueryImpl HashSpec Id) (parameter : PublicParameter)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex) (message : Digest)
     (counter : Counter) (values : ChainIndex → Digest) (path : Nat → Digest) : Prop :=
   ∃ codeword : Encoding,
-    evalWithAnswerFn f (encode parameter lay tree leafIdx message counter) = some codeword
+    evalWithAnswerFn f (encodeAttempt parameter lay tree leafIdx message counter) = some codeword
       ∧ (∀ chainIdx, values chainIdx
         = honestChain f parameter lay tree leafIdx chainIdx
           (otsSecret lay tree leafIdx chainIdx) (codeword chainIdx).val)

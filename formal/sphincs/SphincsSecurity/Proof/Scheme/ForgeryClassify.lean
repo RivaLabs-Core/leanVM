@@ -17,14 +17,14 @@ def VerifierLayerMessage (f : QueryImpl HashSpec Id) (parameter : PublicParamete
   let ftsPublicKey := evalWithAnswerFn f
     (ftsRecover parameter index leaves signature.ftsSecret signature.ftsPath)
   ∃ bottomLeaf,
-    evalWithAnswerFn f (otsLeaf parameter bottomLayer (treeIndexAt index bottomLayer)
+    evalWithAnswerFn f (otsLeafAttempt parameter bottomLayer (treeIndexAt index bottomLayer)
         (leafIndexAt index bottomLayer) ftsPublicKey (signature.counter bottomLayer)
         (signature.chainValue bottomLayer)) = some bottomLeaf
       ∧ let middleMessage := foldValue f parameter bottomLayer
           (treeIndexAt index bottomLayer) (leafIndexAt index bottomLayer)
           (signaturePath signature bottomLayer) bottomLeaf (layerHeight bottomLayer)
         ∃ middleLeaf,
-          evalWithAnswerFn f (otsLeaf parameter middleLayer (treeIndexAt index middleLayer)
+          evalWithAnswerFn f (otsLeafAttempt parameter middleLayer (treeIndexAt index middleLayer)
               (leafIndexAt index middleLayer) middleMessage (signature.counter middleLayer)
               (signature.chainValue middleLayer)) = some middleLeaf
             ∧ let topMessage := foldValue f parameter middleLayer
@@ -41,7 +41,7 @@ def FullyHonestOpening (f : QueryImpl HashSpec Id) (cache : QueryCache HashSpec)
         (treeIndexAt index lay) (leafIndexAt index lay)
         (evalWithAnswerFn f (layerMessage secretKey index lay)) (signature.counter lay)
         (signature.chainValue lay) (signaturePath signature lay)
-      ∧ CachedRun cache f (otsLeaf secretKey.parameter lay (treeIndexAt index lay)
+      ∧ CachedRun cache f (otsLeafAttempt secretKey.parameter lay (treeIndexAt index lay)
         (leafIndexAt index lay) (evalWithAnswerFn f (layerMessage secretKey index lay))
         (signature.counter lay) (signature.chainValue lay)))
     ∧ (∀ tree,

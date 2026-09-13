@@ -52,7 +52,6 @@ theorem chainWalk_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafInde
           simp only [walkValue, queriedInputs_tweakableHash, List.mem_singleton]
       · rw [queriedInputs_bind]
         apply List.mem_append_left
-        simp only [chainLength, winternitzBits] at hstep hrange
         exact ih offset (by omega) hrange
 
 theorem leafHash_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
@@ -63,13 +62,13 @@ theorem leafHash_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex
 
 theorem otsLeaf_leaf_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leafIdx message counter)
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leafIdx message counter)
       = some codeword) :
     tweakableHashInput parameter (.leaf lay tree leafIdx)
         (leafPayload fun chainIdx => walkValue f parameter lay tree leafIdx chainIdx
           (codeword chainIdx).val (values chainIdx) (chainLength - 1 - (codeword chainIdx).val))
-      ∈ queriedInputs f (otsLeaf parameter lay tree leafIdx message counter values) := by
-  simp only [otsLeaf]
+      ∈ queriedInputs f (otsLeafAttempt parameter lay tree leafIdx message counter values) := by
+  simp only [otsLeafAttempt]
   apply queriedInputs_mono_bind_right
   rw [hencode]
   apply queriedInputs_mono_bind_right
@@ -81,7 +80,7 @@ theorem otsLeaf_leaf_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafI
 
 theorem otsLeaf_chain_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
     (message : Digest) (counter : Counter) (values : ChainIndex → Digest) (codeword : Encoding)
-    (hencode : evalWithAnswerFn f (encode parameter lay tree leafIdx message counter)
+    (hencode : evalWithAnswerFn f (encodeAttempt parameter lay tree leafIdx message counter)
       = some codeword) (chainIdx : ChainIndex) (offset : Nat)
     (hoffset : offset < chainLength - 1 - (codeword chainIdx).val)
     (hrange : (codeword chainIdx).val + offset < chainLength - 1) :
@@ -89,8 +88,8 @@ theorem otsLeaf_chain_query_mem (lay : Layer) (tree : TreeIndex) (leafIdx : Leaf
         (.chain lay tree leafIdx chainIdx ⟨(codeword chainIdx).val + offset, hrange⟩)
         (digestBytes (walkValue f parameter lay tree leafIdx chainIdx (codeword chainIdx).val
           (values chainIdx) offset))
-      ∈ queriedInputs f (otsLeaf parameter lay tree leafIdx message counter values) := by
-  simp only [otsLeaf]
+      ∈ queriedInputs f (otsLeafAttempt parameter lay tree leafIdx message counter values) := by
+  simp only [otsLeafAttempt]
   apply queriedInputs_mono_bind_right
   rw [hencode]
   apply queriedInputs_mono_bind_left

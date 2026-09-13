@@ -20,7 +20,7 @@ The cache command is needed on initial setup. The root module pins the axiom foo
 
 ## Where to work
 
-[PROOF.md](PROOF.md) explains the route, the constants, the component dependencies of every directory and which modules must change if the one-time signature changes. The proof is split by component:
+[PROOF.md](PROOF.md) explains the route, the constants, the component facades that seal each component's parameters, and which modules must change if a component changes. The proof is split by component:
 
 | Entry | Purpose |
 | --- | --- |

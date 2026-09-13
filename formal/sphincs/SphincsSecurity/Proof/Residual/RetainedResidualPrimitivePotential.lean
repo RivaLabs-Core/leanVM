@@ -450,14 +450,15 @@ theorem stop_add_messages_le_expected_primitivePotential {Result : Type} {inputs
   | some answer => simp only [reduceCtorEq, if_false, zero_le]
 
 theorem primitiveLivePotential_initial_le (inputs : Finset HashInput) (words : OtsReferenceWords)
-    (exposed : InitialPublicLabels words) (budget : Nat) (hcost : 1212415 ≤ budget)
+    (exposed : InitialPublicLabels words) (budget : Nat) (hcost : keygenHashCost ≤ budget)
     (hbudget : 2 * budget ≤ 2 ^ digestBits) :
     primitiveLivePotential budget (initialState inputs words exposed).memory ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) := by
-  have hc : (1212415 : ℝ) ≤ budget := by exact_mod_cast hcost
+  have hc : (keygenHashCost : ℝ) ≤ budget := by exact_mod_cast hcost
+  have hk : (0 : ℝ) ≤ keygenHashCost := Nat.cast_nonneg _
   have hb : 2 * (budget : ℝ) ≤ 2 ^ digestBits := by exact_mod_cast hbudget
   have hs : (0 : ℝ) < 2 ^ digestBits := by positivity
-  have hm := PrimitiveMessagePotential.mono_remaining (2 ^ digestBits) 0 ((budget : ℝ) - 1212415) budget
+  have hm := PrimitiveMessagePotential.mono_remaining (2 ^ digestBits) 0 ((budget : ℝ) - keygenHashCost) budget
     (by linarith) (by linarith) (by linarith)
   rw [PrimitiveMessagePotential.initial _ (budget : ℝ) hs.ne'] at hm
   simpa only [primitiveLivePotential, primitiveContinuation, initialState, initialMemory, List.length_nil,
@@ -489,7 +490,7 @@ theorem initialMonitoredSource_joint_primitive_messages (key : SecretKey) (adver
       initialMonitoredSource key adversary encoding dummy exposed high budget required stopAfter stopped = native := by
     exact monitoredRun_erasure key inputs (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
       words publicReplies encoding.selections encoding.rows budget required stopAfter source
-      (initial, initialCertificateMonitor 1212415 stopped)
+      (initial, initialCertificateMonitor keygenHashCost stopped)
   have hnativeCost (result : Option (Forgery × Bool) × State inputs) (hr : native result ≠ 0) :
       result.2.memory.external.hashCalls ≤ budget := by
     rw [← herasure, map_eq_bind_pure_comp, RetainedObservation.bind_nonzero] at hr
@@ -510,7 +511,7 @@ theorem initialMonitoredSource_joint_primitive_messages (key : SecretKey) (adver
     (ResidualByteFrontend.replyClean_empty _) (Nat.zero_le _) hd hnativeCost
   obtain ⟨result, hr⟩ := lazyRun_supported_result key.parameter inputs
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) words publicReplies encoding.selections encoding.rows computation initial ha
-  have hminimum : 1212415 ≤ budget :=
+  have hminimum : keygenHashCost ≤ budget :=
     (lazyRun_source_hashCalls_mono inputs words publicReplies encoding.selections encoding.rows key
       (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter) source hin initial ha hc result hr).trans (hnativeCost result hr)
   have h := (stop_add_messages_le_expected_primitivePotential budget native).trans
@@ -533,7 +534,7 @@ theorem initialMonitoredSource_primitive_add_full_count_le (key : SecretKey) (ad
         initialMonitoredSource key adversary encoding dummy exposed high budget Finset.univ (proposalStop stopAfter) stopped] *
           certificateBankCount result.2.2.bank) ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) +
-        (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal) := by
+        (budget : ENNReal) * fullCertificateExcessRate := by
   let law := initialMonitoredSource key adversary encoding dummy exposed high budget Finset.univ (proposalStop stopAfter) stopped
   let messages : ENNReal := ∑' result, Pr[= result | law] * (result.2.1.memory.messageCalls.length : ENNReal)
   have hprimitive := initialMonitoredSource_joint_primitive_messages key adversary encoding dummy exposed high budget Finset.univ
@@ -542,10 +543,10 @@ theorem initialMonitoredSource_primitive_add_full_count_le (key : SecretKey) (ad
     stopAfter stopped hparameter hencoding hroot hcost hbudget
   calc
     _ ≤ Pr[fun result => result.1 = none | law] +
-        ((2 ^ 128 : ENNReal)⁻¹ * messages + (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal)) :=
+        ((2 ^ 128 : ENNReal)⁻¹ * messages + (budget : ENNReal) * fullCertificateExcessRate) :=
       add_le_add le_rfl hcoverage
     _ = (Pr[fun result => result.1 = none | law] + messages / 2 ^ digestBits) +
-        (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal) := by
+        (budget : ENNReal) * fullCertificateExcessRate := by
       simp only [div_eq_mul_inv, digestBits]
       rw [mul_comm (2 ^ 128 : ENNReal)⁻¹ messages, ← add_assoc]
     _ ≤ _ := add_le_add hprimitive le_rfl

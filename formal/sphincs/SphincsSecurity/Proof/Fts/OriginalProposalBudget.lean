@@ -61,7 +61,7 @@ theorem originalProposalRecord_query_bound {α : Type} (key : SecretKey)
 theorem originalProposalRecord_sign_hashCalls (key : SecretKey) (message : Message)
     (cache : QueryCache HashSpec) (record : ProposalExecutionRecord (.inr message))
     (hr : record ∈ (originalProposalRecord key (.inr message) cache).support) :
-    28504 ≤ record.trace.hashCalls :=
+    ftsOpenHashCost ≤ record.trace.hashCalls :=
   boundaryHashAtLeast_sign key.parameter key message cache _
     (originalProposalRecord_boundary_support key (.inr message) cache record hr)
 
@@ -82,7 +82,7 @@ theorem targetCreationMultiplier_le_record_hashCalls (key : SecretKey)
         (freshDigestSelectionProbability_le_one key message cache)
       calc
         _ ≤ ((2 ^ ftsTreeHeight : Nat) : ENNReal) := by simpa only [targetCreationMultiplier, mul_one] using hmass
-        _ ≤ (28504 : Nat) := by norm_num [ftsTreeHeight]
+        _ ≤ (ftsOpenHashCost : ENNReal) := Nat.cast_le.mpr two_pow_ftsTreeHeight_le_ftsOpenHashCost
         _ ≤ record.trace.hashCalls := Nat.cast_le.mpr (originalProposalRecord_sign_hashCalls key message cache record hr)
 
 end SphincsSecurity.Concrete

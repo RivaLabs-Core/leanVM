@@ -20,7 +20,7 @@ theorem forced_original_completedRun_budget (dummy : OtsReferenceWords) (adversa
     (result : Completed × State Coordinate Digest PUnit)
     (hr : forcedRun (SecretGuessObservation.environment (originalAnswers dummy adversary parameter otsSecret labels auxiliary)) slot
       (completedRun parameter (canonicalGraphRoot labels) labels adversary) (initialState PUnit.unit) result ≠ 0) :
-    1212415 + completedWork result.1 ≤ q ∧ result.2.probes ≤ completedWork result.1 :=
+    keygenHashCost + completedWork result.1 ≤ q ∧ result.2.probes ≤ completedWork result.1 :=
   lazy_original_completedRun_budget dummy adversary q hbound parameter otsSecret labels auxiliary hauxiliary result
     (SecretGuessObservation.forcedRun_nonzero _ slot _ _ result hr)
 

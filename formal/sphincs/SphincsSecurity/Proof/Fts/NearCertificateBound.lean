@@ -16,10 +16,14 @@ theorem stirlingPowerMoment_thirteen :
     ENNReal.toReal_pow, ENNReal.toReal_div, ENNReal.toReal_natCast, ENNReal.toReal_ofNat]
   norm_num [Finset.sum_range_succ, Nat.stirlingSecond]
 
-/-- The average price, over a uniform proposal word of the fixed length, of a certificate that covers thirteen of the fourteen trees. -/
-theorem uniformWordAverage_nearPrice (required : Finset FtsTree) (hdegree : required.card = 13) :
+/-- The average price, over a uniform proposal word of the fixed length, of a certificate that covers all trees but one. -/
+theorem uniformWordAverage_nearPrice (required : Finset FtsTree) (hdegree : required.card + 1 = Fintype.card FtsTree) :
     uniformWordAverage fixedProposalLength (terminalCertificatePrice required) ≤
-      ((557 : ENNReal) / 14) / (2 ^ 128 : Nat) := by
+      nearCertificatePrice := by
+  rw [nearCertificatePrice_def]
+  replace hdegree : required.card = 13 := by
+    have htrees : Fintype.card FtsTree = 14 := Fintype.card_fin _
+    omega
   have hprice : terminalCertificatePrice required = fun word =>
       ((((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹ * (Fintype.card Index : ENNReal)⁻¹) * targetCertificateScale required) *
         proposalPowerSum required.card word := by

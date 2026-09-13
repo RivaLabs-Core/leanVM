@@ -22,7 +22,7 @@ theorem newMarker_cell_le (parameter : PublicParameter) (messages : EncodingPosi
     (hc : TraceConsistent parameter (referenceEncodingAllowed parameter messages selections) history allowed)
     (address : OtsPrefix.ChainAddress) (row : canonicalEncodingInputs parameter) :
     Pr[fun output => NewMarker parameter (referenceFamilyWords selections dummy) history address (row.val, output) |
-      cell (allowed row)] ≤ 41 / (Fintype.card Digest : ENNReal) := by
+      cell (allowed row)] ≤ (OtsCode.unitNeighborBound : ENNReal) / (Fintype.card Digest : ENNReal) := by
   refine (_root_.probEvent_mono (fun _ _ h => ⟨h.1, h.not_mem⟩)).trans
     ((hc.new_reply_probability_le row (fun output => EntryMarker parameter (referenceFamilyWords selections dummy) address
       (row.val, output))).trans ?_)
@@ -35,7 +35,7 @@ theorem newMarker_subset_cell_le (parameter : PublicParameter) (messages : Encod
     (hc : TraceConsistent parameter (referenceEncodingAllowed parameter messages selections) history allowed)
     (addresses : Finset OtsPrefix.ChainAddress) (row : canonicalEncodingInputs parameter) :
     Pr[fun output => ∃ address ∈ addresses, NewMarker parameter (referenceFamilyWords selections dummy) history address (row.val, output) |
-      cell (allowed row)] ≤ (41 * (addresses.card : ENNReal)) / Fintype.card Digest := by
+      cell (allowed row)] ≤ ((OtsCode.unitNeighborBound : ENNReal) * (addresses.card : ENNReal)) / Fintype.card Digest := by
   have h := (probEvent_exists_finset_le_sum addresses (cell (allowed row))
     (fun address output => NewMarker parameter (referenceFamilyWords selections dummy) history address (row.val, output))).trans
     (Finset.sum_le_sum fun address _ => newMarker_cell_le parameter messages selections dummy history allowed hc address row)
@@ -47,7 +47,7 @@ theorem newMarker_any_cell_le (parameter : PublicParameter) (messages : Encoding
     (hc : TraceConsistent parameter (referenceEncodingAllowed parameter messages selections) history allowed)
     (row : canonicalEncodingInputs parameter) :
     Pr[fun output => ∃ address, NewMarker parameter (referenceFamilyWords selections dummy) history address (row.val, output) |
-      cell (allowed row)] ≤ 1722 / (Fintype.card Digest : ENNReal) := by
+      cell (allowed row)] ≤ (OtsCode.neighborBound : ENNReal) / (Fintype.card Digest : ENNReal) := by
   refine (_root_.probEvent_mono (fun _ _ h => ?_)).trans
     ((hc.new_reply_probability_le row (fun output => ∃ address, EntryMarker parameter (referenceFamilyWords selections dummy) address
       (row.val, output))).trans ?_)

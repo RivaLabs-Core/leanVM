@@ -42,7 +42,7 @@ theorem targetCreationMultiplier_sign_le_digestAttempts (key : SecretKey) (messa
   have hc : (((2 ^ ftsTreeHeight : Nat) : ENNReal) *
       (digestAttemptExpectation digestAttemptLimit key message cache * ((2 ^ ftsTreeHeight : Nat) : ENNReal)⁻¹)) =
       digestAttemptExpectation digestAttemptLimit key message cache := by
-    rw [mul_left_comm, ENNReal.mul_inv_cancel (by norm_num [ftsTreeHeight]) (by finiteness), mul_one]
+    rw [mul_left_comm, ENNReal.mul_inv_cancel (by positivity) (by finiteness), mul_one]
   rw [hc] at hs
   exact hs
 

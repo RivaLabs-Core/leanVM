@@ -87,7 +87,7 @@ attribute [local irreducible] gameInputs
 theorem initialExceptionHistorySource_prefix_le (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (dummy : OtsReferenceWords)
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves) (budget : Nat) :
-    Pr[fun result => result.2.2.2 = true | initialExceptionHistorySource key adversary encoding dummy exposed high budget] ≤ (2 ^ 700 : ENNReal)⁻¹ := by
+    Pr[fun result => result.2.2.2 = true | initialExceptionHistorySource key adversary encoding dummy exposed high budget] ≤ proposalPrefixExceptionBound := by
   apply le_trans (exceptionHistoryRun_prefix_le key (gameInputs adversary)
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
     (referenceFamilyWords encoding.selections dummy)
@@ -98,7 +98,7 @@ theorem initialExceptionHistorySource_prefix_le (key : SecretKey) (adversary : A
   exact proposalPrefixWeight_initial_le
 
 theorem exceptionHistorySourceGame_prefix_le (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat) :
-    Pr[fun result => result.2.2.2 = true | exceptionHistorySourceGame dummy adversary budget] ≤ (2 ^ 700 : ENNReal)⁻¹ := by
+    Pr[fun result => result.2.2.2 = true | exceptionHistorySourceGame dummy adversary budget] ≤ proposalPrefixExceptionBound := by
   unfold exceptionHistorySourceGame
   apply probEvent_bind_le_of_forall_le
   intro parameter _
@@ -114,12 +114,12 @@ theorem exceptionHistorySourceGame_prefix_le (dummy : OtsReferenceWords) (advers
   exact initialExceptionHistorySource_prefix_le _ adversary encoding dummy exposed high budget
 
 theorem forgeAdvantage_le_native_bound_add_cache_history (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) +
-        (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-        (Pr[fun result => result.2.2.1 = true | exceptionHistorySourceGame dummy adversary budget] + (2 ^ 700 : ENNReal)⁻¹) :=
+        (budget : ENNReal) * fullCertificateExcessRate +
+        (Pr[fun result => result.2.2.1 = true | exceptionHistorySourceGame dummy adversary budget] + proposalPrefixExceptionBound) :=
   (forgeAdvantage_le_native_bound_add_histories dummy hdummy adversary budget hcost hbudget).trans
     (add_le_add le_rfl (add_le_add le_rfl (exceptionHistorySourceGame_prefix_le dummy adversary budget)))
 

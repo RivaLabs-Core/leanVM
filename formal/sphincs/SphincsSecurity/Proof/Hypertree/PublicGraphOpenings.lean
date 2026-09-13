@@ -119,7 +119,6 @@ def knownFrontier (known : Labels) (words : OtsReferenceWords) : OtsFrontierValu
     else known (.graph (.chain lay tree leaf chain
       ⟨(words lay tree leaf chain).val - 1, by
         have hdigit := (words lay tree leaf chain).isLt
-        simp only [chainLength, winternitzBits] at hdigit ⊢
         omega⟩))
 
 theorem knownFrontier_eq (labels : CanonicalGraphLabels) (words : OtsReferenceWords)

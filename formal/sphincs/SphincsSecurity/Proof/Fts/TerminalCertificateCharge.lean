@@ -192,31 +192,31 @@ theorem expected_certificateGame_creationCost_le_terminalPotential (adversary : 
     (hbudget : budget ≤ 2 ^ 127) :
     (∑' result, Pr[= result | certificateGame adversary budget required
       (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
-      (decide (total < 25313293))] * result.2.2.2.creationCost) ≤
+      (decide (total < fixedProposalLength))] * result.2.2.2.creationCost) ≤
         ∑' result, Pr[= result | certificateGame adversary budget required
           (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
-          (decide (total < 25313293))] * (result.2.2.2.creationMass *
+          (decide (total < fixedProposalLength))] * (result.2.2.2.creationMass *
             terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) result.2.1) := by
   rw [certificateGame, tsum_probOutput_bind_mul, tsum_probOutput_bind_mul]
   apply ENNReal.tsum_le_tsum
   intro generated
   apply mul_le_mul' le_rfl
   have hinv := certificateProposalInvariant_initial generated.1.1.2 total generated.1.2.hashCalls generated.2
-    (decide (total < 25313293)) (fun h => Nat.le_of_not_lt (of_decide_eq_false h))
+    (decide (total < fixedProposalLength)) (fun h => Nat.le_of_not_lt (of_decide_eq_false h))
   simpa only [initialCertificateMonitor, zero_add] using
     expected_certificateProposal_creationCost_le_mass_terminalPotential generated.1.1.2 budget total required
       (stopAfter generated.1.1.2) (FtsProbeSimulation.retainedGameRestComputation adversary generated.1.1.1)
-      ([], generated.2, initialCertificateMonitor generated.1.2.hashCalls (decide (total < 25313293))) hbudget hinv
+      ([], generated.2, initialCertificateMonitor generated.1.2.hashCalls (decide (total < fixedProposalLength))) hbudget hinv
 
 theorem expected_certificateTerminalGame_count_le_mass_price (adversary : Adversary)
     (budget total : Nat) (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule)
     (hbudget : budget ≤ 2 ^ 127) :
     (∑' result, Pr[= result | certificateTerminalGame adversary budget required
       (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
-      (decide (total < 25313293)) total] * certificateBankCount result.1.2.2.2.bank) ≤
+      (decide (total < fixedProposalLength)) total] * certificateBankCount result.1.2.2.2.bank) ≤
         ∑' result, Pr[= result | certificateTerminalGame adversary budget required
           (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
-          (decide (total < 25313293)) total] * (result.1.2.2.2.creationMass * terminalCertificatePrice required result.2) := by
+          (decide (total < fixedProposalLength)) total] * (result.1.2.2.2.creationMass * terminalCertificatePrice required result.2) := by
   rw [expected_certificateTerminalGame_project adversary budget required _ _ total
       (fun result => certificateBankCount result.2.2.2.bank),
     expected_certificateTerminalGame_weight_payoff adversary budget required _ _ total

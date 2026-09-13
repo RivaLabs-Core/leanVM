@@ -50,7 +50,8 @@ theorem boundaryHashAtLeast_ftsNode (traceParameter parameter : PublicParameter)
 theorem boundaryHashAtLeast_ftsOpen (traceParameter parameter : PublicParameter) (index : Index)
     (leaves : IndexGroup → FtsLeaf) (secret : FtsTree → FtsLeaf → Digest) :
     BoundaryHashAtLeast traceParameter (liftM (ftsOpen parameter index leaves secret : OracleComp HashSpec _))
-      (∑ _tree : FtsTree, ∑ level : Fin ftsTreeHeight, (2 ^ (level.val + 1) - 1)) := by
+      ftsOpenHashCost := by
+  rw [ftsOpenHashCost_def]
   unfold ftsOpen
   apply boundaryHashAtLeast_lift_sequenceFin
   intro tree
@@ -89,13 +90,14 @@ theorem boundaryHashAtLeast_signDigestLoop_bind {α : Type} (parameter : PublicP
           exact BoundaryHashAtLeast.mono (hnext _) (min_le_right _ _)
 
 theorem boundaryHashAtLeast_sign (parameter : PublicParameter) (key : SecretKey) (message : Message) :
-    BoundaryHashAtLeast parameter (sign key message) 28504 := by
+    BoundaryHashAtLeast parameter (sign key message) ftsOpenHashCost := by
   rw [sign_eq]
-  apply BoundaryHashAtLeast.mono (a := min digestAttemptLimit 28504) ?_ (by decide)
+  apply BoundaryHashAtLeast.mono (a := min digestAttemptLimit ftsOpenHashCost) ?_
+    (le_min ftsOpenHashCost_le_digestAttemptLimit le_rfl)
   apply boundaryHashAtLeast_signDigestLoop_bind
   rintro ⟨randomness, index, leaves⟩
-  apply boundaryHashAtLeast_bind _ _ _ 28504 0
-  · exact BoundaryHashAtLeast.mono (boundaryHashAtLeast_ftsOpen _ _ _ _ _) (by decide)
+  apply boundaryHashAtLeast_bind _ _ _ ftsOpenHashCost 0
+  · exact boundaryHashAtLeast_ftsOpen _ _ _ _ _
   · intro path
     exact boundaryHashAtLeast_zero _ _
 

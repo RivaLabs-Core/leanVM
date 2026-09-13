@@ -16,10 +16,13 @@ private theorem largeRangeClosing (x : ℝ) (hx : 3 / 16384 ≤ x) :
   norm_num at hx hs ⊢
   nlinarith
 
-theorem native_bound_le_security127 (q : Nat) (hlarge : 3 * 2 ^ 114 ≤ q) (hsmall : q ≤ 2 ^ 127) :
+theorem native_bound_le_security127 (q : Nat) (hlarge : budgetSplit ≤ q) (hsmall : q ≤ 2 ^ 127) :
     ENNReal.ofReal (2 * ((q : ℝ) / 2 ^ digestBits) - ((q : ℝ) / 2 ^ digestBits) ^ 2) +
-      (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      ((q : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ + (2 ^ 700 : ENNReal)⁻¹) ≤ (q : ENNReal) / 2 ^ 127 := by
+      (q : ENNReal) * fullCertificateExcessRate +
+      ((q : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) ≤ (q : ENNReal) / 2 ^ 127 := by
+  rw [budgetSplit_def] at hlarge
+  refine le_trans (add_le_add le_rfl (add_le_add (mul_le_mul' le_rfl certificateCacheExceptionRate_le) le_rfl)) ?_
+  rw [fullCertificateExcessRate_def, proposalPrefixExceptionBound_def]
   let x : ℝ := (q : ℝ) / 2 ^ 128
   have hx : 3 / 16384 ≤ x := by
     have hq : (3 * 2 ^ 114 : ℝ) ≤ q := by exact_mod_cast hlarge
@@ -41,7 +44,7 @@ theorem native_bound_le_security127 (q : Nat) (hlarge : 3 * 2 ^ 114 ≤ q) (hsma
   simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_pow, ENNReal.toReal_natCast, ENNReal.toReal_ofNat]
   convert largeRangeClosing x hx using 1 <;> generalize (2 : ℝ) ^ 700 = tailDenominator <;> dsimp only [x, digestBits] <;> ring
 
-theorem security127_of_large_budget (q : Nat) (hlarge : 3 * 2 ^ 114 ≤ q) (adversary : Adversary)
+theorem security127_of_large_budget (q : Nat) (hlarge : budgetSplit ≤ q) (adversary : Adversary)
     (hcost : HasHashQueryBound scheme adversary q) : forgeAdvantage scheme adversary ≤ (q : ENNReal) / 2 ^ 127 := by
   by_cases hsmall : q ≤ 2 ^ 127
   · exact (RetainedResidual.forgeAdvantage_le_native_bound fixedReferenceDummy

@@ -14,7 +14,7 @@ def EntryMarker (parameter : PublicParameter) (words : OtsReferenceWords) (addre
   AtEncodingPosition parameter entry.1 ⟨address.1, address.2.1, address.2.2.1⟩ ∧
     entry.1 ∈ canonicalEncodingInputs parameter ∧
     ∃ candidate, decodeEncodingOutput entry.2 = some candidate ∧
-      TargetSum.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2
+      OtsCode.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2
 
 theorem entryMarker_encoding_iff (parameter : PublicParameter) (words : OtsReferenceWords) (address : OtsPrefix.ChainAddress)
     (message : Digest) (counter : Counter) (output : HashOutput) :
@@ -22,7 +22,7 @@ theorem entryMarker_encoding_iff (parameter : PublicParameter) (words : OtsRefer
       (tweakableHashInput parameter (.encoding address.1 address.2.1 address.2.2.1)
         (digestBytes message ++ counterBytes counter), output) ↔
       ∃ candidate, decodeEncodingOutput output = some candidate ∧
-        TargetSum.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2 := by
+        OtsCode.UnitNeighborAt (words address.1 address.2.1 address.2.2.1) candidate address.2.2.2 := by
   have hcounter : counter.toNat < encodingAttemptLimit := by
     simpa only [encodingAttemptLimit, counterBits] using counter.isLt
   have hin := encodingRetryInput_mem_canonicalEncodingInputs parameter

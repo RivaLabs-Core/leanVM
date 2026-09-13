@@ -58,7 +58,7 @@ theorem nearStart_valid (spent : Nat) (stopped : Bool) : Valid (nearStart spent 
 
 include hauxiliary in
 theorem near_alive_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (spent : Nat) (stopped : Bool) (total : Nat)
-    (hbudget : budget ≤ 2 ^ 127) (hpool : stopped = false → 25313293 ≤ total)
+    (hbudget : budget ≤ 2 ^ 127) (hpool : stopped = false → fixedProposalLength ≤ total)
     (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart spent stopped))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
@@ -154,50 +154,50 @@ theorem near_alive_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree)
 
 include hauxiliary in
 theorem near_stopped_le (budget : Nat) (adversary : Adversary) (required : Finset FtsTree) (total : Nat) (hbudget : budget ≤ 2 ^ 127)
-    (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart 1212415 (decide (total < 25313293))))
+    (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart keygenHashCost (decide (total < fixedProposalLength))))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
-        1212415 + completedWork result.1 ≤ budget) :
+        keygenHashCost + completedWork result.1 ≤ budget) :
     Pr[fun result => SigningTranscript.Valid result.1.1.1.1.2 ∧ result.2.2.stopped = true |
         monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-          (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)))] ≤
-      (if total < 25313293 then 1 else 0) + (budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹ := by
-  by_cases hshort : total < 25313293
+          (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)))] ≤
+      (if total < fixedProposalLength then 1 else 0) + (budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound := by
+  by_cases hshort : total < fixedProposalLength
   · rw [if_pos hshort]
     exact probEvent_le_one.trans (le_self_add.trans le_self_add)
   rw [if_neg hshort, zero_add]
-  have hstopped : decide (total < 25313293) = false := decide_eq_false hshort
-  have hvalid := nearStart_valid 1212415 (decide (total < 25313293))
+  have hstopped : decide (total < fixedProposalLength) = false := decide_eq_false hshort
+  have hvalid := nearStart_valid keygenHashCost (decide (total < fixedProposalLength))
   have heraseMon : (fun result => (result.1, result.2.1)) <$>
       monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293))) =
+        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength))) =
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary :=
     monitoredCompletedRun_erasure parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)))
+      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)))
   have herase : (fun result => (result.1, result.2.1)) <$>
       exceptionCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)), (false, false)) =
+        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) =
       monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293))) :=
+        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength))) :=
     exceptionCompletedRun_erasure parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)), (false, false))
-  have hsized : Sized (nearStart 1212415 (decide (total < 25313293))) :=
+      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false))
+  have hsized : Sized (nearStart keygenHashCost (decide (total < fixedProposalLength))) :=
     ⟨0, by
       show QueryCache.enncard (∅ : QueryCache HashSpec) ≤ ((0 : Nat) : ENNReal)
       rw [QueryCache.enncard_empty]
       exact zero_le⟩
-  have hcons : Consistent parameter root (nearStart 1212415 (decide (total < 25313293))) := by
+  have hcons : Consistent parameter root (nearStart keygenHashCost (decide (total < fixedProposalLength))) := by
     refine ⟨?_, ?_⟩
-    · show QueryCache.enncard (∅ : QueryCache HashSpec) ≤ ((1212415 : Nat) : ENNReal)
+    · show QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (keygenHashCost : ENNReal)
       rw [QueryCache.enncard_empty]
       exact zero_le
     · intro entry hentry
       exact (List.not_mem_nil hentry).elim
-  have halive : (nearStart 1212415 (decide (total < 25313293))).2.stopped = false := hstopped
+  have halive : (nearStart keygenHashCost (decide (total < fixedProposalLength))).2.stopped = false := hstopped
   have hwork' : ∀ result : Completed × ExceptionState,
       exceptionCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)), (false, false)) result ≠ 0 →
-        1212415 + completedWork result.1 ≤ budget := by
+        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) result ≠ 0 →
+        keygenHashCost + completedWork result.1 ≤ budget := by
     intro result hresult
     have hmon := map_nonzero_of _ (fun result => (result.1, result.2.1)) result hresult
     rw [herase] at hmon
@@ -215,58 +215,58 @@ theorem near_stopped_le (budget : Nat) (adversary : Adversary) (required : Finse
       exact Prod.ext hflags.1 hflags.2
     have hlog : result.1.1.1.1.2.length ≤ signatureLimit := hvalidLog
     have hunstopped := exceptionCompletedRun_unstopped parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      hauxiliary adversary (nearStart 1212415 (decide (total < 25313293)), (false, false)) hvalid hcovered hcons halive hbudget result hresult
+      hauxiliary adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) hvalid hcovered hcons halive hbudget result hresult
       (hwork' result hresult) (by simpa only [initialCertificateMonitor, List.length_nil, zero_add] using hlog) hclean
     have hstoppedTrue' : result.2.1.2.stopped = true := hstoppedTrue
     rw [hunstopped] at hstoppedTrue'
     exact Bool.false_ne_true hstoppedTrue'
   refine (probEvent_or_le _ _ _).trans (add_le_add ?_ ?_)
   · refine (exceptionCompletedRun_cache_le parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop (fun _ _ _ _ => false)) hauxiliary adversary (nearStart 1212415 (decide (total < 25313293)), (false, false)) hvalid hcovered
+      (proposalStop (fun _ _ _ _ => false)) hauxiliary adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) hvalid hcovered
       hsized).trans ?_
-    have hweight : cacheHistoryWeight parameter root (nearStart 1212415 (decide (total < 25313293)), (false, false)) = 0 := by
+    have hweight : cacheHistoryWeight parameter root (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) = 0 := by
       simp only [cacheHistoryWeight, Bool.false_eq_true, if_false]
       exact certificateCacheExceptionWeight_initial _ _ (fun _ _ => rfl)
     rw [hweight, zero_add]
     apply mul_le_mul' ?_ le_rfl
     calc
       _ ≤ ∑' result, Pr[= result | monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget
-          required (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)))] * (budget : ENNReal) := by
+          required (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)))] * (budget : ENNReal) := by
         apply ENNReal.tsum_le_tsum
         intro result
         by_cases hzero : Pr[= result | monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget
-            required (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)))] = 0
+            required (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)))] = 0
         · rw [hzero, zero_mul, zero_mul]
         · rw [SPMF.probOutput_eq_apply] at hzero
           have hlaw := map_nonzero_of _ (fun result => (result.1, result.2.1)) result hzero
           rw [heraseMon] at hlaw
-          have hbound : 1212415 + completedWork result.1 ≤ budget := hwork _ hlaw
+          have hbound : keygenHashCost + completedWork result.1 ≤ budget := hwork _ hlaw
           exact mul_le_mul' le_rfl (by exact_mod_cast (show completedWork result.1 ≤ budget by omega))
       _ ≤ _ := by
         rw [ENNReal.tsum_mul_right]
         exact mul_le_of_le_one_left' tsum_probOutput_le_one
   · refine (exceptionCompletedRun_prefix_le parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
-      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)), (false, false)) (Nat.zero_le _)).trans ?_
+      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)), (false, false)) (Nat.zero_le _)).trans ?_
     simp only [prefixHistoryWeight, Bool.false_eq_true, if_false, initialCertificateMonitor, List.length_nil]
     exact proposalPrefixWeight_initial_le
 
 include hauxiliary in
 theorem near_omitting_total_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (total : Nat) (hbudget : budget ≤ 2 ^ 127)
-    (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart 1212415 (decide (total < 25313293))))
+    (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart keygenHashCost (decide (total < fixedProposalLength))))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
-        1212415 + completedWork result.1 ≤ budget) :
+        keygenHashCost + completedWork result.1 ≤ budget) :
     Pr[fun result => NearCertificateOmitting parameter root omitted result.1 |
         nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary] ≤
       (budget : ENNReal) *
           terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice (Finset.univ.erase omitted)) [] +
-        ((if total < 25313293 then 1 else 0) + (budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹) := by
+        ((if total < fixedProposalLength then 1 else 0) + (budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) := by
   have heraseMon : (fun result => (result.1, result.2.1)) <$>
       monitoredCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget (Finset.univ.erase omitted)
-        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293))) =
+        (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength))) =
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary :=
     monitoredCompletedRun_erasure parameter root otsSecret labels inputs hencoding selections rows dummy slot budget (Finset.univ.erase omitted)
-      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart 1212415 (decide (total < 25313293)))
+      (proposalStop (fun _ _ _ _ => false)) adversary (nearStart keygenHashCost (decide (total < fixedProposalLength)))
   rw [← heraseMon, probEvent_map]
   refine le_trans (probEvent_mono (q := fun result : Completed × MonitoredState =>
     (NearCertificateOmitting parameter root omitted result.1 ∧ result.2.2.stopped = false) ∨
@@ -277,7 +277,7 @@ theorem near_omitting_total_le (budget : Nat) (adversary : Adversary) (omitted :
     · exact Or.inl ⟨hnear, rfl⟩
     · exact Or.inr ⟨hnear.1, rfl⟩
   refine (probEvent_or_le _ _ _).trans (add_le_add ?_ ?_)
-  · exact near_alive_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary budget adversary omitted 1212415 _
+  · exact near_alive_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary budget adversary omitted keygenHashCost _
       total hbudget (fun h => Nat.le_of_not_lt (of_decide_eq_false h)) hcovered (fun result h => by have := hwork result h; omega)
   · exact near_stopped_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary budget adversary
       (Finset.univ.erase omitted) total hbudget hcovered hwork
@@ -288,18 +288,17 @@ theorem near_omitting_le (budget : Nat) (adversary : Adversary) (omitted : FtsTr
       ((∅, initialState PUnit.unit), monitor))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
-        1212415 + completedWork result.1 ≤ budget) :
+        keygenHashCost + completedWork result.1 ≤ budget) :
     Pr[fun result => NearCertificateOmitting parameter root omitted result.1 |
         nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary] ≤
-      (budget : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
-        ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹) := by
-  have hcard : (Finset.univ.erase omitted).card = 13 := by
+      (budget : ENNReal) * nearCertificatePrice +
+        ((budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) := by
+  have hcard : (Finset.univ.erase omitted).card + 1 = Fintype.card FtsTree := by
     rw [Finset.card_erase_of_mem (Finset.mem_univ _), Finset.card_univ]
-    have h : Fintype.card FtsTree = 14 := Fintype.card_fin _
-    rw [h]
+    exact Nat.sub_add_cancel (Fintype.card_pos_iff.mpr ⟨omitted⟩)
   have h := near_omitting_total_le parameter root otsSecret labels inputs hencoding selections rows dummy slot hauxiliary budget
     adversary omitted fixedProposalLength hbudget (hcovered _) hwork
-  rw [if_neg (show ¬ (fixedProposalLength < 25313293) from Nat.lt_irrefl _), zero_add, RetainedResidual.terminalProposalPotential_empty] at h
+  rw [if_neg (show ¬ (fixedProposalLength < fixedProposalLength) from Nat.lt_irrefl _), zero_add, RetainedResidual.terminalProposalPotential_empty] at h
   exact h.trans (add_le_add (mul_le_mul' le_rfl (uniformWordAverage_nearPrice _ hcard)) le_rfl)
 
 include hauxiliary in
@@ -308,7 +307,7 @@ theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget :
       ((∅, initialState PUnit.unit), monitor))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
-        1212415 + completedWork result.1 ≤ budget) :
+        keygenHashCost + completedWork result.1 ≤ budget) :
     Pr[fun result => completedNearCertificate parameter root result.1 |
         nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary] ≤ nearCertificateBound budget := by
   calc
@@ -323,15 +322,12 @@ theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget :
         refine le_trans (le_of_eq ?_) (Finset.single_le_sum (fun _ _ => zero_le) (Finset.mem_univ omitted))
         rw [if_pos homitted]
       · exact zero_le
-    _ ≤ ∑ _omitted : FtsTree, ((budget : ENNReal) * (((557 : ENNReal) / 14) / (2 ^ 128 : Nat)) +
-        ((budget : ENNReal) * certificateCacheExceptionRate + (2 ^ 700 : ENNReal)⁻¹)) :=
+    _ ≤ ∑ _omitted : FtsTree, ((budget : ENNReal) * nearCertificatePrice +
+        ((budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound)) :=
       Finset.sum_le_sum fun omitted _ => near_omitting_le parameter root otsSecret labels inputs hencoding selections rows dummy slot
         hauxiliary budget adversary omitted hbudget hcovered hwork
     _ = _ := by
-      rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul]
-      have h : Fintype.card FtsTree = 14 := Fintype.card_fin _
-      rw [h, nearCertificateBound]
-      simp only [Nat.cast_ofNat]
+      rw [Finset.sum_const, Finset.card_univ, nsmul_eq_mul, nearCertificateBound]
 
 end SphincsSecurity.Concrete.FtsGuessHash
 
@@ -366,7 +362,7 @@ theorem cachedNearGame_le (dummy : OtsReferenceWords) (adversary : Adversary) (q
   have hwork : ∀ result : Completed × CachedState,
       nearLaw parameter (canonicalGraphRoot labels) otsSecret labels (canonicalGraphGameInputs adversary)
         (canonicalEncodingInputs_subset_gameInputs adversary parameter) selections (Function.uncurry rows) dummy slot adversary result ≠ 0 →
-        1212415 + completedWork result.1 ≤ q := by
+        keygenHashCost + completedWork result.1 ≤ q := by
     intro result hresult
     have h := cachedForcedRun_original_budget dummy adversary q slot hbound parameter otsSecret labels
       ⟨selections, Function.uncurry rows, fun _ => Classical.arbitrary _⟩ (hauxiliary _)

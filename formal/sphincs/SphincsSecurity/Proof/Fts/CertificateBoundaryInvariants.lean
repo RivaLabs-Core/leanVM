@@ -69,7 +69,7 @@ theorem signingMacroHashCost_le_record (key : SecretKey)
       rw [originalProposalRecord_world_hashCalls key world cache record hr]
       cases world <;> exact le_rfl
   | inr message =>
-      exact (by decide : 1024 ≤ 28504).trans (originalProposalRecord_sign_hashCalls key message cache record hr)
+      exact two_pow_ftsTreeHeight_le_ftsOpenHashCost.trans (originalProposalRecord_sign_hashCalls key message cache record hr)
 
 theorem certificateMonitorUpdate_ready (key : SecretKey) (budget : Nat)
     (required : Finset FtsTree) (stopAfter : CertificateStopRule)

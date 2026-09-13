@@ -56,7 +56,7 @@ def otsSignFrom (parameter : PublicParameter) (lay : Layer) (tree : TreeIndex) (
     Nat → Nat → m (Option (Counter × (ChainIndex → Digest)))
   | 0, _ => pure none
   | attempts + 1, counter => do
-      match ← encode parameter lay tree leaf message (BitVec.ofNat counterBits counter) with
+      match ← encodeAttempt parameter lay tree leaf message (BitVec.ofNat counterBits counter) with
       | some encoding => do
           let values ← sequenceFin fun chainIdx =>
             chainWalk parameter lay tree leaf chainIdx 0 (encoding chainIdx).val (secret chainIdx)

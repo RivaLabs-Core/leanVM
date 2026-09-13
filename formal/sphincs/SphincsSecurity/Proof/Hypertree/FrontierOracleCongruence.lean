@@ -69,9 +69,9 @@ theorem eval_frontierLayerMessage_eq_of_agree (ftsSecret : Index → FtsTree →
 
 theorem eval_encode_eq_of_agree (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)
     (message : Digest) (counter : Counter) :
-    evalWithAnswerFn f (encode parameter lay tree leaf message counter) =
-      evalWithAnswerFn g (encode parameter lay tree leaf message counter) := by
-  simp only [encode, evalWithAnswerFn_bind, evalWithAnswerFn_pure, eval_tweakableHash,
+    evalWithAnswerFn f (encodeAttempt parameter lay tree leaf message counter) =
+      evalWithAnswerFn g (encodeAttempt parameter lay tree leaf message counter) := by
+  simp only [encodeAttempt, evalWithAnswerFn_bind, evalWithAnswerFn_pure, eval_tweakableHash,
     h.other (.encoding lay tree leaf) (by simp only [hashDomainFields, tweakFields]; decide)]
 
 theorem referenceEncodingSearch_eq_of_agree (lay : Layer) (tree : TreeIndex) (leaf : LeafIndex)

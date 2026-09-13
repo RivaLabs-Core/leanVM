@@ -110,15 +110,15 @@ structure CertificateProposalBounds (key : SecretKey) (total : Nat)
   counts_le : ∀ index : Index,
     (signingSlotsAtIndex (observedOptionalSigningViews (messageAnswers key.parameter state.2.1)
       key.root state.2.2.log) index).card ≤ state.1.count index
-  prefix_le : (state.1.length : ENNReal) ≤ targetProposalOverhead * state.2.2.log.length + 131072
-  total_le : 25313293 ≤ total
+  prefix_le : (state.1.length : ENNReal) ≤ targetProposalOverhead * state.2.2.log.length + (proposalPrefixSlack : ENNReal)
+  total_le : fixedProposalLength ≤ total
 
 def CertificateProposalInvariant (key : SecretKey) (total : Nat)
     (state : List Index × CertificateMonitorState) : Prop :=
   state.2.2.stopped = false → CertificateProposalBounds key total state
 
 theorem certificateProposalInvariant_initial (key : SecretKey) (total spent : Nat)
-    (cache : QueryCache HashSpec) (stopped : Bool) (hpool : stopped = false → 25313293 ≤ total) :
+    (cache : QueryCache HashSpec) (stopped : Bool) (hpool : stopped = false → fixedProposalLength ≤ total) :
     CertificateProposalInvariant key total ([], cache, initialCertificateMonitor spent stopped) := by
   intro hstopped
   refine ⟨Nat.zero_le _, rfl, ?_, ?_, hpool hstopped⟩
@@ -149,7 +149,7 @@ theorem certificateProposalInvariant_advance (key : SecretKey) (budget total : N
       Bool.or_eq_false_iff] at hpost
     exact hpost.1.1
   have hprefix : ((state.2.2.proposals + length : Nat) : ENNReal) ≤
-      targetProposalOverhead * (state.2.2.log ++ signingLogFragment input record.output).length + 131072 := by
+      targetProposalOverhead * (state.2.2.log ++ signingLogFragment input record.output).length + (proposalPrefixSlack : ENNReal) := by
     simp only [proposalPrefixStop, decide_eq_false_iff_not] at hstop
     exact le_of_not_gt hstop
   have hlog : (state.2.2.log ++ signingLogFragment input record.output).length ≤ signatureLimit := by

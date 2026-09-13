@@ -1,4 +1,7 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Ots.Code
+import SphincsSecurity.Proof.Hypertree.Parameters
+import SphincsSecurity.Proof.Fts.Parameters
+import SphincsSecurity.Proof.ClosingParameters
 
 namespace SphincsSecurity
 

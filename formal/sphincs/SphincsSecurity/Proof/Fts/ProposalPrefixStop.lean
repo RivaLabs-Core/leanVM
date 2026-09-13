@@ -8,7 +8,7 @@ set_option backward.isDefEq.respectTransparency false
 
 noncomputable def proposalPrefixStop : CertificateStopRule :=
   fun input state length record => decide (
-    targetProposalOverhead * (state.2.log ++ signingLogFragment input record.output).length + 131072 <
+    targetProposalOverhead * (state.2.log ++ signingLogFragment input record.output).length + (proposalPrefixSlack : ENNReal) <
       ((state.2.proposals + length : Nat) : ENNReal))
 
 end SphincsSecurity.Concrete

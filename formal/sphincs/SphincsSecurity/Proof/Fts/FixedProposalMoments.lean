@@ -5,8 +5,6 @@ namespace SphincsSecurity.Concrete
 
 open ENNReal
 
-def fixedProposalLength : Nat := 25313293
-
 noncomputable def fixedFullProposalPrice (word : List Index) : ENNReal :=
   (2 ^ 48 : ENNReal)⁻¹ * proposalPowerSum 14 word
 
@@ -15,7 +13,7 @@ theorem fixedProposalLength_rate_le :
   have hcard : Fintype.card Index = 2 ^ 26 := Fintype.card_fin _
   rw [hcard]
   apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
-  norm_num [fixedProposalLength, ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div]
+  norm_num [fixedProposalLength_def, ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div]
 
 theorem fixedFullProposalPrice_ne_top (word : List Index) : fixedFullProposalPrice word ≠ ⊤ := by
   apply ENNReal.mul_ne_top (by finiteness)

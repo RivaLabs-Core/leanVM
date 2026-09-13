@@ -55,22 +55,6 @@ theorem expected_weighted_terminalPotential_le {Result : Type} (law : SPMF Resul
     _ = _ := by
       simp only [mul_add, ENNReal.tsum_add, mul_left_comm _ baseline, mul_left_comm _ bound, ENNReal.tsum_mul_left]
 
-theorem uniformWordAverage_full_price_excess_le :
-    uniformWordAverage fixedProposalLength
-      (fun word => terminalCertificatePrice Finset.univ word - (2 ^ 128 : ENNReal)⁻¹) ≤ (11 / 2 ^ 144 : ENNReal) := by
-  have hscale (word : List Index) :
-      terminalCertificatePrice Finset.univ word - (2 ^ 128 : ENNReal)⁻¹ =
-        (2 ^ 128 : ENNReal)⁻¹ * (fixedFullProposalPrice word - 1) := by
-    rw [terminalCertificatePrice_full, ENNReal.mul_sub (fun _ _ => by finiteness), mul_one]
-  simp_rw [hscale]
-  rw [uniformWordAverage_mul_left]
-  calc
-    _ ≤ (2 ^ 128 : ENNReal)⁻¹ * (11 / 2 ^ 16 : ENNReal) :=
-      mul_le_mul' le_rfl uniformWordAverage_fixedFull_unit_excess_le
-    _ = _ := by
-      apply (ENNReal.toReal_eq_toReal_iff' (by finiteness) (by finiteness)).mp
-      norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div, ENNReal.toReal_pow]
-
 theorem expected_initialMonitoredSource_full_unit_count_le
     (key : SecretKey) (adversary : Adversary) (encoding : ReferenceEncodingAuxiliary) (dummy : OtsReferenceWords)
     (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy)) (high : CanonicalGraphHighHalves)
@@ -82,9 +66,9 @@ theorem expected_initialMonitoredSource_full_unit_count_le
       certificateBankCount result.2.2.bank) ≤
         (2 ^ 128 : ENNReal)⁻¹ *
           (∑' result, Pr[= result | initialMonitoredSource key adversary encoding dummy exposed high q Finset.univ (proposalStop stopAfter) stopped] *
-            result.2.1.memory.messageCalls.length) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) := by
+            result.2.1.memory.messageCalls.length) + (q : ENNReal) * fullCertificateExcessRate := by
   let state : ProposalState (gameInputs adversary) :=
-    ([], initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed, initialCertificateMonitor 1212415 stopped)
+    ([], initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed, initialCertificateMonitor keygenHashCost stopped)
   let law := proposalRun key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
     (referenceFamilyWords encoding.selections dummy)
     (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
@@ -93,7 +77,7 @@ theorem expected_initialMonitoredSource_full_unit_count_le
   have hvalid : MonitoredValid (gameInputs adversary) state.2 :=
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
   have hinv : ProposalInvariant key fixedProposalLength state :=
-    certificateProposalInvariant_initial key fixedProposalLength 1212415 _ stopped (fun _ => le_rfl)
+    certificateProposalInvariant_initial key fixedProposalLength keygenHashCost _ stopped (fun _ => le_rfl)
   have hproject : Prod.map id Prod.snd <$> law =
       initialMonitoredSource key adversary encoding dummy exposed high q Finset.univ (proposalStop stopAfter) stopped :=
     proposalRun_erasure key (gameInputs adversary) (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)

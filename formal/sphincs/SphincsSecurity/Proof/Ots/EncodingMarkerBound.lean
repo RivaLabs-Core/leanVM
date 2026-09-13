@@ -30,7 +30,7 @@ theorem referenceEncodingLazyRest_markers_le (key : SecretKey) (inputs : Finset 
     (selections : ReferenceFamily) (dummy : OtsReferenceWords) (adversary : Adversary) :
     (∑' result, Pr[= result | referenceEncodingLazyRest contactObserver key inputs hencoding outside selections dummy adversary] *
       ((OtsEncodingMarker.markers key.parameter (referenceFamilyWords selections dummy) (result.1.before * result.1.after)).card : ENNReal)) ≤
-      (1722 / (Fintype.card Digest : ENNReal)) * ∑' result,
+      ((OtsCode.neighborBound : ENNReal) / (Fintype.card Digest : ENNReal)) * ∑' result,
         Pr[= result | referenceEncodingLazyRest contactObserver key inputs hencoding outside selections dummy adversary] *
           (EncodingObservation.encodingCalls key.parameter (result.1.before * result.1.after) : ENNReal) := by
   have h := EncodingObservation.markers_initial_lazyRun_le key.parameter inputs hencoding outside
@@ -55,7 +55,7 @@ theorem referenceContactGame_markers_le (inputs : Finset HashInput)
     (∑' result, Pr[= result | referenceContactGame inputs hencoding dummy adversary] *
       ((OtsEncodingMarker.markers result.1 (referenceFamilyWords result.2.1 dummy)
         (result.2.2.before * result.2.2.after)).card : ENNReal)) ≤
-      (1722 / (Fintype.card Digest : ENNReal)) * ∑' result,
+      ((OtsCode.neighborBound : ENNReal) / (Fintype.card Digest : ENNReal)) * ∑' result,
         Pr[= result | referenceContactGame inputs hencoding dummy adversary] *
           (EncodingObservation.encodingCalls result.1 (result.2.2.before * result.2.2.after) : ENNReal) := by
   rw [referenceContactGame, ← referenceEncodingLazyGame_original contactObserver inputs hencoding hgraph dummy adversary]

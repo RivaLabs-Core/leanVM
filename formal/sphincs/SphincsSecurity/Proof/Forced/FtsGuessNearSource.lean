@@ -150,12 +150,12 @@ namespace SphincsSecurity.Concrete
 open _root_.OracleComp ENNReal
 
 theorem forgeAdvantage_le_forcedNear_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     forgeAdvantage scheme adversary ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
       ((2 ^ 128 - q : Nat) : ENNReal)⁻¹ *
         ∑ slot ∈ Finset.range q, Pr[fun hit => hit = true | FtsGuessHash.forcedNearGame dummy adversary slot] :=
   (forgeAdvantage_le_nearGuess_normalized_small_budget dummy hdummy adversary q hbound hsmall).trans

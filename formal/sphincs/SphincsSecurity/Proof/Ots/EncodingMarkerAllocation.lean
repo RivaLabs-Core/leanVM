@@ -62,7 +62,7 @@ theorem referenceContactGame_markers_le_encodingCost (dummy : OtsReferenceWords)
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] *
       ((OtsEncodingMarker.markers result.1 (referenceFamilyWords result.2.1 dummy)
         (result.2.2.before * result.2.2.after)).card : ENNReal)) ≤
-      (1722 / (Fintype.card Digest : ENNReal)) * ∑' result,
+      ((OtsCode.neighborBound : ENNReal) / (Fintype.card Digest : ENNReal)) * ∑' result,
         Pr[= result | referenceRecordedGame (canonicalGraphGameInputs adversary)
           (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] * (result.encodingCalls : ENNReal) := by
   rw [← referenceContactGame_expected_encodingCalls]

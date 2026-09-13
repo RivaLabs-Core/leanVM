@@ -115,8 +115,8 @@ theorem avoidsMessage_treePath (parameter : PublicParameter) (f : QueryImpl Hash
 theorem avoidsMessage_encode (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (lay : Layer) (tree : TreeIndex) (leafIdx : LeafIndex)
     (message : Digest) (counter : Counter) :
-    AvoidsMessageQueries parameter f (encode parameter lay tree leafIdx message counter) := by
-  simp only [encode]
+    AvoidsMessageQueries parameter f (encodeAttempt parameter lay tree leafIdx message counter) := by
+  simp only [encodeAttempt]
   apply AvoidsMessageQueries.bind
   · exact AvoidsMessageQueries.tweakableHash parameter f _ (by simp) _
   · exact AvoidsMessageQueries.pure parameter f _

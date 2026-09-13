@@ -46,7 +46,7 @@ theorem publicSigningWork_hashCalls_min (key : SecretKey) (known : Labels) (word
     (result : (PublicSigningRecord × Nat) × QueryCache HashSpec)
     (hr : result ∈ support ((simulateQ romImpl
       (ResidualByteFrontend.publicSigningWork key.parameter key.root known words selections message)).run cache)) :
-    28504 ≤ result.1.1.2.hashCalls := by
+    ftsOpenHashCost ≤ result.1.1.2.hashCalls := by
   rw [publicSigningWork_eq_digestWork, simulateQ_map, StateT.run_map, support_map] at hr
   obtain ⟨loop, hloop, rfl⟩ := hr
   rw [publicDigestLoop_eq, simulateQ_boundaryComputation] at hloop
@@ -55,7 +55,7 @@ theorem publicSigningWork_hashCalls_min (key : SecretKey) (known : Labels) (word
   | none =>
       have hc := boundaryRun_signDigestLoop_exhaustion key.parameter key message digestAttemptLimit cache loop hloop hs
       simp only [digestWork, hs]
-      exact (show 28504 ≤ digestAttemptLimit by decide).trans hc
+      exact ftsOpenHashCost_le_digestAttemptLimit.trans hc
   | some selected =>
       simp only [digestWork, hs, SigningBoundaryTrace.hashCalls_mul, SigningBoundaryTrace.hashCalls_pow_none]
       unfold publicSignPlan
@@ -75,7 +75,7 @@ theorem lazyRun_jointSigningProgram_hashCalls_min (routing : Routing) (message :
     (hresult : lazyRun (environment key.parameter inputs hencoding words publicReplies selections rows)
       (simulateQ (embed inputs routing)
         (ResidualByteFrontend.jointSigningProgram inputs key.parameter key.root routing.known words selections message)) state result ≠ 0) :
-    ∃ record, result.1 = some record ∧ 28504 ≤ record.2.hashCalls := by
+    ∃ record, result.1 = some record ∧ ftsOpenHashCost ≤ record.2.hashCalls := by
   have h := map_nonzero _ cacheResult result hresult
   rw [lazyRun_jointSigningProgram_cache key.parameter inputs hencoding words publicReplies selections rows routing key.root message
     (by simpa only [publicDigestLoop_eq] using hinputs) state ha hcovered, RetainedObservation.bind_nonzero] at h

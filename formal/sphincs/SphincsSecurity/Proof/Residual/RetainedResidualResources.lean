@@ -110,7 +110,7 @@ theorem monitoredStep_resources (input : (OracleWorld + SigningSpec).Domain)
           (freshDigestSelectionProbability_le_one key message state.1.memory.external.cache)
         calc
           _ ≤ ((2 ^ ftsTreeHeight : Nat) : ENNReal) := by simpa only [targetCreationMultiplier, mul_one] using hp
-          _ ≤ (28504 : Nat) := by norm_num [ftsTreeHeight]
+          _ ≤ (ftsOpenHashCost : ENNReal) := Nat.cast_le.mpr two_pow_ftsTreeHeight_le_ftsOpenHashCost
           _ ≤ record.2.hashCalls := Nat.cast_le.mpr hmin
 
 theorem monitoredRun_resources {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)

@@ -6,11 +6,11 @@ set_option backward.isDefEq.respectTransparency false
 
 theorem digestBytes_mem_canonicalPayloadInputs (value : Digest) : digestBytes value ∈ canonicalPayloadInputs := by
   simpa only [List.flatMap_cons, List.flatMap_nil, List.append_nil] using
-    flatMap_mem_canonicalPayloadInputs [value] (by change 1 ≤ numChains; decide)
+    flatMap_mem_canonicalPayloadInputs [value] (by change 1 ≤ numChains; exact Nat.le_trans (by decide) OtsCode.two_le_numChains)
 
 theorem nodePayload_mem_canonicalPayloadInputs (left right : Digest) : nodePayload left right ∈ canonicalPayloadInputs := by
   simpa only [nodePayload, List.flatMap_cons, List.flatMap_nil, List.append_nil] using
-    flatMap_mem_canonicalPayloadInputs [left, right] (by change 2 ≤ numChains; decide)
+    flatMap_mem_canonicalPayloadInputs [left, right] (by change 2 ≤ numChains; exact OtsCode.two_le_numChains)
 
 theorem orderedPayload_mem_canonicalPayloadInputs (order : Bool) (left right : Digest) :
     orderedPayload order left right ∈ canonicalPayloadInputs := by

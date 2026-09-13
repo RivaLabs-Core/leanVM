@@ -18,7 +18,7 @@ noncomputable def initialExceptionHistorySource (key : SecretKey) (adversary : A
     encoding.selections encoding.rows budget Finset.univ (proposalStop (fun _ _ _ _ => false))
     (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
     ((initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed,
-      initialCertificateMonitor 1212415 false), (false, false))
+      initialCertificateMonitor keygenHashCost false), (false, false))
 
 theorem initialExceptionHistorySource_erasure (key : SecretKey) (adversary : Adversary)
     (encoding : ReferenceEncodingAuxiliary) (dummy : OtsReferenceWords)
@@ -60,9 +60,9 @@ theorem initialExceptionHistorySource_exception (key : SecretKey) (adversary : A
     encoding.selections encoding.rows budget Finset.univ _ _
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
     (sourceInputs_unlogged_subset_gameInputs adversary key) (fun _ => rfl)
-    (monitoredBankComplete_initial key (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) Finset.univ exposed 1212415 false)
+    (monitoredBankComplete_initial key (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) Finset.univ exposed keygenHashCost false)
     (show CacheSizeBound (initialMemory (referenceFamilyWords encoding.selections dummy) exposed) from by
-      change QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (1212415 : ENNReal)
+      change QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (keygenHashCost : ENNReal)
       rw [QueryCache.enncard_empty]
       exact zero_le)
     (by intro entry hentry; cases hentry) rfl hbudget result hresult hlive hbound hlog hclean
@@ -136,11 +136,11 @@ theorem monitoredSourceGame_exception_le_history (dummy : OtsReferenceWords) (ad
   exact exceptionHistorySourceGame_exception dummy adversary budget hcost hbudget result hresult hexception
 
 theorem forgeAdvantage_le_native_bound_add_histories (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) +
-        (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
+        (budget : ENNReal) * fullCertificateExcessRate +
         (Pr[fun result => result.2.2.1 = true | exceptionHistorySourceGame dummy adversary budget] +
           Pr[fun result => result.2.2.2 = true | exceptionHistorySourceGame dummy adversary budget]) :=
   (forgeAdvantage_le_monitored_bound_add_exception dummy hdummy adversary budget (fun _ _ _ _ => false) hcost hbudget).trans

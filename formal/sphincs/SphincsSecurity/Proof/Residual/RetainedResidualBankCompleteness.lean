@@ -162,7 +162,7 @@ theorem initialMonitoredSource_bank_complete (adversary : Adversary) (encoding :
     (coordinateGraphLabels (initialKnown (referenceFamilyWords encoding.selections dummy) exposed) high)
     encoding.selections encoding.rows budget required stopAfter _ _
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
-    (monitoredBankComplete_initial key _ _ required exposed 1212415 stopped) result hresult
+    (monitoredBankComplete_initial key _ _ required exposed keygenHashCost stopped) result hresult
 
 theorem initialMonitoredSource_certificate_count (adversary : Adversary) (encoding : ReferenceEncodingAuxiliary)
     (dummy : OtsReferenceWords) (exposed : InitialPublicLabels (referenceFamilyWords encoding.selections dummy))

@@ -8,12 +8,9 @@ open _root_.OracleComp OracleSpec OracleComp.DeferredSampling
 attribute [local irreducible] canonicalGraphInputs canonicalEncodingInputs canonicalGraphGameInputs
 set_option backward.isDefEq.respectTransparency false
 
-def fixedReferenceDummyWord : Encoding :=
-  fun index => if index.val < 27 then ⟨7, by decide⟩ else if index.val = 27 then ⟨2, by decide⟩ else ⟨0, by decide⟩
+def fixedReferenceDummyWord : Encoding := OtsCode.defaultWord
 
-theorem fixedReferenceDummyWord_valid : TargetSum.Valid fixedReferenceDummyWord := by
-  change (∑ index : Fin 42, if index.val < 27 then (7 : Nat) else if index.val = 27 then 2 else 0) = 191
-  norm_num [Fin.sum_univ_succ]
+theorem fixedReferenceDummyWord_valid : OtsCode.Valid fixedReferenceDummyWord := OtsCode.defaultWord_valid
 
 def fixedReferenceDummy : OtsReferenceWords := fun _ _ _ => fixedReferenceDummyWord
 
@@ -38,8 +35,8 @@ theorem referenceFamilyOracleSample_words_valid (key : SecretKey) (inputs : Fins
     (hencoding : canonicalEncodingInputs key.parameter ⊆ inputs) (hgraph : canonicalGraphInputs key.parameter ⊆ inputs)
     (result : ReferenceFamily × (inputs → HashOutput))
     (hresult : result ∈ (referenceFamilyOracleSample key inputs hencoding).support) (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) :
-    ∀ lay tree leaf, TargetSum.Valid (referenceFamilyWords result.1 dummy lay tree leaf) := by
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf)) :
+    ∀ lay tree leaf, OtsCode.Valid (referenceFamilyWords result.1 dummy lay tree leaf) := by
   rw [referenceFamilyOracleSample_words key inputs hencoding hgraph result hresult dummy]
   exact canonicalReferenceWords_valid key (finiteHashAnswer ∅ inputs result.2) dummy hdummy
 

@@ -87,10 +87,10 @@ theorem monitoredStep_accounting (input : (OracleWorld + SigningSpec).Domain) (s
           (proposalOfSigningRecord message record raw.2.memory.external.cache (record.1.2.elim annotation.2 Prod.fst))
           (raw.2.memory.recordSigning message record) ?_ halive
         rw [hm]; rfl
-      · change state.1.memory.external.hashCalls + 1024 ≤ raw.2.memory.external.hashCalls
+      · change state.1.memory.external.hashCalls + 2 ^ ftsTreeHeight ≤ raw.2.memory.external.hashCalls
         rw [hm]
-        change state.1.memory.external.hashCalls + 1024 ≤ state.1.memory.external.hashCalls + record.2.hashCalls
-        omega
+        change state.1.memory.external.hashCalls + 2 ^ ftsTreeHeight ≤ state.1.memory.external.hashCalls + record.2.hashCalls
+        exact Nat.add_le_add_left (two_pow_ftsTreeHeight_le_ftsOpenHashCost.trans hmin) _
       · rw [hm]
         simp only [Memory.recordSigning, Memory.applyBoundary, List.length_append, List.length_singleton, Sum.isRight, if_true]
 

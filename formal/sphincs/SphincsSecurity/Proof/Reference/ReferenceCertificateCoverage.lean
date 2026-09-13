@@ -205,12 +205,12 @@ theorem referenceForgeryGame_full_le (dummy : OtsReferenceWords) (adversary : Ad
       (certificateTraceProgram_full_le adversary)
 
 theorem forgeAdvantage_le_remainingFts_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     forgeAdvantage scheme adversary ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ +
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound +
       Pr[ReferenceForgerySample.remainingFts dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] := by
   have hfts : Pr[ReferenceForgerySample.ftsOutcome dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)

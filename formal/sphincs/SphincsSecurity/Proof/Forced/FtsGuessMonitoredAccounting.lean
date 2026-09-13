@@ -69,7 +69,7 @@ theorem publicSigningWork_hashCalls_min' (key : SecretKey) (hparameter : key.par
     (known : CanonicalProbeRouting.Labels) (words : OtsReferenceWords) (selections : ReferenceFamily) (message : Message)
     (cache : QueryCache HashSpec) (result : PublicSigningRecord × QueryCache HashSpec)
     (hr : 𝒟[(simulateQ romImpl (Prod.fst <$> ResidualByteFrontend.publicSigningWork parameter root known words selections message)).run cache]
-      result ≠ 0) : 28504 ≤ result.1.2.hashCalls := by
+      result ≠ 0) : ftsOpenHashCost ≤ result.1.2.hashCalls := by
   subst hparameter hroot
   have hmem := (mem_support_iff_evalDist_apply_ne_zero _ _).mpr hr
   rw [simulateQ_map, StateT.run_map, support_map] at hmem
@@ -256,7 +256,7 @@ theorem signStep_account (message : Message) (state : MonitoredState) (hvalid : 
       (freshDigestSelectionProbability_le_one (monitorKey parameter root) message state.1.1)
     calc
       _ ≤ ((2 ^ ftsTreeHeight : Nat) : ENNReal) := by simpa only [targetCreationMultiplier, mul_one] using hp
-      _ ≤ (28504 : Nat) := by norm_num [ftsTreeHeight]
+      _ ≤ (ftsOpenHashCost : ENNReal) := Nat.cast_le.mpr two_pow_ftsTreeHeight_le_ftsOpenHashCost
       _ ≤ _ := by
         rw [htrace]
         exact Nat.cast_le.mpr hmin

@@ -36,7 +36,7 @@ theorem initialExceptionHistorySource_cache_le (key : SecretKey) (adversary : Ad
     (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
     (hcost : HasHashQueryBound scheme adversary budget) :
     Pr[fun result => result.2.2.1 = true | initialExceptionHistorySource key adversary encoding dummy exposed high budget] ≤
-      (budget : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ := by
+      (budget : ENNReal) * certificateCacheExceptionRate := by
   apply le_trans (exceptionHistoryRun_cache_le_budget key (gameInputs adversary)
     (canonicalEncodingInputs_subset_retainedGameInputs adversary key.parameter)
     (referenceFamilyWords encoding.selections dummy)
@@ -44,23 +44,22 @@ theorem initialExceptionHistorySource_cache_le (key : SecretKey) (adversary : Ad
     encoding.selections encoding.rows budget Finset.univ (proposalStop (fun _ _ _ _ => false))
     (FtsProbeSimulation.unloggedRetainedRestComputation adversary ⟨key.root, key.parameter⟩)
     ((initialState (gameInputs adversary) (referenceFamilyWords encoding.selections dummy) exposed,
-      initialCertificateMonitor 1212415 false), (false, false))
+      initialCertificateMonitor keygenHashCost false), (false, false))
     ⟨initialAllowed_nonempty _ exposed, initialState_rowsCovered _ _ exposed⟩
     (sourceInputs_unlogged_subset_gameInputs adversary key)
     (show CacheSizeBound (initialMemory (referenceFamilyWords encoding.selections dummy) exposed) from by
-      change QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (1212415 : ENNReal)
+      change QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (keygenHashCost : ENNReal)
       rw [QueryCache.enncard_empty]
       exact zero_le)
     budget (initialMonitoredSource_hashCalls_le key adversary encoding dummy exposed high budget Finset.univ
       (proposalStop (fun _ _ _ _ => false)) false hparameter hencoding hroot hcost))
   change certificateCacheExceptionWeight key (∅ : QueryCache HashSpec) + (budget : ENNReal) * certificateCacheExceptionRate ≤ _
-  rw [certificateCacheExceptionWeight_initial key ∅ (fun _ _ => rfl), zero_add]
-  exact mul_le_mul' le_rfl certificateCacheExceptionRate_le
+  simp only [certificateCacheExceptionWeight_initial key ∅ (fun _ _ => rfl), zero_add, le_refl]
 
 theorem exceptionHistorySourceGame_cache_le (dummy : OtsReferenceWords) (adversary : Adversary) (budget : Nat)
     (hcost : HasHashQueryBound scheme adversary budget) :
     Pr[fun result => result.2.2.1 = true | exceptionHistorySourceGame dummy adversary budget] ≤
-      (budget : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ := by
+      (budget : ENNReal) * certificateCacheExceptionRate := by
   unfold exceptionHistorySourceGame
   apply probEvent_bind_le_of_forall_le
   intro parameter hparameter
@@ -79,12 +78,12 @@ theorem exceptionHistorySourceGame_cache_le (dummy : OtsReferenceWords) (adversa
   exact initialExceptionHistorySource_cache_le _ adversary encoding dummy exposed high budget hp he rfl hcost
 
 theorem forgeAdvantage_le_native_bound (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf)) (adversary : Adversary)
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf)) (adversary : Adversary)
     (budget : Nat) (hcost : HasHashQueryBound scheme adversary budget) (hbudget : budget ≤ 2 ^ 127) :
     forgeAdvantage scheme adversary ≤
       ENNReal.ofReal (2 * ((budget : ℝ) / 2 ^ digestBits) - ((budget : ℝ) / 2 ^ digestBits) ^ 2) +
-        (budget : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-        ((budget : ENNReal) * (2 ^ 169 : ENNReal)⁻¹ + (2 ^ 700 : ENNReal)⁻¹) :=
+        (budget : ENNReal) * fullCertificateExcessRate +
+        ((budget : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) :=
   (forgeAdvantage_le_native_bound_add_cache_history dummy hdummy adversary budget hcost hbudget).trans
     (add_le_add le_rfl (add_le_add (exceptionHistorySourceGame_cache_le dummy adversary budget hcost) le_rfl))
 

@@ -38,12 +38,12 @@ theorem referenceForgeryGame_remainingFts_le (dummy : OtsReferenceWords) (advers
     (add_le_add (FtsGuessHash.referenceForgeryGame_two_guesses dummy adversary budget hbudget) le_rfl)
 
 theorem forgeAdvantage_le_nearGuess_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     forgeAdvantage scheme adversary ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ + FtsGuessHash.pairRate q +
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound + FtsGuessHash.pairRate q +
       Pr[ReferenceForgerySample.nearGuess dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] := by
   have h := (forgeAdvantage_le_remainingFts_small_budget dummy hdummy adversary q hbound hsmall).trans
@@ -51,12 +51,12 @@ theorem forgeAdvantage_le_nearGuess_small_budget (dummy : OtsReferenceWords)
   simpa only [add_assoc] using h
 
 theorem forgeAdvantage_le_nearGuess_normalized_small_budget (dummy : OtsReferenceWords)
-    (hdummy : ∀ lay tree leaf, TargetSum.Valid (dummy lay tree leaf))
+    (hdummy : ∀ lay tree leaf, OtsCode.Valid (dummy lay tree leaf))
     (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hsmall : q ≤ 3 * 2 ^ 114) :
+    (hsmall : q ≤ budgetSplit) :
     forgeAdvantage scheme adversary ≤
-      (7 / 4 : ENNReal) * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * (11 / 2 ^ 144 : ENNReal) +
-      (2 ^ 700 : ENNReal)⁻¹ + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
+      primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
       Pr[ReferenceForgerySample.nearGuess dummy | referenceForgeryGame (canonicalGraphGameInputs adversary)
         (canonicalEncodingInputs_subset_gameInputs adversary) dummy adversary] :=
   (forgeAdvantage_le_nearGuess_small_budget dummy hdummy adversary q hbound hsmall).trans

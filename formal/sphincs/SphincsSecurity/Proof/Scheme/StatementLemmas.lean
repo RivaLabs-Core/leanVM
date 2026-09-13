@@ -93,7 +93,7 @@ theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (sign
     verifyLayers (m := m) parameter index signature (remaining + 1) message
       = (if hlayer : remaining < numLayers then
           (do
-            match ← otsLeaf parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
+            match ← otsLeafAttempt parameter ⟨remaining, hlayer⟩ (treeIndexAt index ⟨remaining, hlayer⟩)
                 (leafIndexAt index ⟨remaining, hlayer⟩) message
                 (signature.counter ⟨remaining, hlayer⟩)
                 (signature.chainValue ⟨remaining, hlayer⟩) with
@@ -107,7 +107,8 @@ theorem verifyLayers_succ_eq (parameter : PublicParameter) (index : Index) (sign
         else pure none) := by
   rw [verifyLayers]
   split
-  · apply bind_congr
+  · simp only [otsLeaf_eq]
+    apply bind_congr
     intro result
     cases result <;> rfl
   · rfl

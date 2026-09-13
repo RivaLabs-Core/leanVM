@@ -21,7 +21,7 @@ noncomputable def referenceAuxSeedLaw (segment : OtsPrefix) (inputs : Finset Has
     PMF (segment.ReferenceAuxSeed inputs hencoding hgraph) :=
   (PMF.uniformOfFintype (segment.Query → High)).bind (fun high =>
     (PMF.uniformOfFintype (segment.RemainingRows inputs hencoding hgraph)).bind (fun remaining =>
-      (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selections).bind
+      (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).bind
         (fun selectedRows => (PMF.uniformOfFintype (canonicalEncodingInputs segment.parameter → HashOutput)).map
           (fun encoding => ⟨high, remaining, selectedRows, encoding⟩))))
 

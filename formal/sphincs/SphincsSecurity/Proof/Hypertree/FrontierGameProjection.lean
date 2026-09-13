@@ -106,7 +106,7 @@ theorem frontierRoot_eq (key : SecretKey) (f : QueryImpl HashSpec Id)
 noncomputable def frontierGame (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
     (ftsSecret : Index → FtsTree → FtsLeaf → Digest) (words : OtsReferenceWords)
     (frontier : OtsFrontierValues) (adversary : Adversary) : ProbComp (Bool × SigningBoundaryTrace) :=
-  (fun result => (result.1, (FreeMonoid.of none) ^ 1212415 * result.2)) <$>
+  (fun result => (result.1, (FreeMonoid.of none) ^ keygenHashCost * result.2)) <$>
     frontierGameRest parameter (frontierRoot parameter f words frontier) f ftsSecret words frontier adversary
 
 theorem fixedBoundaryRun_gameAfterSecrets_canonical (adversary : Adversary) (parameter : PublicParameter)
@@ -129,8 +129,8 @@ theorem fixedBoundaryRun_gameAfterSecrets_canonical (adversary : Adversary) (par
   change frontierRoot parameter f words frontier = root at hroot
   rw [gameAfterSecrets, fixedBoundaryRun_bind, fixedBoundaryRun_lift_hash]
   have htree : boundaryEval parameter f (treeRoot parameter topLayer rootTree (otsSecret topLayer rootTree)) =
-      (root, (FreeMonoid.of none) ^ 1212415) := by
-    exact boundaryEval_treeNode parameter f topLayer rootTree (otsSecret topLayer rootTree) _ _
+      (root, (FreeMonoid.of none) ^ keygenHashCost) := by
+    exact boundaryEval_keygen parameter f (otsSecret topLayer rootTree)
   rw [htree, pure_bind, fixedBoundaryRun_gameRest_frontier key f words frontier hfrontier
     (frontierReferenceWord_canonical key f dummy)]
   rw [frontierGame, hroot]

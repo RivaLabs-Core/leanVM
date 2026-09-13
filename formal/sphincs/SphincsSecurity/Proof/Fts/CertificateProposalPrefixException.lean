@@ -6,7 +6,7 @@ open _root_.OracleComp ENNReal
 attribute [local instance] Classical.propDecidable
 
 def ProposalPrefixExceptional (proposals completed : Nat) : Prop :=
-  targetProposalOverhead * completed + 131072 < (proposals : ENNReal)
+  targetProposalOverhead * completed + (proposalPrefixSlack : ENNReal) < (proposals : ENNReal)
 
 theorem proposalPrefixStop_eq_after_exception (key : SecretKey) (budget : Nat)
     (required : Finset FtsTree) (stopAfter : CertificateStopRule)

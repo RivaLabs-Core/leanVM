@@ -43,15 +43,13 @@ noncomputable def selected (decode : Answer → Option Value) (n : Nat) :
     PMF (Index → Option (Fin n × Value)) :=
   FinitePmfProduct.law (fun _ => FirstSuccessTable.selected decode n)
 
-noncomputable def afterSelect (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (FirstSuccessTable.invalid decode).Nonempty) (results : Index → Option (Fin n × Value)) :
+noncomputable def afterSelect (decode : Answer → Option Value) (n : Nat) (results : Index → Option (Fin n × Value)) :
     PMF (Index → Fin n → Answer) :=
-  FinitePmfProduct.law (fun index => FirstSuccessTable.afterSelect decode n hinvalid (results index))
+  FinitePmfProduct.law (fun index => FirstSuccessTable.afterSelect decode n (results index))
 
-theorem selected_mul_afterSelect (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (FirstSuccessTable.invalid decode).Nonempty) (results : Index → Option (Fin n × Value))
+theorem selected_mul_afterSelect (decode : Answer → Option Value) (n : Nat) (results : Index → Option (Fin n × Value))
     (tables : Index → Fin n → Answer) :
-    selected decode n results * afterSelect decode n hinvalid results tables =
+    selected decode n results * afterSelect decode n results tables =
       if select decode n tables = results then PMF.uniformOfFintype (Index → Fin n → Answer) tables else 0 := by
   rw [selected, afterSelect, FinitePmfProduct.apply, FinitePmfProduct.apply, ← Finset.prod_mul_distrib]
   simp only [FirstSuccessTable.selected_mul_afterSelect]
@@ -68,10 +66,9 @@ theorem selected_mul_afterSelect (decode : Answer → Option Value) (n : Nat)
     exact Finset.prod_eq_zero (Finset.mem_univ index) (if_neg hindex)
 
 theorem uniform_bind_eq_selected {Result : Type} (decode : Answer → Option Value) (n : Nat)
-    (hinvalid : (FirstSuccessTable.invalid decode).Nonempty)
     (next : (Index → Option (Fin n × Value)) → (Index → Fin n → Answer) → PMF Result) :
     (PMF.uniformOfFintype (Index → Fin n → Answer)).bind (fun tables => next (select decode n tables) tables) =
-      (selected decode n).bind (fun results => (afterSelect decode n hinvalid results).bind (next results)) := by
+      (selected decode n).bind (fun results => (afterSelect decode n results).bind (next results)) := by
   apply PMF.ext
   intro output
   simp only [PMF.bind_apply, ← ENNReal.tsum_mul_left, ← mul_assoc, selected_mul_afterSelect,

@@ -15,7 +15,7 @@ theorem encodingFamilyAllowed_nonempty (selections : ReferenceFamily) :
   fun row => encodingSelectionAllowed_nonempty (selections row.1) row.2
 
 theorem encoding_afterSelect_uniform (selection : ReferenceSelection) :
-    FirstSuccessTable.afterSelect decodeEncodingOutput encodingAttemptLimit decodeEncodingOutput_invalid_nonempty selection =
+    FirstSuccessTable.afterSelect decodeEncodingOutput encodingAttemptLimit selection =
       uniformTable (encodingSelectionAllowed selection) (encodingSelectionAllowed_nonempty selection) := by
   apply PMF.ext
   intro table
@@ -24,8 +24,7 @@ theorem encoding_afterSelect_uniform (selection : ReferenceSelection) :
   simpa only [complete_of_nonempty _ (encodingSelectionAllowed_nonempty selection), PMF.evalDist_eq, SPMF.liftM_apply] using h
 
 theorem encoding_family_uniform (selections : ReferenceFamily) :
-    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit
-      decodeEncodingOutput_invalid_nonempty selections).map Function.uncurry =
+    (FirstSuccessFamily.afterSelect decodeEncodingOutput encodingAttemptLimit selections).map Function.uncurry =
         uniformTable (encodingFamilyAllowed selections) (encodingFamilyAllowed_nonempty selections) := by
   simp only [FirstSuccessFamily.afterSelect, encoding_afterSelect_uniform, uniformTable_eq_product]
   exact FinitePmfProduct.uncurry (fun position coordinate =>

@@ -20,8 +20,7 @@ theorem referenceAuxiliarySample_select (inputs : Finset HashInput) (auxiliary :
   obtain ⟨seed, _, rfl⟩ := hauxiliary
   have hselected : FirstSuccessFamily.select decodeEncodingOutput encodingAttemptLimit rows = selections := by
     by_contra hne
-    have hmass := FirstSuccessFamily.selected_mul_afterSelect decodeEncodingOutput encodingAttemptLimit
-      decodeEncodingOutput_invalid_nonempty selections rows
+    have hmass := FirstSuccessFamily.selected_mul_afterSelect decodeEncodingOutput encodingAttemptLimit selections rows
     rw [if_neg hne] at hmass
     exact mul_ne_zero ((PMF.mem_support_iff _ _).mp hselections) ((PMF.mem_support_iff _ _).mp hrows) hmass
   exact congrFun hselected position

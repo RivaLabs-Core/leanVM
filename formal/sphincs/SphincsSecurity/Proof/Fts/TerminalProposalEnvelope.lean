@@ -33,16 +33,16 @@ theorem terminalProposalPotential_scale {α : Type} (base : PMF α) (total : Nat
     _ = _ := by rw [ENNReal.tsum_mul_right, ENNReal.tsum_mul_left]
 
 theorem targetProposalPrefix_length_le (completed total : Nat) (consumed : List Index)
-    (hcompleted : completed ≤ signatureLimit) (htotal : 25313293 ≤ total)
-    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + 131072) :
+    (hcompleted : completed ≤ signatureLimit) (htotal : fixedProposalLength ≤ total)
+    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + (proposalPrefixSlack : ENNReal)) :
     consumed.length ≤ total := by
   apply (Nat.cast_le (α := ENNReal)).mp
   calc
-    _ ≤ targetProposalOverhead * completed + 131072 := hprefix
-    _ ≤ targetProposalOverhead * signatureLimit + 131072 :=
+    _ ≤ targetProposalOverhead * completed + (proposalPrefixSlack : ENNReal) := hprefix
+    _ ≤ targetProposalOverhead * signatureLimit + (proposalPrefixSlack : ENNReal) :=
       add_le_add (mul_le_mul' le_rfl (Nat.cast_le.mpr hcompleted)) le_rfl
-    _ ≤ targetProposalOverhead * signatureLimit + 131072 + 13 := le_self_add
-    _ = (25313293 : ENNReal) := targetProposalPoolMinimum_eq
+    _ ≤ targetProposalOverhead * signatureLimit + (proposalPrefixSlack : ENNReal) + 13 := le_self_add
+    _ = (fixedProposalLength : ENNReal) := targetProposalPoolMinimum_eq
     _ ≤ (total : ENNReal) := by exact_mod_cast htotal
 
 theorem reuseRawEnvelope_le_terminalProposalPotential (key : SecretKey)
@@ -54,8 +54,8 @@ theorem reuseRawEnvelope_le_terminalProposalPotential (key : SecretKey)
     (hcounts : ∀ index : Index,
       (signingSlotsAtIndex (observedOptionalSigningViews
         (FtsProbeSimulation.messageAnswers key.parameter state.1) key.root state.2) index).card ≤ consumed.count index)
-    (htotal : 25313293 ≤ total)
-    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + 131072) :
+    (htotal : fixedProposalLength ≤ total)
+    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + (proposalPrefixSlack : ENNReal)) :
     reuseRawEnvelope key nearUniformDigestReuseWeight queries (signatureLimit - completed) state ∅ required ≤
       terminalProposalPotential (PMF.uniformOfFintype Index) total
         (fun word => ∑ index : Index, (word.count index : ENNReal) ^ required.card) consumed := by
@@ -73,8 +73,8 @@ theorem targetCreationPrice_le_terminalProposalPotential (key : SecretKey)
     (hcounts : ∀ index : Index,
       (signingSlotsAtIndex (observedOptionalSigningViews
         (FtsProbeSimulation.messageAnswers key.parameter state.1) key.root state.2) index).card ≤ consumed.count index)
-    (htotal : 25313293 ≤ total)
-    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + 131072) :
+    (htotal : fixedProposalLength ≤ total)
+    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * completed + (proposalPrefixSlack : ENNReal)) :
     targetCreationPrice key nearUniformDigestReuseWeight queries (signatureLimit - completed) required state ≤
       terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) consumed := by
   unfold terminalCertificatePrice
@@ -90,8 +90,8 @@ theorem certificateMonitorCharge_le_terminalPrice (key : SecretKey) (budget tota
     (hcounts : ∀ index : Index,
       (signingSlotsAtIndex (observedOptionalSigningViews
         (FtsProbeSimulation.messageAnswers key.parameter state.1) key.root state.2.log) index).card ≤ consumed.count index)
-    (htotal : 25313293 ≤ total)
-    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * state.2.log.length + 131072) :
+    (htotal : fixedProposalLength ≤ total)
+    (hprefix : (consumed.length : ENNReal) ≤ targetProposalOverhead * state.2.log.length + (proposalPrefixSlack : ENNReal)) :
     certificateMonitorCharge key budget required input state ≤
       certificateMonitorMass key budget input state *
         terminalProposalPotential (PMF.uniformOfFintype Index) total (terminalCertificatePrice required) consumed := by

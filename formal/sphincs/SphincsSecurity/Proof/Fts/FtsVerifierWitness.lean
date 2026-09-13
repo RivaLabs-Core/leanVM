@@ -75,7 +75,7 @@ theorem recover_reference (leaves : IndexGroup → FtsLeaf) (secrets : FtsTree �
       (evalWithAnswerFn f (ftsLeafHash key.parameter index tree (leaves (ftsIndexOf tree)) (secrets tree))))
   by_cases hp : ftsRootsPayload roots = honestPayload f key.parameter key.otsSecret key.ftsSecret (.ftsRoots index)
   · have hr : roots = fun tree => honestFtsNode f key.parameter index tree (key.ftsSecret index tree) ftsTreeHeight 0 := by
-      apply TargetSum.ftsRootsPayload_injective
+      apply ftsRootsPayload_injective
       exact hp
     intro tree
     apply tree_reference f key index leaves secrets paths trace hclean tree _ hrun

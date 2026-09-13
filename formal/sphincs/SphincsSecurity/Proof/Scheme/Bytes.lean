@@ -81,16 +81,9 @@ theorem tweakBytes_injective {d1 d2 : HashDomain} (h1 : d1.InRange) (h2 : d2.InR
     simp_all [hashDomainFields, tweakFields, HashDomain.InRange, TweakFields.mk.injEq]
   case chain.chain lay1 tree1 leaf1 i1 s1 lay2 tree2 leaf2 i2 s2 =>
     obtain ⟨hl, ht, hp, hlf⟩ := h
-    have hbound : ∀ (i : ChainIndex) (s : ChainStep), chainLength * i.val + s.val < 2 ^ 32 := by
-      intro i s
-      have := i.isLt; have := s.isLt
-      simp only [numChains, chainLength, winternitzBits] at *
-      omega
-    have hpos := ofNat_inj_of_lt (hbound i1 s1) (hbound i2 s2) hp
-    have hs1 := s1.isLt; have hs2 := s2.isLt
-    simp only [chainLength, winternitzBits] at hpos hs1 hs2
-    exact ⟨fin_of_ofNat_eq layer_le hl, fin_of_ofNat_eq tree_le ht, fin_of_ofNat_eq leaf_le hlf,
-      Fin.ext (by omega), Fin.ext (by omega)⟩
+    have hpos := ofNat_inj_of_lt (OtsCode.chainTweakPosition_lt i1 s1) (OtsCode.chainTweakPosition_lt i2 s2) hp
+    obtain ⟨hi, hs⟩ := OtsCode.chainTweakPosition_injective hpos
+    exact ⟨fin_of_ofNat_eq layer_le hl, fin_of_ofNat_eq tree_le ht, fin_of_ofNat_eq leaf_le hlf, hi, hs⟩
   case leaf.leaf => exact ⟨fin_of_ofNat_eq layer_le h.1, fin_of_ofNat_eq tree_le h.2.1,
       fin_of_ofNat_eq leaf_le h.2.2⟩
   case node.node lay1 tree1 level1 nodeIdx1 lay2 tree2 level2 nodeIdx2 =>
@@ -151,5 +144,37 @@ theorem nodePayload_injective {left right left' right' : Digest}
     left = left' ∧ right = right' := by
   obtain ⟨hleft, hright⟩ := List.append_inj h (by simp [bytesLE_length])
   exact ⟨digestBytes_injective hleft, digestBytes_injective hright⟩
+
+/-- A concatenation of fixed-length blocks determines the blocks. -/
+theorem flatMap_ofFn_injective {α β : Type} (g : α → List β) (len : Nat)
+    (hlen : ∀ a, (g a).length = len) (hinj : ∀ a b, g a = g b → a = b) :
+    ∀ {n : Nat} {f f' : Fin n → α},
+      (List.ofFn f).flatMap g = (List.ofFn f').flatMap g → f = f' := by
+  intro n
+  induction n with
+  | zero => intro f f' _; funext i; exact i.elim0
+  | succ n ih =>
+      intro f f' h
+      simp only [List.ofFn_succ, List.flatMap_cons] at h
+      obtain ⟨hhead, htail⟩ := List.append_inj h (by rw [hlen, hlen])
+      have hzero := hinj _ _ hhead
+      have hsucc := ih htail
+      funext i
+      cases i using Fin.cases with
+      | zero => exact hzero
+      | succ j => exact congrFun hsucc j
+
+/-- A one-time signature's payload is its `v` endpoints, and the concatenation determines them. -/
+theorem leafPayload_injective {endpoints endpoints' : ChainIndex → Digest}
+    (h : Concrete.leafPayload endpoints = Concrete.leafPayload endpoints') :
+    endpoints = endpoints' :=
+  flatMap_ofFn_injective Concrete.digestBytes 16 digestBytes_length
+    (fun _ _ => digestBytes_injective) h
+
+/-- A few-time public key's payload is its `k - 1` roots. -/
+theorem ftsRootsPayload_injective {roots roots' : FtsTree → Digest}
+    (h : Concrete.ftsRootsPayload roots = Concrete.ftsRootsPayload roots') : roots = roots' :=
+  flatMap_ofFn_injective Concrete.digestBytes 16 digestBytes_length
+    (fun _ _ => digestBytes_injective) h
 
 end SphincsSecurity

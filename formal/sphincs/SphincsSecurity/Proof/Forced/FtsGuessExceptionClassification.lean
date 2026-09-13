@@ -59,9 +59,9 @@ theorem monitoredStep_macro (input : (OracleWorld + SigningSpec).Domain) (state 
         message state hvalid (hsign message rfl) raw hraw
       have hmin := publicSigningWork_hashCalls_min' parameter root (monitorKey parameter root) rfl rfl (known otsSecret labels)
         (referenceFamilyWords selections dummy) selections message state.1.1 source hsource
-      change 1024 ≤ raw.1.2.hashCalls
+      change 2 ^ ftsTreeHeight ≤ raw.1.2.hashCalls
       rw [htrace]
-      exact (show 1024 ≤ 28504 by decide).trans hmin
+      exact two_pow_ftsTreeHeight_le_ftsOpenHashCost.trans hmin
 
 /-! ### Consistency of an unstopped monitor with its cache -/
 
