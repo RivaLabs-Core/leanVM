@@ -1,4 +1,4 @@
-import XmssSecurity.Statement
+import XmssSecurity.Proof.IdealStatement
 import XmssSecurity.Proof.StatementLemmas
 import XmssSecurity.Proof.EncodingLemmas
 import Mathlib.Tactic.NormNum
@@ -8,10 +8,10 @@ open OracleSpec
 namespace XmssSecurity
 
 def hashDomainTag : HashDomain → Nat
-  | .chain .. => 0
-  | .leaf .. => 1
-  | .merkle .. => 2
-  | .encoding .. => 3
+  | .chain .. => 1
+  | .leaf .. => 2
+  | .merkle .. => 3
+  | .encoding .. => 4
 
 @[simp]
 theorem length_bytesLE (byteCount : Nat) (value : BitVec (8 * byteCount)) :
@@ -41,9 +41,12 @@ theorem length_fieldBytes (fields : TweakFields) : (fieldBytes fields).length = 
 
 theorem fieldBytes_injective : Function.Injective fieldBytes := by
   intro left right heq
-  have hfields := List.append_left_injective (List.replicate 7 0) heq
-  obtain ⟨hfront, hepochBytes⟩ := List.append_inj hfields (by simp)
-  obtain ⟨htagBytes, hpositionBytes⟩ := List.append_inj hfront (by simp)
+  simp only [fieldBytes] at heq
+  obtain ⟨hfront, hepochBytes⟩ := List.append_inj heq (by simp)
+  have hfields := List.append_left_injective (List.replicate 4 0) hfront
+  obtain ⟨hheader, hpositionBytes⟩ := List.append_inj hfields (by simp)
+  have htagPrefix := List.append_left_injective [0, 0] hheader
+  have htagBytes := List.append_right_injective [protocolDomainSep] htagPrefix
   have htag : left.tag = right.tag := bytesLE_injective 1 htagBytes
   have hposition : left.position = right.position := bytesLE_injective 4 hpositionBytes
   have hepoch : left.epoch = right.epoch := bytesLE_injective 4 hepochBytes
@@ -99,7 +102,7 @@ theorem hashDomainFields_injective : Function.Injective hashDomainFields := by
   rw [hashDomainFields_tag, hashDomainFields_tag] at htagBits
   have htag := ofNat8_eq_of_lt (hashDomainTag_lt_8 left) (hashDomainTag_lt_8 right) htagBits
   cases left <;> cases right <;> simp [hashDomainTag] at htag
-  all_goals simp only [hashDomainFields] at heq
+  all_goals simp only [hashDomainFields, tweakFields] at heq
   · rename_i leftEpoch leftChain leftStep rightEpoch rightChain rightStep
     have hposition := congrArg TweakFields.position heq
     have hepoch := congrArg TweakFields.epoch heq
@@ -210,7 +213,7 @@ theorem leafPayload_injective : Function.Injective leafPayload := by
 theorem nodePayload_injective :
     Function.Injective fun input : Digest × Digest => nodePayload input.1 input.2 := by
   rintro ⟨leftFirst, leftSecond⟩ ⟨rightFirst, rightSecond⟩ heq
-  obtain ⟨hfirst, hsecond⟩ := List.append_inj heq (by simp [digestBytes])
+  obtain ⟨hfirst, hsecond⟩ := List.append_inj heq (by simp)
   exact Prod.ext (digestBytes_injective hfirst) (digestBytes_injective hsecond)
 
 namespace CacheView

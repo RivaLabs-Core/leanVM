@@ -14,17 +14,16 @@ fn keygen_sign_verify() {
     let (sk, pk) = test_key(0);
     assert_eq!(sk.public_key(), pk);
     let message = test_message();
-    for round in 0..2 {
-        let signature = sign(&mut StdRng::seed_from_u64(round), &sk, &message).unwrap();
-        verify(&pk, &message, &signature).unwrap();
-    }
+    let signature = sign(&sk, &message).unwrap();
+    verify(&pk, &message, &signature).unwrap();
+    assert_eq!(sign(&sk, &message).unwrap(), signature);
 }
 
 #[test]
 fn serialized_sizes_and_roundtrip() {
     let (sk, pk) = test_key(1);
     let message = test_message();
-    let signature = sign(&mut StdRng::seed_from_u64(7), &sk, &message).unwrap();
+    let signature = sign(&sk, &message).unwrap();
 
     let public_key_bytes = pk.flatten();
     assert_eq!(public_key_bytes.len(), 32);
@@ -41,7 +40,7 @@ fn serialized_sizes_and_roundtrip() {
 fn tampered_signatures_rejected() {
     let (sk, pk) = test_key(2);
     let message = test_message();
-    let signature = sign(&mut StdRng::seed_from_u64(3), &sk, &message).unwrap();
+    let signature = sign(&sk, &message).unwrap();
     verify(&pk, &message, &signature).unwrap();
 
     let mut other_message = message;
@@ -97,7 +96,7 @@ fn tampered_signatures_rejected() {
 fn ots_counter_is_the_least_admissible() {
     let mut rng = StdRng::seed_from_u64(4);
     let public_param: PublicParam = rng.random();
-    let master: Digest = rng.random();
+    let master: MasterSecret = rng.random();
     let pos = Pos::new(2, 1234, 56);
     let message: Digest = rng.random();
 
@@ -137,7 +136,7 @@ fn index_decomposition_is_a_bijection_onto_the_bottom_layer() {
 fn grinding_bits() {
     let mut rng = StdRng::seed_from_u64(6);
     let public_param: PublicParam = rng.random();
-    let master: Digest = rng.random();
+    let master: MasterSecret = rng.random();
 
     let samples = 200;
     let counters: u64 = (0..samples)
@@ -186,8 +185,23 @@ fn secret_key_survives_a_round_trip() {
 
     assert_eq!(reloaded.public_key(), pk);
     let message = test_message();
-    let sig = sign(&mut StdRng::seed_from_u64(1), &reloaded, &message).unwrap();
+    let sig = sign(&reloaded, &message).unwrap();
     verify(&pk, &message, &sig).unwrap();
+}
+
+#[test]
+fn secret_derivation_uses_full_master() {
+    let pp = [3; PUBLIC_PARAM_LEN];
+    let master = [7; MASTER_SECRET_LEN];
+    let pos = Pos::new(2, 5, 6);
+    let ots = ots_secret(&pp, &master, pos, 4);
+    let (fts, _) = fts_open(&pp, &master, 5, &[0; K]);
+    for byte in 0..MASTER_SECRET_LEN {
+        let mut changed = master;
+        changed[byte] ^= 1;
+        assert_ne!(ots_secret(&pp, &changed, pos, 4), ots);
+        assert_ne!(fts_open(&pp, &changed, 5, &[0; K]).0, fts);
+    }
 }
 
 /// The split between the two entry points: the seed alone determines the key,

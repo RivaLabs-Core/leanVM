@@ -55,32 +55,17 @@ impl XmssPublicKey {
     }
 }
 
-// PRF domains for secret derivation and filler nodes.
-const PRF_DOMAINSEP_WOTS_SECRET_KEY: u32 = 1000;
-const PRF_DOMAINSEP_PUBLIC_PARAM: u32 = 1001;
-const PRF_DOMAINSEP_RANDOM_NODE: u32 = 1002;
-
-fn prf(seed: &[u8; 32], domain: u32, a: u64, b: u64) -> Digest {
-    let mut msg = [0u8; 20];
-    msg[..4].copy_from_slice(&domain.to_le_bytes());
-    msg[4..12].copy_from_slice(&a.to_le_bytes());
-    msg[12..20].copy_from_slice(&b.to_le_bytes());
-    primitives::hash::keyed_hash(seed, &msg)[..DIGEST_LEN]
-        .try_into()
-        .unwrap()
-}
-
-fn gen_wots_secret_key(seed: &[u8; 32], epoch: Epoch) -> WotsSecretKey {
-    let pre_images = std::array::from_fn(|i| prf(seed, PRF_DOMAINSEP_WOTS_SECRET_KEY, epoch as u64, i as u64));
+fn gen_wots_secret_key(seed: &[u8; 32], public_param: &PublicParam, epoch: Epoch) -> WotsSecretKey {
+    let pre_images = std::array::from_fn(|i| tweak_hash(public_param, TWEAK_TYPE_PRF, i as u32, epoch, seed));
     WotsSecretKey::new(pre_images)
 }
 
 fn gen_public_param(seed: &[u8; 32]) -> PublicParam {
-    prf(seed, PRF_DOMAINSEP_PUBLIC_PARAM, 0, 0)
+    tweak_hash(&[0; PUBLIC_PARAM_LEN], TWEAK_TYPE_PARAMETER, 0, 0, seed)
 }
 
-fn gen_random_node(seed: &[u8; 32], level: usize, index: u64) -> Digest {
-    prf(seed, PRF_DOMAINSEP_RANDOM_NODE, level as u64, index)
+fn gen_random_node(seed: &[u8; 32], public_param: &PublicParam, level: usize, index: u64) -> Digest {
+    tweak_hash(public_param, TWEAK_TYPE_FILLER, level as u32, index as u32, seed)
 }
 
 /// Merkle parent at `level` (1 compression: both children fill one block).
@@ -98,7 +83,7 @@ fn merkle_node(public_param: &PublicParam, level: usize, index: u64, left: &Dige
 fn leaf_layer(seed: &[u8; 32], public_param: &PublicParam, first_epoch: u64, last_epoch: u64) -> Vec<Digest> {
     (first_epoch..=last_epoch)
         .map(|epoch| {
-            gen_wots_secret_key(seed, epoch as Epoch)
+            gen_wots_secret_key(seed, public_param, epoch as Epoch)
                 .public_key(public_param, epoch as Epoch)
                 .hash(public_param, epoch as Epoch)
         })
@@ -130,7 +115,7 @@ fn build_up(
                     if child_index >= first_child && child_index <= last_child {
                         children[(child_index - first_child) as usize]
                     } else {
-                        gen_random_node(seed, level - 1, child_index)
+                        gen_random_node(seed, public_param, level - 1, child_index)
                     }
                 };
                 merkle_node(public_param, level, index, &child(2 * index), &child(2 * index + 1))
@@ -174,8 +159,7 @@ impl std::fmt::Display for XmssKeyGenError {
 
 impl std::error::Error for XmssKeyGenError {}
 
-/// A fresh key pair, able to sign at each epoch of `epoch_start..=epoch_end`
-/// once. The seed comes from `rng`, so nothing can regenerate the key.
+/// A fresh key pair for `epoch_start..=epoch_end`, with its seed sampled from `rng`.
 pub fn key_gen(
     rng: &mut impl CryptoRng,
     epoch_start: Epoch,
@@ -241,32 +225,30 @@ pub fn key_gen_from_seed(
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash)]
 pub enum XmssSignError {
     EpochOutOfRange,
+    NoAdmissibleEncoding,
 }
 
 impl std::fmt::Display for XmssSignError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::EpochOutOfRange => write!(f, "the epoch is outside the key's range"),
+            Self::NoAdmissibleEncoding => write!(f, "no admissible encoding within the randomizer trial limit"),
         }
     }
 }
 
 impl std::error::Error for XmssSignError {}
 
-/// WARNING: XMSS is a stateful signature scheme, never sign twice with the same
-/// `epoch`. (Even signing the same message twice at the same epoch is insecure,
-/// because the signature randomness is drawn fresh.)
-pub fn sign(
-    rng: &mut impl CryptoRng,
-    secret_key: &XmssSecretKey,
-    message: &Message,
-    epoch: Epoch,
-) -> Result<XmssSignature, XmssSignError> {
+/// Never use the same key and epoch to sign two different messages.
+/// Signing is deterministic.
+pub fn sign(secret_key: &XmssSecretKey, message: &Message, epoch: Epoch) -> Result<XmssSignature, XmssSignError> {
     if epoch < secret_key.epoch_start || epoch > secret_key.epoch_end {
         return Err(XmssSignError::EpochOutOfRange);
     }
-    let (randomness, encoding, _) = find_randomness_for_wots_encoding(message, epoch, &secret_key.public_param, rng);
-    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, epoch);
+    let (randomness, encoding, _) =
+        find_randomness_for_wots_encoding(message, epoch, &secret_key.public_param, &secret_key.seed)
+            .ok_or(XmssSignError::NoAdmissibleEncoding)?;
+    let wots_secret_key = gen_wots_secret_key(&secret_key.seed, &secret_key.public_param, epoch);
     let wots_signature = wots_secret_key.sign(&encoding, randomness, epoch, &secret_key.public_param);
 
     let cache = secret_key.cached_bottom_subtree(epoch);
@@ -283,8 +265,7 @@ pub fn sign(
 }
 
 impl XmssSecretKey {
-    /// The epochs this key can sign at. XMSS forbids signing twice at one, so
-    /// the caller has to track which of these it has spent.
+    /// The epochs this key can sign at. The caller must ensure each epoch signs only one message.
     pub fn epoch_range(&self) -> std::ops::RangeInclusive<Epoch> {
         self.epoch_start..=self.epoch_end
     }
@@ -351,7 +332,7 @@ impl XmssSecretKey {
         if neighbour_index >= first_node && neighbour_index <= (last_epoch >> level) {
             layers[level - level_base][(neighbour_index - first_node) as usize]
         } else {
-            gen_random_node(&self.seed, level, neighbour_index)
+            gen_random_node(&self.seed, &self.public_param, level, neighbour_index)
         }
     }
 }

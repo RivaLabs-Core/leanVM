@@ -1,0 +1,16 @@
+import SphincsSecurity.Statement
+import SphincsSecurity.Proof.Adversary.Security
+
+namespace SphincsSecurity
+
+/-- The SPHINCS scheme has 127 bits of classical security. -/
+theorem sphincs_has_127_bits_of_classical_security : SphincsSecurityStatement :=
+  Security.security127
+
+/-! The build fails if the axiom footprint ever grows beyond Lean's three standard axioms, so a `sorry` or `native_decide` anywhere in the proof cannot go unnoticed. -/
+
+/-- info: 'SphincsSecurity.sphincs_has_127_bits_of_classical_security' depends on axioms: [propext, Classical.choice, Quot.sound] -/
+#guard_msgs (whitespace := lax) in
+#print axioms sphincs_has_127_bits_of_classical_security
+
+end SphincsSecurity
