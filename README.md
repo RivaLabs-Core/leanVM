@@ -69,7 +69,7 @@ Expect leanVM to change significantly:
 
 ### XMSS aggregation
 
-The XMSS parameters are specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/XMSS.pdf).
+The XMSS parameters are specified in [XMSS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/XMSS.pdf), with a [(ROM) security proof in Lean 4](https://github.com/leanEthereum/leanMultisig/blob/main/formal/xmss/XmssSecurity/Statement.lean).
 
 ```bash
 cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
@@ -87,7 +87,7 @@ aggregation, 900 XMSS signatures
 
 ### SPHINCS aggregation
 
-The SPHINCS parameters are specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/SPHINCS.pdf).
+The SPHINCS parameters are specified in [SPHINCS.pdf](https://github.com/leanEthereum/leanVM/releases/download/doc-latest/SPHINCS.pdf), with a [(ROM) security proof in Lean 4](https://github.com/leanEthereum/leanMultisig/blob/main/formal/sphincs/SphincsSecurity/Statement.lean).
 
 ```bash
 cargo run --release -- aggregate --sphincs 245 --log-inv-rate 1 --repeat 3

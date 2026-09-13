@@ -678,7 +678,7 @@ def HasClassicalSecurityBits (bits : Nat) : Prop :=
 
 end Security
 
-/-- The security claim for the scheme with a 256-bit master seed. -/
+/-- The security claim. -/
 abbrev SphincsSecurityStatement : Prop := Security.HasClassicalSecurityBits 127
 
 end SphincsSecurity
