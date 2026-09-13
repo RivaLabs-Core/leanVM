@@ -49,7 +49,7 @@ leanVM is designed for security:
  * end-to-end formal verification
  * a traditional hash function
 
-**warning**: Formal verification is in progress. leanVM is not (yet) production ready.
+**warning**: Formal verification is [in progress](https://github.com/Verified-zkEVM/leanerVM). leanVM is not (yet) production ready.
 
 ## work in progress
 
