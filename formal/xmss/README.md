@@ -1,6 +1,6 @@
 # XMSS security formalization
 
-[Statement.lean](XmssSecurity/Statement.lean) contains the complete scheme with a 32-byte master seed: parameters, serialized hash inputs, key generation, signing, verification, the consistent random-oracle game, and the 127-bit security target. Public parameters, WOTS secrets, and signing randomizers are derived in separate hash domains. Key generation computes the chain and tree tables; signing reads them and hashes for randomizer derivation and message encoding.
+[Scheme.lean](XmssSecurity/Scheme.lean) defines the scheme with a 32-byte master seed: parameters, serialized hash inputs, key generation, signing, and verification. [Statement.lean](XmssSecurity/Statement.lean) imports it and defines the SUF-CMA game, hash-query budget, and 127-bit security target. Public parameters, WOTS secrets, and signing randomizers are derived in separate hash domains. Key generation computes the chain and tree tables; signing reads them and hashes for randomizer derivation and message encoding.
 
 The public adversary may use private randomness adaptively and has no running-time or memory bound. The probability is over the master seed, the shared consistent random oracle and the adversary's private randomness. Private sampling does not count toward the hash-query budget. [Proof/Adversary](XmssSecurity/Proof/Adversary) identifies this game with the internal probabilistic game, preserving success probabilities and query counts exactly.
 

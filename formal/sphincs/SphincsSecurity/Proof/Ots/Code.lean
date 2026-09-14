@@ -1,11 +1,11 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 import SphincsSecurity.Proof.Base.Prelude
 import Mathlib.Tactic.IrreducibleDef
 
 /-!
 # The one-time-signature code
 
-Everything the proof knows about the Winternitz code of `Statement.lean`: which words are valid, how a digest decodes, that two valid words are incomparable, and how many valid words sit one backward step below a given one. The rest of the proof reaches the code only through these names. The definitions are sealed, so no proof elsewhere can depend on how the current target-sum code computes; another code with the same facts only changes this module.
+Everything the proof knows about the Winternitz code of `Scheme.lean`: which words are valid, how a digest decodes, that two valid words are incomparable, and how many valid words sit one backward step below a given one. The rest of the proof reaches the code only through these names. The definitions are sealed, so no proof elsewhere can depend on how the current target-sum code computes; another code with the same facts only changes this module.
 -/
 
 namespace SphincsSecurity

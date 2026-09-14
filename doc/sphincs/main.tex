@@ -365,7 +365,7 @@ For every integer $q\geq1$ and every adversary satisfying these limits,
 
 The probability is over the master seed, the random oracle and the adversary's private randomness.
 
-The Lean 4 proof using VCVio~\cite{VCVio} is in \texttt{formal/sphincs/}. Its complete statement, including seed derivation and the experiment above, is in \texttt{SphincsSecurity/Statement.lean}; the theorem is in \texttt{SphincsSecurity.lean}. It depends only on Lean's three standard axioms.
+The Lean 4 proof using VCVio~\cite{VCVio} is in \texttt{formal/sphincs/}. The scheme, including seed derivation, is in \texttt{SphincsSecurity/Scheme.lean}; the security experiment and claim are in \texttt{SphincsSecurity/Statement.lean}; the theorem is in \texttt{SphincsSecurity.lean}. It depends only on Lean's three standard axioms.
 
 \paragraph{Quantum security.}
 \label{sec:quantum}

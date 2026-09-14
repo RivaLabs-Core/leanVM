@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 import Mathlib.Tactic.IrreducibleDef
 
 /-!

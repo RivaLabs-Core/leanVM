@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 
 /-!
 # How many digests the target-sum code accepts

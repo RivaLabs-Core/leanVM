@@ -1,10 +1,10 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 import Mathlib.Tactic.IrreducibleDef
 
 /-!
 # Hypertree hash costs
 
-The oracle calls an honest computation of the hypertree makes, as formulas in the parameters of `Statement.lean`. They are sealed, so the accounting carries them symbolically and never evaluates them.
+The oracle calls an honest computation of the hypertree makes, as formulas in the parameters of `Scheme.lean`. They are sealed, so the accounting carries them symbolically and never evaluates them.
 -/
 
 namespace SphincsSecurity.Concrete

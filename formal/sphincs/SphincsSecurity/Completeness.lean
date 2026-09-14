@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 
 /-!
 # SPHINCS: correctness and completeness

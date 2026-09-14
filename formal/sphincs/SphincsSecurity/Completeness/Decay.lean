@@ -1,4 +1,4 @@
-import SphincsSecurity.Statement
+import SphincsSecurity.Scheme
 
 /-!
 # A search that beats its own odds

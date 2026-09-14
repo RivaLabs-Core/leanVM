@@ -254,7 +254,7 @@ The probability is over the master seed, the random oracle and the adversary's p
 The XMSS specified above has 127 bits of classical strong unforgeability in the ROM.
 \end{theorem}
 
-A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/}. The claim is stated in \texttt{XmssSecurity/Statement.lean}, discharged at the root in \texttt{XmssSecurity.lean}, and derived under \texttt{XmssSecurity/Proof/}. The theorem depends only on Lean's three standard axioms.
+A formal Lean4 proof of this theorem, using the VCVio framework \cite{VCVio}, can be found in \texttt{./formal/xmss/}. The scheme is defined in \texttt{XmssSecurity/Scheme.lean}; the claim is stated in \texttt{XmssSecurity/Statement.lean}, discharged at the root in \texttt{XmssSecurity.lean}, and derived under \texttt{XmssSecurity/Proof/}. The theorem depends only on Lean's three standard axioms.
 
 \begin{proof}[Proof sketch]
 TODO
