@@ -13,24 +13,22 @@
 from snark_lib import *
 
 # ---------------------------------------------------------------- proof stream
-# The proof stream rides ONE padded witness hint (the guest walks only the prefix
-# the shape dictates); binding always comes from the per-word absorbs.
+# The proof stream rides ONE padded witness hint of 64-bit words, three to a
+# transcript scalar (the guest walks only the prefix the shape dictates); binding
+# always comes from the per-scalar absorbs.
 STREAM_CAP = STREAM_CAP_PLACEHOLDER
 MIN_LOG_MEM = MIN_LOG_MEM_PLACEHOLDER
 INV_GEN = INV_GEN_PLACEHOLDER
 
 # ------------------------------------------------------------- the field, GF(2^192)
-# Tower F192 = F64[Y]/(Y^3+Y+1). Y_TOWER embeds Y for reassembling
-# e192(lo,hi,top) = lo + hi*Y + top*Y², and Y_INV also deduces a top limb at the
-# opening boundary once the low and high limbs are transmitted. COORD_BASIS is the
-# coordinate basis e_i of F192 (which spans the WHOLE field, unlike the g-power
-# basis GEN**i, which spans only F64): hint_decompose_bits emits a word's
-# coordinate bits, so a value reconstructs as Σ b_i·COORD_BASIS[i].
+# A memory cell is one 64-bit word. An element of F192 = F64[Y]/(Y^3+Y+1) is a run
+# of three cells, its limbs low first, computed with add192/mul192/div192; heap
+# buffers of them have stride three. A product of a word and an element is
+# limb-wise, three 64-bit multiplies and no reduction (`scale`).
 FIELD_BITS = 192
 BASE_FIELD_BITS = 64
-Y_TOWER = Y_TOWER_PLACEHOLDER
-Y_INV = Y_INV_PLACEHOLDER
-COORD_BASIS = COORD_BASIS_PLACEHOLDER
+ONE = f192(1, 0, 0)
+ZERO = f192(0, 0, 0)
 # Six challenges compose the F2-linear map that batches the 192 transposed
 # ring-switch coordinates.
 RING_MAP_SHIFTS = [32, 16, 8, 4, 2, 1]
@@ -46,46 +44,41 @@ SIZE_BITS = 34
 LOG_WORD_BITS = 6
 
 # ------------------------------------------------------------------- Fiat-Shamir
-# Every absorbed block carries its domain tag in lane 3, which is exactly
-# `fs_compress`'s `tail` argument, so a role is never smuggled through the data
-# lanes. The seeding block has none, being fixed at the head of the chain.
+# The state is four words. Every absorbed block carries a scalar's three limbs
+# and its domain tag in word 3, so a role is never smuggled through the data
+# words. The seeding block has none, being fixed at the head of the chain.
 DS_OBSERVE = 1
 DS_SQ = 2
 DS_POW_BASE = 3
 DS_POW_NONCE = 4
 
 # ----------------------------------------------------------- loop-carried chains
-# A loop whose state is several fields keeps ONE heap run of N cells per iteration,
-# so a step is one pointer multiply rather than one per field.
-PAIR_SLOTS = 2  # the Fiat-Shamir state pair alone
+# A loop whose state is several values keeps ONE heap run per iteration, so a
+# step is one pointer multiply rather than one per value. Each run leads with the
+# four-word Fiat-Shamir state.
+FS_SLOTS = 4
 # A Fiat-Shamir chain carrying one accumulator (the claim batching loops).
-ACC_FS0 = 0
-ACC_FS1 = 1
-ACC_VALUE = 2
-ACC_SLOTS = 3
+ACC_VALUE = 4
+ACC_SLOTS = 7
 # One sumcheck round of the bus GKR, the table batch, or flock's multilinear rounds.
-ROUND_FS0 = 0
-ROUND_FS1 = 1
-ROUND_CURSOR = 2
-ROUND_CLAIM = 3
-ROUND_SLOTS = 4
+ROUND_CURSOR = 4
+ROUND_CLAIM = 5
+ROUND_SLOTS = 8
 # One product layer of the bus GKR.
-LAYER_FS0 = 0
-LAYER_FS1 = 1
-LAYER_CURSOR = 2
-LAYER_PUSH = 3
-LAYER_PULL = 4
-LAYER_COUNT = 5
-LAYER_LAMBDA = 6
-LAYER_ROW = 7
-LAYER_POS = 8
-LAYER_SLOTS = 9
+LAYER_CURSOR = 4
+LAYER_PUSH = 5
+LAYER_PULL = 8
+LAYER_COUNT = 11
+LAYER_LAMBDA = 14
+LAYER_ROW = 17
+LAYER_POS = 18
+LAYER_SLOTS = 19
 # One OOD sample of a WHIR level.
 OOD_BETA = 0
-OOD_Y = 1
-OOD_C0 = 2
-OOD_C2 = 3
-OOD_SLOTS = 4
+OOD_Y = 3
+OOD_C0 = 6
+OOD_C2 = 9
+OOD_SLOTS = 12
 
 # ---------------------------------------------------- the bus: sides and blocks
 # GKR sides. The layer counts mu_s are hinted and certified from the block kappas;
@@ -160,7 +153,7 @@ N_TUPLE_SLOTS = 16
 BYTECODE_COLS = BYTECODE_COLS_PLACEHOLDER
 LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 
-# --------------------------------------------------------------- the six tables
+# ------------------------------------------------------------- the eight tables
 # The table sumcheck's batch carries EVERY committed column of a table, because its
 # bus forms read the flushed ones and its constraint the rest; TABLE_COLS_CAP caps
 # the evaluation frame. ETA_OFFSET[t] starts table t's disjoint range of zc_xi
@@ -168,14 +161,16 @@ LOG2_BYTECODE_COLS = LOG2_BYTECODE_COLS_PLACEHOLDER
 # every table, and that sharing is what makes the batch's target derivable from the
 # three leaf claims. FLOORS[t] is the table's tau floor (BLAKE2s is sized to
 # flock's instance count, >= 2^3).
-TABLE_XOR = 0
-TABLE_MUL = 1
+TABLE_XOR64 = 0
+TABLE_MUL64 = 1
 TABLE_SET = 2
 TABLE_DEREF = 3
 TABLE_JUMP = 4
 TABLE_BLAKE2s = 5
+TABLE_XOR192 = 6
+TABLE_MUL192 = 7
 N_TABLES = N_TABLES_PLACEHOLDER
-FLOORS = [0, 0, 0, 0, 0, 3]
+FLOORS = [0, 0, 0, 0, 0, 3, 0, 0]
 N_TABLE_COLS = N_TABLE_COLS_PLACEHOLDER
 TABLE_COLS_CAP = TABLE_COLS_CAP_PLACEHOLDER
 ETA_OFFSET = ETA_OFFSET_PLACEHOLDER
@@ -189,7 +184,7 @@ N_ETA_POWS = N_ETA_POWS_PLACEHOLDER
 # denominator per domain (combined, S). The zerocheck point/round buffers are sized
 # at runtime in the exponent (m = K_LOG + tau_5 and m - 6, both certified);
 # LINCHECK_ROUNDS = K_LOG - K_SKIP is protocol-fixed and PIN_COLUMN is the
-# const-pin column.
+# const-pin column. FIXED_CHALLENGES and PHI8_NODES hold three words an element.
 K_SKIP = K_SKIP_PLACEHOLDER
 N_FIXED_CHALLENGE_ROUNDS = N_FIXED_CHALLENGE_ROUNDS_PLACEHOLDER
 FIXED_CHALLENGES = FIXED_CHALLENGES_PLACEHOLDER
@@ -243,7 +238,6 @@ LIG_QUERIES = LIG_QUERIES_PLACEHOLDER
 LIG_FOLDS = LIG_FOLDS_PLACEHOLDER
 LIG_INTERLEAVE = LIG_INTERLEAVE_PLACEHOLDER
 LIG_LEAF_BLOCKS = LIG_LEAF_BLOCKS_PLACEHOLDER
-LIG_PACKED_ROW_CAP = LIG_PACKED_ROW_CAP_PLACEHOLDER
 LIG_ROW_CAP = LIG_ROW_CAP_PLACEHOLDER
 LIG_PATH_CAP = LIG_PATH_CAP_PLACEHOLDER
 LIG_TREE_DEPTH = LIG_TREE_DEPTH_PLACEHOLDER
@@ -254,7 +248,7 @@ LIG_RESIDUAL_FOLD_OFF = LIG_RESIDUAL_FOLD_OFF_PLACEHOLDER
 LIG_RESIDUAL_PREFIX_LEN = LIG_RESIDUAL_PREFIX_LEN_PLACEHOLDER
 LIG_FOLDS_OFF = LIG_FOLDS_OFF_PLACEHOLDER
 LIG_VANISH_OFF = LIG_VANISH_OFF_PLACEHOLDER
-LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER
+LIG_VANISH_VALS = LIG_VANISH_VALS_PLACEHOLDER  # words: the novel basis lives in F64
 LIG_VANISH_INVS = LIG_VANISH_INVS_PLACEHOLDER
 LIG_N_CANDIDATES = LIG_N_CANDIDATES_PLACEHOLDER
 LIG_MIN_SHIFT_INV = LIG_MIN_SHIFT_INV_PLACEHOLDER
@@ -275,10 +269,11 @@ QFLOCK_VARS_CAP = QFLOCK_VARS_CAP_PLACEHOLDER
 
 # ------------------------------------------------------ statements and deferral
 # A node defers three claims on fixed polynomials. DEFER_SIZE is the region one
-# sub-proof's verification exports (a bytecode point plus the flock lincheck data,
-# see verify_sub's defer_out layout); DEFER_STMT_* index the batched claims a
-# node's OWN statement carries. The Fiat-Shamir seed rides the public input rather
-# than being baked, so one compiled guest verifies proofs of any inner program.
+# sub-proof's verification exports, in field elements (a bytecode point plus the
+# flock lincheck data, see verify_sub's defer_out layout); DEFER_STMT_* index the
+# batched claims a node's OWN statement carries. The Fiat-Shamir seed rides the
+# statement rather than being baked, so one compiled guest verifies proofs of any
+# inner program.
 BYTECODE_LOG = BYTECODE_LOG_PLACEHOLDER  # log rows of the bytecode blocks
 DEFER_SIZE = DEFER_SIZE_PLACEHOLDER
 BYTECODE_VARS = BYTECODE_VARS_PLACEHOLDER  # = BYTECODE_LOG + LOG2_BYTECODE_COLS
@@ -297,65 +292,65 @@ DEFER_STMT_A_VALUE = BYTECODE_VARS + 1 + 2 * K_LOG
 DEFER_STMT_B_VALUE = BYTECODE_VARS + 2 + 2 * K_LOG
 AGG_SEED_0 = AGG_SEED_0_PLACEHOLDER
 AGG_SEED_1 = AGG_SEED_1_PLACEHOLDER
-# The statement digest's preimage: the STMT_HEADER header values as the 16-byte
-# cells they already are (the seed and the signer-set digest, which itself binds
-# the epoch groups and every count), then the deferred cells' tower limbs, two to
-# a cell and four cells to a 64-byte block. No domain tag: the seed leads, and it
-# binds this bytecode and flock's R1CS.
+AGG_SEED_2 = AGG_SEED_2_PLACEHOLDER
+AGG_SEED_3 = AGG_SEED_3_PLACEHOLDER
+# The statement digest's preimage: the STMT_HEADER header words (the seed, the
+# signer-set digest, which itself binds the epoch groups and every count, and the
+# DA root-list digest), then the deferred elements' three limbs each, zero-filled
+# to whole blocks. No domain tag: the seed leads, and it binds this bytecode and
+# flock's R1CS.
 STMT_HEADER = STMT_HEADER_PLACEHOLDER
-STMT_DEFER_OFF = STMT_HEADER
-STMT_ODD = STMT_ODD_PLACEHOLDER
-STMT_PAIRS = STMT_PAIRS_PLACEHOLDER
-STMT_PAD_CELLS = STMT_PAD_CELLS_PLACEHOLDER
+STMT_PAD = STMT_PAD_PLACEHOLDER
 STMT_BLOCKS = STMT_BLOCKS_PLACEHOLDER
-# The declared lists are hashed with plain BLAKE2s over a flat run of cells, 64
+# The declared lists are hashed with plain BLAKE2s over a flat run of words, 64
 # bytes a compression. A block's byte counter is a runtime value and the ISA has no
 # integer addition, so it splits as in doc §sec:prog-byte-counter: a window of
 # SIGNERS_WINDOW blocks shares one base 64·SIGNERS_WINDOW·q, whose set bits all sit
-# above the window's own offsets 64(j+1), so a block's metadata cell is one XOR. The
+# above the window's own offsets 64(j+1), so a block's counter word is one XOR. The
 # base comes from the window loop's own counter, and the one block whose offset
 # overlaps it takes the next window's base instead.
 SIGNERS_WINDOW = SIGNERS_WINDOW_PLACEHOLDER
 SIGNERS_WINDOW_LOG = SIGNERS_WINDOW_LOG_PLACEHOLDER
 SIGNERS_MAX_WINDOWS = SIGNERS_MAX_WINDOWS_PLACEHOLDER
 SIGNERS_COUNT_BITS = SIGNERS_COUNT_BITS_PLACEHOLDER
+# The lists a hash tail walks (`tail_blocks`).
+LIST_PLAIN = 0
+LIST_KEYS = 1
+LIST_SPHINCS = 2
+LIST_CHILD_KEYS = 3
+LIST_CHILD_SPHINCS = 4
 # BLAKE2s's parameterized initial chaining value, which every hash here starts from,
-# and the metadata of a final block with a zero counter, to add a length into.
+# and the flag word of a final block's metadata.
 BLAKE2S_IV_0 = BLAKE2S_IV_0_PLACEHOLDER
 BLAKE2S_IV_1 = BLAKE2S_IV_1_PLACEHOLDER
+BLAKE2S_IV_2 = BLAKE2S_IV_2_PLACEHOLDER
+BLAKE2S_IV_3 = BLAKE2S_IV_3_PLACEHOLDER
 MD_FINAL = MD_FINAL_PLACEHOLDER
 
 # ---------------------------------------------------------- XMSS (host-supplied)
 # Every 16-byte native value (tweak, digest, chain tip, sibling, public parameter)
-# is one canonical 128-bit cell. XM_* are the tweaks minus their index field, as
-# the host read them out of the native `make_tweak`, so the guest holds no byte
-# layout of its own; XM_INDEX_WEIGHT[b] is what bit b of an index weighs, an index
-# being its set bits summed.
+# is two words, a 32-byte one (a message, a key) four. A tweak's first word holds
+# its type and sub-position, its second the index at bit 32 (`xmss::make_tweak`):
+# XM_* are the first words, as the host read them out of `make_tweak`, and
+# XM_INDEX_WEIGHT[b] is what bit b of an index weighs in the second, an index being
+# its set bits summed. A sub-position weighs XM_P_MUL a unit.
 V = V_PLACEHOLDER
 W = W_PLACEHOLDER
 TARGET_SUM = TARGET_SUM_PLACEHOLDER
 LOG_LIFETIME = LOG_LIFETIME_PLACEHOLDER
 CHAIN_LENGTH = 2 ** W
 CHAIN_STEPS = CHAIN_LENGTH - 1
-WORDS_PER_VALUE = 1
-WORDS_PER_BLOCK = 2
-# Tweak table (one 1-cell tweak per index): encoding | V·CHAIN_STEPS chain |
-# wots-pk | merkle. Derived in-circuit, once per epoch group the statement carries.
-N_TWEAKS = 1 + V * CHAIN_STEPS + 1 + LOG_LIFETIME
-N_TWEAK_CELLS = WORDS_PER_VALUE * N_TWEAKS
-WOTS_PK_TWEAK_IDX = 1 + V * CHAIN_STEPS
-MERKLE_TWEAK_IDX = WOTS_PK_TWEAK_IDX + 1
-MERKLE_BIT_CELLS = WORDS_PER_VALUE * LOG_LIFETIME  # one 1-cell bit word per level
 XM_ENC_TWEAK = XM_ENC_TWEAK_PLACEHOLDER
 XM_PK_TWEAK = XM_PK_TWEAK_PLACEHOLDER
-XM_CHAIN_TWEAKS = XM_CHAIN_TWEAKS_PLACEHOLDER   # indexed CHAIN_STEPS·i + s
-XM_MERKLE_TWEAKS = XM_MERKLE_TWEAKS_PLACEHOLDER  # indexed by level
+XM_CHAIN_TWEAK = XM_CHAIN_TWEAK_PLACEHOLDER
+XM_MERKLE_TWEAK = XM_MERKLE_TWEAK_PLACEHOLDER
 XM_INDEX_WEIGHT = XM_INDEX_WEIGHT_PLACEHOLDER
-# Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget (the
-# lane's leftover top bits are ground to zero by the signer).
+XM_P_MUL = XM_P_MUL_PLACEHOLDER
+# Digits packed per digest word: W bits each in GF(2^64)'s monomial budget (the
+# word's leftover top bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
-TIP_CELLS = WORDS_PER_VALUE * V
-WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells a block
+TIP_WORDS = 2 * V
+WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, eight words a block
 
 # ------------------------------------------------------ SPHINCS+ (host-supplied)
 # The scheme's own letters, prefixed SP_ where XMSS has the same one.
@@ -371,16 +366,15 @@ SP_H = SP_H_PLACEHOLDER               # the total hypertree height, SP_SUFFIX[0]
 SP_CHAIN_LENGTH = 2 ** SP_W
 SP_CHAIN_STEPS = SP_CHAIN_LENGTH - 1
 SP_DIGITS_PER_WORD = SP_V / 2
-SP_TIP_CELLS = SP_V
-SP_LEAF_BLOCKS = (2 + SP_V) / 4       # prefix (tweak, pp) + V tips, four cells a block
+SP_TIP_WORDS = 2 * SP_V
+SP_LEAF_BLOCKS = (2 + SP_V) / 4       # prefix (tweak, pp) + V tips, eight words a block
 SP_N_FTS = SP_K - 1                   # the forest drops the last index's tree
 SP_ROOT_BLOCKS = (2 + SP_N_FTS) / 4
-# The message digest is h + k*a bits of a BLAKE2s output: the whole low cell and
-# the low 48 bits of the high one. Decomposing the high cell's low lane covers
-# them, so the buffer holds three lanes and the top 16 are never read.
+# The message digest is h + k*a bits of a BLAKE2s output, within its first three
+# words, so the bit buffer holds three words' decompositions.
 SP_BIT_LANES = 3
 SP_BIT_CELLS = SP_BIT_LANES * BASE_FIELD_BITS
-# Native tweak prefixes, including the protocol domain separator and type.
+# Native tweak first words, including the protocol domain separator and type.
 SP_TW_CHAIN = SP_TW_CHAIN_PLACEHOLDER
 SP_TW_LEAF = SP_TW_LEAF_PLACEHOLDER
 SP_TW_NODE = SP_TW_NODE_PLACEHOLDER
@@ -389,14 +383,14 @@ SP_TW_FTS_LEAF = SP_TW_FTS_LEAF_PLACEHOLDER
 SP_TW_FTS_NODE = SP_TW_FTS_NODE_PLACEHOLDER
 SP_TW_FTS_ROOTS = SP_TW_FTS_ROOTS_PLACEHOLDER
 SP_TW_MSG = SP_TW_MSG_PLACEHOLDER
-# Tweak layout: protocol_domain_sep | type | layer | zero | p | tree | index.
-# Each 32-bit field stays within one 64-bit lane.
+# Tweak layout: protocol_domain_sep | type | layer | zero | p in the first word,
+# tree | index in the second, each 32-bit field within one word.
 SP_LAY_MUL = 2 ** 16
 SP_P_MUL = 2 ** 32
-SP_TAU_POS = BASE_FIELD_BITS
-SP_J_POS = BASE_FIELD_BITS + 32
+SP_TAU_POS = 0
+SP_J_POS = 32
 SP_CHAIN_MUL = SP_CHAIN_LENGTH * SP_P_MUL   # chain i's tweaks start at p = 2^w * i
-# The encoding counter, LE_32 in the low four bytes of its cell: bounded by
+# The encoding counter, LE_32 in the low four bytes of its word: bounded by
 # decomposing exactly that many bits, so the guest accepts no preimage the native
 # verifier cannot parse.
 SP_COUNTER_BITS = 32
@@ -420,10 +414,8 @@ DA_LOG_K = DA_LOG_K_PLACEHOLDER
 DA_LOG_CELL = DA_LOG_CELL_PLACEHOLDER
 DA_MAX_ROWS = DA_MAX_ROWS_PLACEHOLDER
 DA_LOG_MAX_ROWS = DA_LOG_MAX_ROWS_PLACEHOLDER
-DA_PAD_CELL_0 = DA_PAD_CELL_0_PLACEHOLDER
-DA_PAD_CELL_1 = DA_PAD_CELL_1_PLACEHOLDER
-DA_PAD_ROW_0 = DA_PAD_ROW_0_PLACEHOLDER
-DA_PAD_ROW_1 = DA_PAD_ROW_1_PLACEHOLDER
+DA_PAD_CELL = DA_PAD_CELL_PLACEHOLDER
+DA_PAD_ROW = DA_PAD_ROW_PLACEHOLDER
 
 DA_CELL = 2 ** DA_LOG_CELL                      # symbols in a cell
 DA_BLOCK_BITS = DA_LOG_K + 1 - DA_LOG_CELL      # log of the cells per row
@@ -433,110 +425,87 @@ DA_CELL_BLOCKS = DA_CELL // 8                   # BLAKE2s blocks in one cell
 DA_ROW_BLOCKS = DA_PREFIX_CELLS // 2               # BLAKE2s blocks in one row digest
 DA_TREE_ARMS = DA_LOG_MAX_ROWS + 1              # tree depths the row count can dispatch to
 
-# =================================== field packing ==================================
-# Serializing a word means exposing its three K limbs, and the tower representation
-# is unique, so proving that the exposed lanes are in K and weight back to the word
-# is the whole check: no equality to make, one less hint to distrust.
+# =================================== field helpers ==================================
 
 
 @inline
-def pack64x2(a, b):
-    assert_in_k(a, b)
-    return a + Y_TOWER * b
-
-
-def assert_canonical(word):
-    # Hint the low limb and derive the quotient by Y. Requiring both in K proves
-    # `word = lo + Y*hi`, hence that its top limb is zero.
-    lo = StackBuf(1)
-    hint_f192_limbs(lo, word)
-    hi = (word + lo[0]) * Y_INV
-    assert_in_k(lo[0], hi)
-    return 0
+def scale(s, x):
+    # A word times an element, limb by limb.
+    return [s * x[0], s * x[1], s * x[2]]
 
 
 @inline
-def challenge_from_state(state):
-    # Both words are BLAKE2s outputs with zero top limbs.
-    # Hint d2 and derive d3 = (state[1] + d2)/Y.
-    # Requiring both in K binds d2 by the tower representation.
-    # The challenge uses d2; d3 is checked and discarded.
-    d2 = StackBuf(1)
-    hint_f192_limbs(d2, state[1])
-    d3 = (state[1] + d2[0]) * Y_INV
-    assert_in_k(d2[0], d3)
-    return state[0] + Y_TOWER * Y_TOWER * d2[0]
+def add64(x, s):
+    # An element plus a word: only the low limb moves.
+    return [x[0] + s, x[1], x[2]]
+
+
+@inline
+def fixed_challenge(i: Const):
+    return f192(FIXED_CHALLENGES[3 * i], FIXED_CHALLENGES[3 * i + 1], FIXED_CHALLENGES[3 * i + 2])
+
+
+@inline
+def phi8(i: Const):
+    return f192(PHI8_NODES[3 * i], PHI8_NODES[3 * i + 1], PHI8_NODES[3 * i + 2])
 
 
 # ==================================== Fiat-Shamir ===================================
 
 
 @inline
-def fs_compress(state, scalar, tail, out):
-    # BLAKE2s requires block[0] to have zero top limb, binding the hinted top.
-    limbs = StackBuf(3)
-    hint_f192_limbs(limbs, scalar)
-    assert_in_k(limbs[2], tail)
-    block = StackBuf(2)
-    block[0] = scalar + Y_TOWER * Y_TOWER * limbs[2]
-    block[1] = limbs[2] + Y_TOWER * tail
-    blake2s(state, block, out)
-    return
+def fs_next(state, cursor):
+    # Fetch, observe and advance in one act: read the scalar under `cursor`, fold
+    # it into the state, and hand back the successor state, the scalar, AND the
+    # cursor stepped one scalar on. Reading and absorbing are inseparable here, so
+    # no proof-stream word can enter the computation unbound: the soundness
+    # invariant the whole guest rests on. All three returns alias into the caller.
+    block = StackBuf(4)
+    block[0:3] = cursor[0:3]
+    block[3] = DS_OBSERVE
+    nb = StackBuf(4)
+    blake2s(state, block, nb)
+    return nb, block[0:3], cursor * GEN ** 3
+
+
+@inline
+def fs_next_half(state, cursor):
+    # `fs_next` of a 128-bit half of a Merkle root, which rides the stream as a
+    # scalar with a zero top limb (merkle.rs `scalars_to_hash`).
+    block = StackBuf(4)
+    block[0:3] = cursor[0:3]
+    block[3] = DS_OBSERVE
+    assert block[2] == 0
+    nb = StackBuf(4)
+    blake2s(state, block, nb)
+    return nb, block[0:3], cursor * GEN ** 3
 
 
 @inline
 def obs(state, x):
     # Bind one scalar into the chain: state <- compress(state, (x, DS_OBSERVE)).
-    # Returns the successor StackBuf; the call site aliases it (zero copies).
-    nb = StackBuf(2)
-    fs_compress(state, x, DS_OBSERVE, nb)
+    nb = StackBuf(4)
+    blake2s(state, [x, DS_OBSERVE], nb)
     return nb
 
 
 @inline
-def fs_next(state, cursor):
-    # Fetch, observe and advance in one act: read the word under `cursor`, fold it
-    # into the state, and hand back the successor state, the word, AND the cursor
-    # stepped one word on. Reading and absorbing are inseparable here, so no
-    # proof-stream word can enter the computation unbound: the soundness invariant
-    # the whole guest rests on. All three returns alias into the caller for free.
-    x = cursor[GEN ** 0]
-    nb = obs(state, x)
-    return nb, x, cursor * GEN
-
-
-@inline
-def squeeze_state(state):
-    nb = StackBuf(2)
-    blake2s(state, [0, Y_TOWER * DS_SQ], nb)
+def obs_at(state, ptr):
+    # `obs` of the scalar at a heap pointer, read straight into the block.
+    block = StackBuf(4)
+    block[0:3] = ptr[0:3]
+    block[3] = DS_OBSERVE
+    nb = StackBuf(4)
+    blake2s(state, block, nb)
     return nb
 
 
 @inline
 def squeeze(state):
-    # Ratchet: the canonical 128+128 digest is the new state; its first three K
-    # lanes are reassembled as the F192 challenge.
-    nb = squeeze_state(state)
-    challenge = challenge_from_state(nb)
-    return nb, challenge
-
-
-@inline
-def absorb_nonce(state, x):
-    # Full-field grinding nonce absorb: [x.c0, x.c1, x.c2, DS_POW_NONCE].
-    nb = StackBuf(2)
-    fs_compress(state, x, DS_POW_NONCE, nb)
-    return nb
-
-
-@inline
-def squeeze_step(state_0, state_1):
-    # `squeeze` exposing BOTH output words, so a query-squeeze loop can chain the
-    # state through a heap buffer. Returns (challenge, next_state_0, next_state_1).
-    state = [state_0, state_1]
-    next_state = squeeze_state(state)
-    challenge = challenge_from_state(next_state)
-    return challenge, next_state[0], next_state[1]
+    # Ratchet: the digest is the new state, its first three words the challenge.
+    nb = StackBuf(4)
+    blake2s(state, [0, 0, 0, DS_SQ], nb)
+    return nb, nb[0:3]
 
 
 # ============================ bits, logs, and the exponent ==========================
@@ -544,14 +513,14 @@ def squeeze_step(state_0, state_1):
 
 @inline
 def bind_bits(bits_ptr, value, n: Const):
-    # Tie an advice bit run back to the value it decomposes. Booleanity is a
+    # Tie an advice bit run back to the word it decomposes. Booleanity is a
     # write-once pin: the cell already holds the bit, so storing its square IS the
     # assert, one instruction shorter than a separate equality.
     acc = 0
     for i in unroll(0, n):
         b = bits_ptr[GEN ** i]
         bits_ptr[GEN ** i] = b * b
-        acc += b * COORD_BASIS[i]
+        acc += b * 2 ** i
     assert acc == value
     return
 
@@ -638,86 +607,94 @@ def log2_ceil_in_the_exponent(g_N, g_logs_pow2, g_squares, floor: Const, nbits: 
     return g_log
 
 
-def decode_query_bits(squeezed_word, positions_out, bit_ptrs_out, depth: Const):
-    # The squeezed word's bits are advice-decomposed HERE, boolean-constrained and
-    # tied back by reconstruction; each depth-bit group also becomes a query
-    # position (little-endian), with a pointer to its bit run (the Merkle direction
-    # bits). Each field word packs FIELD_BITS // depth positions. The bits live in
-    # FRAME cells, every index into them being compile-time, and `addr` names the
-    # run so the direction-bit pointers still reach it.
+def decode_query_bits(squeezed: StackBuf(3), positions_out, bit_ptrs_out, depth: Const):
+    # The squeezed challenge's 192 bits are advice-decomposed HERE, a limb at a time,
+    # boolean-constrained and tied back by reconstruction; each depth-bit group also
+    # becomes a query position (little-endian), with a pointer to its bit run (the
+    # Merkle direction bits). The bits live in FRAME cells, every index into them
+    # being compile-time, and `addr` names the run so the direction-bit pointers
+    # still reach it.
     per_word = FIELD_BITS // depth
     bits = StackBuf(FIELD_BITS)
-    hint_decompose_bits(bits, squeezed_word, FIELD_BITS)
     bits_ptr = addr(bits)
-    reconstructed = 0
+    hint_decompose_bits(bits, squeezed[0], BASE_FIELD_BITS)
+    hint_decompose_bits(bits_ptr * GEN ** 64, squeezed[1], BASE_FIELD_BITS)
+    hint_decompose_bits(bits_ptr * GEN ** 128, squeezed[2], BASE_FIELD_BITS)
+    acc0 = 0
+    acc1 = 0
+    acc2 = 0
     for j in unroll(0, per_word):
         base_bit = j * depth
-        # A group inside one 64-bit limb shifts as a WHOLE, the coordinate basis
-        # being the polynomial basis there: COORD_BASIS[base_bit + b] ==
-        # COORD_BASIS[base_bit] * COORD_BASIS[b] below 64, so the group contributes
-        # one multiply rather than one per bit. A group straddling the boundary
-        # splits into the two runs that do stay inside a limb; `b // cut == 0` IS
-        # `b < cut`, the DSL's `if` comparing for equality only.
-        cut = 64 - base_bit % 64  # bits of this group below the next limb
+        lane = base_bit // 64
+        shift = base_bit % 64
+        # A group inside one limb is one run of bits; a group straddling a limb
+        # boundary splits into the two runs that do stay inside one. `b // cut == 0`
+        # IS `b < cut`, the DSL's `if` comparing for equality only.
+        cut = 64 - shift  # bits of this group below the next limb
         p_lo = 0
         p_hi = 0
         for b in unroll(0, depth):
             t = bits[base_bit + b]
             bits[base_bit + b] = t * t  # booleanity, as a write-once pin
             if b // cut == 0:
-                p_lo += t * COORD_BASIS[b]
+                p_lo += t * 2 ** b
             else:
-                p_hi += t * COORD_BASIS[b - cut]
+                p_hi += t * 2 ** (b - cut)
+        if const(lane == 0):
+            acc0 += p_lo * 2 ** shift
+        if const(lane == 1):
+            acc1 += p_lo * 2 ** shift
+        if const(lane == 2):
+            acc2 += p_lo * 2 ** shift
         # position = p_lo + 2^cut * p_hi: multiplying by X^cut concatenates the two
-        # runs, since both degrees stay below 64.
+        # runs, both degrees staying below 64.
         if cut // depth == 0:  # `cut < depth`: this group straddles the boundary
-            positions_out[GEN ** j] = p_lo + COORD_BASIS[cut] * p_hi
-            reconstructed += COORD_BASIS[base_bit] * p_lo + COORD_BASIS[base_bit + cut] * p_hi
+            positions_out[GEN ** j] = p_lo + p_hi * 2 ** cut
+            if const(lane == 0):
+                acc1 += p_hi
+            if const(lane == 1):
+                acc2 += p_hi
         else:
             positions_out[GEN ** j] = p_lo
-            reconstructed += COORD_BASIS[base_bit] * p_lo
         bit_ptrs_out[GEN ** j] = bits_ptr * GEN ** base_bit
     for i in unroll(per_word * depth, FIELD_BITS):
         t = bits[i]
         bits[i] = t * t
-        reconstructed += t * COORD_BASIS[i]
-    assert reconstructed == squeezed_word
+        if const(i // 64 == 0):
+            acc0 += t * 2 ** (i % 64)
+        if const(i // 64 == 1):
+            acc1 += t * 2 ** (i % 64)
+        if const(i // 64 == 2):
+            acc2 += t * 2 ** (i % 64)
+    assert acc0 == squeezed[0]
+    assert acc1 == squeezed[1]
+    assert acc2 == squeezed[2]
     return
 
 
-def grind_check(state_0, state_1, nonce, nbits_g):
+def grind_check(state: StackBuf(4), nonce: StackBuf(3), nbits_g):
     # WHIR fold/query grinding: digest = H(H(state, POW_BASE), (nonce, POW_NONCE)),
     # whose low nbits (nbits_g = g^nbits) must be zero. The PoW window of
     # transcript::pow_bits_ok is `digest.0 & ((1 << bits) - 1)` with nbits < 64, so
-    # it lives entirely in the digest's FIRST 64-bit lane: only that lane is
-    # advice-decomposed and verified, not all FIELD_BITS of the cell. The caller
-    # absorbs the full field nonce afterwards. The honest prover searches the
-    # deterministic u64 subset while verification permits the full field: each
-    # candidate still costs one hash and succeeds with probability 2^-bits.
+    # it lives entirely in the digest's first word: only that word is
+    # advice-decomposed and verified. The caller absorbs the full field nonce
+    # afterwards. The honest prover searches the deterministic u64 subset while
+    # verification permits the full field: each candidate still costs one hash and
+    # succeeds with probability 2^-bits.
     if nbits_g == GEN ** 0:
-        assert nonce == 0  # native canonical zero-work nonce
-    st = [state_0, state_1]
-    base = StackBuf(2)
-    blake2s(st, [0, Y_TOWER * DS_POW_BASE], base)
-    out = StackBuf(2)
-    fs_compress(base, nonce, DS_POW_NONCE, out)
-    lanes = StackBuf(1)
-    hint_f192_limbs(lanes, out[0])
-    high = (out[0] + lanes[0]) * Y_INV
-    assert_in_k(lanes[0], high)
+        assert_eq192(nonce, ZERO)  # native canonical zero-work nonce
+    base = StackBuf(4)
+    blake2s(state, [0, 0, 0, DS_POW_BASE], base)
+    out = StackBuf(4)
+    blake2s(base, [nonce, DS_POW_NONCE], out)
     # Frame cells for the unrolled pass (no DEREF per bit), named by `addr` for the
     # zero-check walk, whose bound is runtime and so must index a pointer.
-    lane_bits = StackBuf(BASE_FIELD_BITS)
-    hint_decompose_bits(lane_bits, lanes[0], BASE_FIELD_BITS)
-    acc = 0
-    for i in unroll(0, BASE_FIELD_BITS):
-        b = lane_bits[i]
-        lane_bits[i] = b * b  # booleanity, as a write-once pin
-        acc += b * COORD_BASIS[i]
-    assert acc == lanes[0]  # the bits ARE the lane's coordinates, so the pins below bind it
-    lane_ptr = addr(lane_bits)
+    word_bits = StackBuf(BASE_FIELD_BITS)
+    hint_decompose_bits(word_bits, out[0], BASE_FIELD_BITS)
+    word_ptr = addr(word_bits)
+    bind_bits(word_ptr, out[0], BASE_FIELD_BITS)
     for xb in mul_range(1, nbits_g):
-        assert lane_ptr[xb] == 0
+        assert word_ptr[xb] == 0
     return
 
 
@@ -727,40 +704,43 @@ def grind_check(state_0, state_1, nonce, nbits_g):
 @inline
 def eq_weight(ch, count: Const, idx: Const, msb_span: Const):
     # The eq-tensor weight of compile-time index `idx` against the challenge run
-    # ch[0..count): prod_c eq(bit(idx), ch[c]), where the bit is bit c of idx
-    # (msb_span == 0) or bit (msb_span - 1 - c) (an MSB-first walk over an
-    # msb_span-bit index).
-    w = GEN ** 0
+    # ch[0..count), three words an element: prod_c eq(bit(idx), ch[c]), where the
+    # bit is bit c of idx (msb_span == 0) or bit (msb_span - 1 - c) (an MSB-first
+    # walk over an msb_span-bit index).
+    w = ONE
     for c in unroll(0, count):
-        cv = ch[GEN ** c]
+        k = 3 * c
+        cv = ch[k:k + 3]
         if msb_span == 0:
-            if (idx // (2 ** c)) % 2 == 1:
-                w *= cv
-            else:
-                w *= (1 + cv)
+            bit = (idx // (2 ** c)) % 2
         else:
-            if (idx // (2 ** (msb_span - 1 - c))) % 2 == 1:
-                w *= cv
-            else:
-                w *= (1 + cv)
+            bit = (idx // (2 ** (msb_span - 1 - c))) % 2
+        if bit == 1:
+            w = mul192(w, cv)
+        else:
+            w = mul192(w, add192(ONE, cv))
     return w
 
 
 @inline
 def eqtree(point_ptr, out, n_coords: Const):
     # The eq tensor of the n_coords challenges at point_ptr[0..n_coords), built by
-    # doubling into out (size 2^(n_coords+1) - 2); the final 2^n_coords values start
-    # at offset 2^n_coords - 2.
-    r0 = point_ptr[GEN ** 0]
-    out[GEN ** 0] = 1 + r0
-    out[GEN ** 1] = r0
+    # doubling into out (size 2^(n_coords+1) - 2 elements); the final 2^n_coords
+    # values start at element 2^n_coords - 2.
+    r0 = point_ptr[0:3]
+    out[0:3] = add192(ONE, r0)
+    out[3:6] = r0
     for t in unroll(1, n_coords):
-        rt = point_ptr[GEN ** t]
-        one_plus_rt = 1 + rt
+        k = 3 * t
+        rt = point_ptr[k:k + 3]
+        one_plus_rt = add192(ONE, rt)
         for i in unroll(0, 2 ** t):
-            pw = out[GEN ** (2 ** t - 2 + i)]
-            out[GEN ** (2 ** (t + 1) - 2 + i)] = pw * one_plus_rt
-            out[GEN ** (2 ** (t + 1) - 2 + 2 ** t + i)] = pw * rt
+            src = 3 * (2 ** t - 2 + i)
+            lo = 3 * (2 ** (t + 1) - 2 + i)
+            hi = 3 * (2 ** (t + 1) - 2 + 2 ** t + i)
+            pw = out[src:src + 3]
+            out[lo:lo + 3] = mul192(pw, one_plus_rt)
+            out[hi:hi + 3] = mul192(pw, rt)
     return
 
 
@@ -768,30 +748,36 @@ def eqtree(point_ptr, out, n_coords: Const):
 def lag64(z, out, node_base: Const):
     # The 64 phi8-domain Lagrange NUMERATORS at z over nodes
     # PHI8_NODES[node_base .. node_base + 64]: out[i] = prod_{j != i} (z +
-    # PHI8_NODES[node_base + j]). Every barycentric denominator over an aligned phi8
-    # window is the same element, so callers scale the finished sum once by
-    # LAGRANGE_INV_S / LAGRANGE_INV_COMBINED instead of the numerators one by one.
-    pre = StackBuf(65)
-    pre[0] = 1
+    # PHI8_NODES[node_base + j]), three cells an element. Every barycentric
+    # denominator over an aligned phi8 window is the same element, so callers scale
+    # the finished sum once by LAGRANGE_INV_S / LAGRANGE_INV_COMBINED instead of the
+    # numerators one by one.
+    pre = StackBuf(3 * 65)
+    pre[0:3] = ONE
     for i in unroll(0, 64):
-        pre[i + 1] = pre[i] * (z + PHI8_NODES[node_base + i])
-    suf = StackBuf(65)
-    suf[64] = 1
+        k = 3 * i
+        pre[k + 3:k + 6] = mul192(pre[k:k + 3], add192(z, phi8(node_base + i)))
+    suf = StackBuf(3 * 65)
+    suf[192:195] = ONE
     for i in unroll(0, 64):
-        suf[63 - i] = suf[64 - i] * (z + PHI8_NODES[node_base + 63 - i])
+        k = 3 * (63 - i)
+        suf[k:k + 3] = mul192(suf[k + 3:k + 6], add192(z, phi8(node_base + 63 - i)))
     for i in unroll(0, 64):
-        out[i] = pre[i] * suf[i + 1]
+        k = 3 * i
+        out[k:k + 3] = mul192(pre[k:k + 3], suf[k + 3:k + 6])
     return
 
 
-def eq_prefix_chain(chain, seed, a, b, count_g):
+def eq_prefix_chain(chain, seed: StackBuf(3), a, b, count_g):
     # Prefix products of eq(a_k, b_k) = 1 + a_k + b_k from `seed`, so a reader picks
     # the partial product up at its own certified length. Entry t is written from
     # inputs with index < t only, so a garbage tail past a buffer's written extent
-    # cannot corrupt any shorter prefix.
-    chain[GEN ** 0] = seed
+    # cannot corrupt any shorter prefix. Every buffer holds three words an element.
+    chain[0:3] = seed
     for xk in mul_range(1, count_g):
-        chain[xk * GEN] = chain[xk] * (1 + a[xk] + b[xk])
+        x3 = xk ** 3
+        nxt = x3 * GEN ** 3
+        chain[nxt:nxt + 3] = mul192(chain[x3:x3 + 3], add192(ONE, add192(a[x3:x3 + 3], b[x3:x3 + 3])))
     return
 
 
@@ -800,126 +786,140 @@ def rs_eq_run(chain, z_vals, point, count_g):
     # (z_j^(2^k) + 1 + ris_j): coordinate x multiplies row k by (z^(2^k) + 1 +
     # point_x), z evolving by squaring per row. The runtime coordinates walk
     # OUTSIDE and the fixed Frobenius powers inside, so nothing stores a z-power
-    # table.
+    # table. A row is BASE_FIELD_BITS elements.
     for xk in mul_range(1, count_g):
-        zv = z_vals[xk]
-        one_plus = 1 + point[xk]
-        row = chain * xk ** BASE_FIELD_BITS
-        nxt = row * GEN ** BASE_FIELD_BITS
+        x3 = xk ** 3
+        zv = z_vals[x3:x3 + 3]
+        one_plus = add192(ONE, point[x3:x3 + 3])
+        row = chain * xk ** (3 * BASE_FIELD_BITS)
+        nxt = row * GEN ** (3 * BASE_FIELD_BITS)
         for k in unroll(0, BASE_FIELD_BITS):
-            nxt[GEN ** k] = row[GEN ** k] * (zv + one_plus)
+            c = 3 * k
+            nxt[c:c + 3] = mul192(row[c:c + 3], add192(zv, one_plus))
             if k != BASE_FIELD_BITS - 1:
-                zv *= zv
+                zv = mul192(zv, zv)
     return
 
 
 def fold_final_msg(msg, point, log_len: Const):
-    weights = StackBuf(2 * YR_LOG_CAP)
-    for j in unroll(0, log_len):
-        weights[2 * j] = 1 + point[GEN ** j]
-        weights[2 * j + 1] = point[GEN ** j]
     # Weighted fold of the final_msg multilinear over 2^log_len values (log_len is
     # the candidate's yr_log_n; the frame buffers use the global max size).
-    l0 = StackBuf(2 ** YR_LOG_CAP)
+    l0 = StackBuf(3 * 2 ** YR_LOG_CAP)
+    p0 = point[0:3]
     for t in unroll(0, 2 ** log_len // 2):
-        l0[t] = weights[0] * msg[GEN ** (2 * t)] + weights[1] * msg[GEN ** (2 * t + 1)]
+        k = 3 * t
+        lo = 6 * t
+        hi = 6 * t + 3
+        a = msg[lo:lo + 3]
+        l0[k:k + 3] = add192(a, mul192(p0, add192(a, msg[hi:hi + 3])))
     cursor = l0
     n = 2 ** log_len // 2
     for j in unroll(1, log_len):
-        nxt = StackBuf(2 ** YR_LOG_CAP)
+        pj_off = 3 * j
+        pj = point[pj_off:pj_off + 3]
+        nxt = StackBuf(3 * 2 ** YR_LOG_CAP)
         for t in unroll(0, n // 2):
-            nxt[t] = weights[2 * j] * cursor[2 * t] + weights[2 * j + 1] * cursor[2 * t + 1]
+            k = 3 * t
+            lo = 6 * t
+            hi = 6 * t + 3
+            a = cursor[lo:lo + 3]
+            nxt[k:k + 3] = add192(a, mul192(pj, add192(a, cursor[hi:hi + 3])))
         cursor = nxt
         n = n // 2
-    return cursor[0]
+    return cursor[0:3]
 
 
-def sumcheck_round4(state_0, state_1, msg_cursor, claim):
-    # One PLAIN sumcheck round. The prover sends the round polynomial's coefficients
-    # bar the one the split h(0) + h(1) == claim fixes, so the verifier derives that
-    # one and reads h at the challenge by Horner. Nothing is reapplied: no eq
-    # factor, no separate term for the tables still waiting, and the eq point is not
-    # read here at all.
-    fs = [state_0, state_1]
-    fs, c0, msg_cursor = fs_next(fs, msg_cursor)
-    fs, c2, msg_cursor = fs_next(fs, msg_cursor)
-    fs, c3, msg_cursor = fs_next(fs, msg_cursor)
-    c1 = claim + c2 + c3  # the split identity fixes it, so it is neither sent nor bound
+def sumcheck_round4(rd):
+    # One PLAIN sumcheck round off the round record at `rd`, whose successor it
+    # writes. The prover sends the round polynomial's coefficients bar the one the
+    # split h(0) + h(1) == claim fixes, so the verifier derives that one and reads h
+    # at the challenge by Horner. Nothing is reapplied: no eq factor, no separate
+    # term for the tables still waiting, and the eq point is not read here at all.
+    fs, c0, cursor = fs_next(rd[0:4], rd[GEN ** ROUND_CURSOR])
+    fs, c2, cursor = fs_next(fs, cursor)
+    fs, c3, cursor = fs_next(fs, cursor)
+    c1 = add192(rd[ROUND_CLAIM:ROUND_CLAIM + 3], add192(c2, c3))  # the split fixes it, so it is neither sent nor bound
     fs, y = squeeze(fs)
-    return fs[0], fs[1], msg_cursor, c0 + y * (c1 + y * (c2 + y * c3)), y
+    nxt = rd * GEN ** ROUND_SLOTS
+    nxt[0:4] = fs
+    nxt[GEN ** ROUND_CURSOR] = cursor
+    nxt[ROUND_CLAIM:ROUND_CLAIM + 3] = add192(c0, mul192(y, add192(c1, mul192(y, add192(c2, mul192(y, c3))))))
+    return y
 
 
-def sumcheck_round5(state_0, state_1, msg_cursor, claim, prev_challenge):
-    # One GKR round. The prover sends every coefficient but c0, which the round's
-    # pulled-out eq factor leaves fixed: `c0 + prev_challenge * (c1 + ... + c4) ==
-    # claim`.
-    fs = [state_0, state_1]
-    fs, c1, msg_cursor = fs_next(fs, msg_cursor)
-    fs, c2, msg_cursor = fs_next(fs, msg_cursor)
-    fs, c3, msg_cursor = fs_next(fs, msg_cursor)
-    fs, c4, msg_cursor = fs_next(fs, msg_cursor)
+def sumcheck_round5(rd, prev, challenge_out):
+    # One GKR round off the round record at `rd`, whose successor it writes, its
+    # challenge landing at `challenge_out`. The prover sends every coefficient but
+    # c0, which the round's pulled-out eq factor (the challenge at `prev`) leaves
+    # fixed: `c0 + prev_challenge * (c1 + ... + c4) == claim`.
+    prev_challenge = prev[0:3]
+    fs, c1, cursor = fs_next(rd[0:4], rd[GEN ** ROUND_CURSOR])
+    fs, c2, cursor = fs_next(fs, cursor)
+    fs, c3, cursor = fs_next(fs, cursor)
+    fs, c4, cursor = fs_next(fs, cursor)
     fs, y = squeeze(fs)
-    c0 = claim + prev_challenge * (c1 + c2 + c3 + c4)
-    return fs[0], fs[1], msg_cursor, c0 + y * (c1 + y * (c2 + y * (c3 + y * c4))), y
+    challenge_out[0:3] = y
+    c0 = add192(rd[ROUND_CLAIM:ROUND_CLAIM + 3], mul192(prev_challenge, add192(add192(c1, c2), add192(c3, c4))))
+    nxt = rd * GEN ** ROUND_SLOTS
+    nxt[0:4] = fs
+    nxt[GEN ** ROUND_CURSOR] = cursor
+    nxt[ROUND_CLAIM:ROUND_CLAIM + 3] = add192(c0, mul192(y, add192(c1, mul192(y, add192(c2, mul192(y, add192(c3, mul192(y, c4))))))))
+    return
 
 
-def batch_sumcheck(fs0, fs1, msgs, running, point, n_rounds: Const):
+def batch_sumcheck(fs: StackBuf(4), msgs, running: StackBuf(3), point, n_rounds: Const):
     # The rounds of a claim-batching sumcheck: two hinted values per round
     # (g(1) and g(inf)), the split fixing the third against the running claim, and
     # the challenges collected into `point`.
-    fs = [fs0, fs1]
     for rd in unroll(0, n_rounds):
-        fs, msg_g1, c = fs_next(fs, msgs * GEN ** (2 * rd))
+        fs, msg_g1, c = fs_next(fs, msgs * GEN ** (6 * rd))
         fs, msg_ginf, c = fs_next(fs, c)
         fs, rv = squeeze(fs)
-        point[GEN ** rd] = rv
-        g_zero = running + msg_g1
-        c_one = g_zero + msg_g1 + msg_ginf
-        running = (msg_ginf * rv + c_one) * rv + g_zero  # fold the degree-2 round at rv
-    return fs[0], fs[1], running
+        k = 3 * rd
+        point[k:k + 3] = rv
+        g_zero = add192(running, msg_g1)
+        c_one = add192(g_zero, add192(msg_g1, msg_ginf))
+        running = add192(mul192(add192(mul192(msg_ginf, rv), c_one), rv), g_zero)  # fold the degree-2 round at rv
+    return fs, running
 
 
 # ==================================== Merkle paths ==================================
 
 
 @inline
-def order_children(node, sibling, bit):
-    # Branchless child ordering: `bit` is boolean-pinned wherever it comes from, so
-    # `m = bit*(node + sibling)` selects rather than branches, leaving (node,
-    # sibling) at bit 0 and (sibling, node) at bit 1.
-    m = bit * (node + sibling)
-    kids = [node + m, sibling + m]
-    return kids
+def order_children(n0, n1, sibling, bit):
+    # Branchless child ordering over two-word values: `bit` is boolean-pinned
+    # wherever it comes from, so `m = bit*(node + sibling)` selects rather than
+    # branches, leaving (node, sibling) at bit 0 and (sibling, node) at bit 1.
+    m0 = bit * (n0 + sibling[0])
+    m1 = bit * (n1 + sibling[1])
+    return [n0 + m0, n1 + m1, sibling[0] + m0, sibling[1] + m1]
 
 
 @inline
-def verify_merkle_path(leaf_0, leaf_1, direction_bits, depth: Const):
+def verify_merkle_path(leaf, direction_bits, depth: Const):
     # Hinted child pairs are hashed in order; the boolean query bit selects the
     # child that must equal the running node, binding each link of the path.
     path = StackBuf(LIG_PATH_CAP)
-    hint_witness(path[0:4 * depth], "merkle_children")
+    hint_witness(path[0:8 * depth], "merkle_children")
     path_ptr = addr(path)
-    node_0 = leaf_0
-    node_1 = leaf_1
+    node = leaf
     for level in unroll(0, depth):
         dir_bit = direction_bits[GEN ** level]
-        selected = path_ptr * GEN ** (4 * level) * (1 + dir_bit * (1 + GEN ** 2))
-        selected[1] = node_0
-        selected[GEN] = node_1
-        parent = StackBuf(2)
-        blake2s(path[4 * level:4 * level + 2], path[4 * level + 2:4 * level + 4], parent)
-        node_0 = parent[0]
-        node_1 = parent[1]
-    return node_0, node_1
+        selected = path_ptr * GEN ** (8 * level) * (1 + dir_bit * (1 + GEN ** 4))
+        selected[0:4] = node
+        parent = StackBuf(4)
+        blake2s(path[8 * level:8 * level + 4], path[8 * level + 4:8 * level + 8], parent)
+        node = parent
+    return node
 
 
 @inline
 def hash_cap_node(cap, index):
-    children = cap * index ** 4
-    parent = StackBuf(2)
-    blake2s([children[1], children[GEN]], [children[GEN ** 2], children[GEN ** 3]], parent)
-    cap[index * index] = parent[0]
-    cap[GEN * index * index] = parent[1]
+    # Node n of a cap occupies words 4n..4n+4, so its children start at 8n.
+    children = cap * index ** 8
+    parent = cap * index ** 4
+    blake2s(children[0:4], children[4:8], parent[0:4])
     return
 
 
@@ -933,101 +933,99 @@ def verify_merkle_cap(cap, flags, depth: Const):
                 if flags[child] != 0:
                     flags[parent] = 1  # every active node forces its parent to be hashed
                     hash_cap_node(cap, child)
-    return cap[GEN ** 2], cap[GEN ** 3]
+    return cap[4:8]
 
 
 # ============================== the stacked WHIR opening ============================
 
 
-def opening_fold(fs0, fs1, cursor, c0, c1, c2):
-    fs = [fs0, fs1]
+def opening_fold(fs: StackBuf(4), cursor, c0: StackBuf(3), c1: StackBuf(3), c2: StackBuf(3)):
     fs, r = squeeze(fs)
-    claim = (c2 * r + c1) * r + c0
-    fs, c0, cursor = fs_next(fs, cursor)
-    fs, c2, cursor = fs_next(fs, cursor)
-    return fs[0], fs[1], cursor, claim, c0, c2, r
+    claim = add192(mul192(add192(mul192(c2, r), c1), r), c0)
+    fs, n0, cursor = fs_next(fs, cursor)
+    fs, n2, cursor = fs_next(fs, cursor)
+    return fs, cursor, claim, n0, n2, r
 
 
-def opening_ood_point(fs0, fs1, point, n_g):
+def opening_ood_point(fs: StackBuf(4), point, n_g):
     # Share the squeeze loop across point dimensions.
-    states = HeapBuf((n_g * GEN) ** 2)
-    states[1] = fs0
-    states[GEN] = fs1
+    states = HeapBuf((n_g * GEN) ** FS_SLOTS)
+    states[0:4] = fs
     for x in mul_range(1, n_g):
-        state = states * x * x
-        r, f0, f1 = squeeze_step(state[1], state[GEN])
-        point[x] = r
-        state[GEN ** 2] = f0
-        state[GEN ** 3] = f1
-    last = states * n_g * n_g
-    return last[1], last[GEN]
+        state = states * x ** FS_SLOTS
+        nb, r = squeeze(state[0:4])
+        x3 = x ** 3
+        point[x3:x3 + 3] = r
+        state[4:8] = nb
+    last = states * n_g ** FS_SLOTS
+    return last[0:4]
 
 
-def opening_final_message(fs0, fs1, cursor, out, n: Const):
-    fs = [fs0, fs1]
+def opening_final_message(fs: StackBuf(4), cursor, out, n: Const):
     for i in unroll(0, n):
         fs, value, cursor = fs_next(fs, cursor)
-        out[GEN ** i] = value
-    return fs[0], fs[1], cursor
+        k = 3 * i
+        out[k:k + 3] = value
+    return fs, cursor
 
 
-def opening_row_weights(point, out, folds: Const, reverse: Const):
-    for i in unroll(0, 2 ** folds):
-        if reverse == 1:
-            slot = 2 ** folds - 1 - i
-        else:
-            slot = i
-        out[GEN ** i] = eq_weight(point, folds, slot, 0)
-    return
-
-
-def opening_queries(cap, flags, query_weights, query_bit_ptrs, row_eq_weights, n_queries_g, base: Const, interleave: Const, blocks: Const, depth: Const, cap_depth: Const):
+def opening_queries(cap, flags, query_weights, query_bit_ptrs, fold_point, n_queries_g, base: Const, folds: Const, blocks: Const, depth: Const, cap_depth: Const):
     # Specialize by row and path shape so opening configurations share query code.
-    query_sum_chain = HeapBuf(n_queries_g * GEN)
-    query_sum_chain[GEN ** 0] = 0
+    # A row enters its level's claim through its multilinear extension at the
+    # level's fold point, folded one coordinate at a time. At level 0, slot i of a
+    # leaf image is interleaving index n-1-i (see open_stacked), which complements
+    # every index bit, so a fold there keeps the high half's term.
+    query_sum_chain = HeapBuf((n_queries_g * GEN) ** 3)
+    query_sum_chain[0:3] = ZERO
     for xe in mul_range(1, n_queries_g):
-        if base == 1:
-            row_len = interleave
-        else:
-            row_len = 3 * interleave
+        interleave = 2 ** folds  # bound in the body, which captures names by value
         row = StackBuf(LIG_ROW_CAP)
-        hint_witness(row[0:row_len], "merkle_leaf_rows")
-        row_dot = 0
-        packed_row = StackBuf(LIG_PACKED_ROW_CAP)
+        fold = StackBuf(3 * LIG_ROW_CAP)
+        r0 = fold_point[0:3]
         if base == 1:
-            # Packing proves each hinted lane is in K before hashing or folding it.
-            for jb in unroll(0, interleave // 4):
-                e0 = row[4 * jb]
-                e1 = row[4 * jb + 1]
-                e2 = row[4 * jb + 2]
-                e3 = row[4 * jb + 3]
-                packed_row[2 * jb] = pack64x2(e0, e1)
-                packed_row[2 * jb + 1] = pack64x2(e2, e3)
-                row_dot += e0 * row_eq_weights[GEN ** (4 * jb)] + e1 * row_eq_weights[GEN ** (4 * jb + 1)] + e2 * row_eq_weights[GEN ** (4 * jb + 2)] + e3 * row_eq_weights[GEN ** (4 * jb + 3)]
+            # Level 0's lanes are words, so its first fold runs limb by limb.
+            hint_witness(row[0:interleave], "merkle_leaf_rows")
+            for t in unroll(0, interleave // 2):
+                lo = row[2 * t]
+                hi = row[2 * t + 1]
+                d = lo + hi
+                k = 3 * t
+                fold[k:k + 3] = [hi + d * r0[0], d * r0[1], d * r0[2]]
         else:
-            # Pack the checked tower limbs into the leaf's contiguous byte image.
-            for jb in unroll(0, 3 * interleave // 4):
-                packed_row[2 * jb] = pack64x2(row[4 * jb], row[4 * jb + 1])
-                packed_row[2 * jb + 1] = pack64x2(row[4 * jb + 2], row[4 * jb + 3])
-            for jw in unroll(0, interleave):
-                if 3 * jw % 2 == 0:
-                    # limbs (3w, 3w+1) are a pack; add Y^2 * limb(3w+2).
-                    row_word = packed_row[3 * jw // 2] + Y_TOWER * Y_TOWER * row[3 * jw + 2]
+            # A deeper row is `interleave` elements, three limbs each.
+            hint_witness(row[0:3 * interleave], "merkle_leaf_rows")
+            for t in unroll(0, interleave // 2):
+                k = 3 * t
+                lo = 6 * t
+                a = row[lo:lo + 3]
+                fold[k:k + 3] = add192(a, mul192(r0, add192(a, row[lo + 3:lo + 6])))
+        # Fold c reads fold c-1's outputs and writes the next run of the buffer.
+        for c in unroll(1, folds):
+            rc = fold_point[3 * c:3 * c + 3]
+            src = 3 * (interleave - interleave // 2 ** (c - 1))
+            dst = 3 * (interleave - interleave // 2 ** c)
+            for t in unroll(0, interleave // 2 ** (c + 1)):
+                a = fold[src + 6 * t:src + 6 * t + 3]
+                b = fold[src + 6 * t + 3:src + 6 * t + 6]
+                if base == 1:
+                    fold[dst + 3 * t:dst + 3 * t + 3] = add192(b, mul192(rc, add192(a, b)))
                 else:
-                    # limbs (3w+1, 3w+2) are a pack; shift it by Y and add limb(3w).
-                    row_word = row[3 * jw] + Y_TOWER * packed_row[(3 * jw + 1) // 2]
-                row_dot += row_word * row_eq_weights[GEN ** jw]
-        # Hash the packed row as full BLAKE2s blocks.
-        leaf_hash_state = StackBuf(2)
-        blake2s(packed_row[0:2], packed_row[2:4], leaf_hash_state, counter=64, final=1 // blocks)
+                    fold[dst + 3 * t:dst + 3 * t + 3] = add192(a, mul192(rc, add192(a, b)))
+        dot_at = 3 * (interleave - 2)
+        row_dot = fold[dot_at:dot_at + 3]
+        # The row's words are its leaf's byte image, hashed as full BLAKE2s blocks.
+        leaf_state = StackBuf(4)
+        blake2s(row[0:4], row[4:8], leaf_state, counter=64, final=1 // blocks)
         for jb in unroll(1, blocks):
-            leaf_digest = StackBuf(2)
-            blake2s(packed_row[4 * jb:4 * jb + 2], packed_row[4 * jb + 2:4 * jb + 4], leaf_digest, cv=leaf_hash_state, counter=64 * (jb + 1), final=(jb + 1) // blocks)
-            leaf_hash_state = leaf_digest
-        query_sum_chain[xe * GEN] = query_sum_chain[xe] + query_weights[xe] * row_dot
+            leaf_digest = StackBuf(4)
+            blake2s(row[8 * jb:8 * jb + 4], row[8 * jb + 4:8 * jb + 8], leaf_digest, cv=leaf_state, counter=64 * (jb + 1), final=(jb + 1) // blocks)
+            leaf_state = leaf_digest
+        xe3 = xe ** 3
+        nxt = xe3 * GEN ** 3
+        query_sum_chain[nxt:nxt + 3] = add192(query_sum_chain[xe3:xe3 + 3], mul192(query_weights[xe3:xe3 + 3], row_dot))
         direction_bits = query_bit_ptrs[xe]
         path_depth = depth - cap_depth
-        node_0, node_1 = verify_merkle_path(leaf_hash_state[0], leaf_hash_state[1], direction_bits, path_depth)
+        node = verify_merkle_path(leaf_state, direction_bits, path_depth)
         if cap_depth != 0:
             parent = GEN ** (2 ** (cap_depth - 1))
             for bit in unroll(0, cap_depth - 1):
@@ -1036,18 +1034,36 @@ def opening_queries(cap, flags, query_weights, query_bit_ptrs, row_eq_weights, n
             cap_index = parent * parent * (1 + direction_bits[GEN ** path_depth] * (1 + GEN))
         else:
             cap_index = GEN
-        cap[cap_index * cap_index] = node_0
-        cap[GEN * cap_index * cap_index] = node_1
-    return query_sum_chain[n_queries_g]
+        slot = cap * cap_index ** 4
+        slot[0:4] = node
+    end = n_queries_g ** 3
+    return query_sum_chain[end:end + 3]
 
 
-def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, cursor):
+@inline
+def fold_at(point, f: Const, lane_folds: Const, tail_start: Const):
+    # Where fold challenge f (in round order) sits in the witness-order point: the
+    # lane folds after the tail, every later fold `lane_folds` places down.
+    if const(f // lane_folds == 0):
+        pos = tail_start + f
+    else:
+        pos = f - lane_folds
+    return point * GEN ** (3 * pos)
+
+
+def open_stacked(m_idx: Const, fs: StackBuf(4), target: StackBuf(3), commit_root: StackBuf(4), cursor):
     # The stacked WHIR opening, one specialization per (rate, committed log-size)
     # candidate: every LIG_* table reads row m_idx, per level row `ml`, and all
     # opening proof data is hinted here, so only the executed arm pops its streams.
     #
-    # The returned point is in witness order. Round-order challenges stay local
-    # for the induced weights, OOD claims, and residual evaluation.
+    # The returned point is in witness order. The folds bind coordinates in ROUND
+    # order, and level 0's folds are the lane fold, binding the witness's TOP k
+    # coordinates: lane l of the commitment is the stack block q[l * 2^(mu-k) ...],
+    # which is what makes the witness's zero padding whole lanes for the committer
+    # to leave out of the encode. Every transparent weight downstream is written in
+    # witness coordinates, so each challenge is written straight to its witness
+    # coordinate as it arrives (`fold_at`), and the round-order readers below index
+    # it there.
     n_levels = LIG_N_LEVELS[m_idx]
     yr_level = LIG_YR_LEVEL[m_idx]
     yr_log = LIG_YR_LOG_LEN[m_idx]
@@ -1055,105 +1071,107 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
     n_folds = LIG_TOTAL_FOLDS[m_idx]
     max_q = LIG_MAX_QUERIES[m_idx]
     ood_stride = LIG_MAX_OOD_SAMPLES * OOD_SLOTS
+    lane_folds = LIG_FOLDS[m_idx * LIG_MAX_LEVELS]
+    fold_head = n_folds - lane_folds
+    tail_start = fold_head + yr_log
+    # Padding is zero so shared prefix chains may compute unused entries above m
+    # without reading uninitialized cells.
+    point = HeapBuf(3 * (SIZE_BITS + SLOT_STRIDE_LOG))
+    for j in unroll(n_folds + yr_log, SIZE_BITS + SLOT_STRIDE_LOG):
+        k = 3 * j
+        point[k:k + 3] = ZERO
+    tail = point * GEN ** (3 * fold_head)
 
     # The opening's scalars (sumcheck messages, level roots, nonces, final message)
     # ride the SHARED stream, walked on in protocol order. The K opener binds a
-    # Merkle root as its two F192 scalars, not as a byte string, and every digest
-    # uses ONE 128/128 encoding, so those scalars are exactly the root's two cells.
-    fs = [fs0, fs1]
+    # Merkle root as two scalars, one per 128-bit half.
     msg_cursor = cursor
     fs, round_quad_c, msg_cursor = fs_next(fs, msg_cursor)  # the round polynomial in coefficients
     fs, round_quad_a, msg_cursor = fs_next(fs, msg_cursor)  # bar the linear one, which the split fixes
-    round_quad_b = target + round_quad_a
+    round_quad_b = add192(target, round_quad_a)
     sumcheck_target = target
 
-    # Caps are shared across queries; rows and paths are hinted in each query's frame.
-    merkle_caps = HeapBuf(GEN ** (4 * LIG_CAP_LEN[m_idx]))
-    hint_witness(merkle_caps[0:4 * LIG_CAP_LEN[m_idx]], "merkle_caps")
+    # Caps are shared across queries, a node four words; rows and paths are hinted in
+    # each query's frame.
+    merkle_caps = HeapBuf(GEN ** (8 * LIG_CAP_LEN[m_idx]))
+    hint_witness(merkle_caps[0:8 * LIG_CAP_LEN[m_idx]], "merkle_caps")
     cap_flags = HeapBuf(GEN ** LIG_CAP_LEN[m_idx])
     hint_witness(cap_flags[0:LIG_CAP_LEN[m_idx]], "merkle_cap_active")
-    final_msg = HeapBuf(GEN ** yr_len)  # filled from the stream at the last level
+    final_msg = HeapBuf(GEN ** (3 * yr_len))  # filled from the stream at the last level
     # Each cap root is checked against its transcript-bound level root.
-    level_roots = HeapBuf(GEN ** (2 * n_levels))
-    level_roots[GEN ** 0] = commit_root_0
-    level_roots[GEN ** 1] = commit_root_1
-    # ...and guest-filled accumulators (one slot per fold / per level / per query):
-    fold_challenges = HeapBuf(GEN ** n_folds)
-    level_betas = HeapBuf(GEN ** n_levels)
-    query_weights = HeapBuf(GEN ** (n_levels * max_q))
+    level_roots = HeapBuf(GEN ** (4 * n_levels))
+    level_roots[0:4] = commit_root
+    # ...and guest-filled accumulators (one slot per level / per query):
+    level_betas = HeapBuf(GEN ** (3 * n_levels))
+    query_weights = HeapBuf(GEN ** (3 * n_levels * max_q))
     query_positions = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     query_bit_ptrs = HeapBuf(GEN ** (LIG_POSITIONS_LEN[m_idx]))
     # Explicit OOD claims bind every recursive Johnson-list commitment. L0 needs
     # none: the opening claim itself is its post-commit binding value. An OOD claim
     # is read before its level's query positions but batched after them (one
     # challenge per level), so its value and intro message wait here.
-    ood_z = HeapBuf(GEN ** (n_levels * LIG_MAX_OOD_SAMPLES * LIG_LOG_MSG_COLS_CAP))
+    ood_z = HeapBuf(GEN ** (3 * n_levels * LIG_MAX_OOD_SAMPLES * LIG_LOG_MSG_COLS_CAP))
     ood = HeapBuf(GEN ** (n_levels * ood_stride))
 
     for lvl in unroll(0, n_levels):
         ml = m_idx * LIG_MAX_LEVELS + lvl
         n_queries = LIG_QUERIES[ml]
         depth = LIG_TREE_DEPTH[ml]
-        interleave = LIG_INTERLEAVE[ml]
         folds_off = LIG_FOLDS_OFF[ml]
         pos_off = LIG_POSITIONS_OFF[ml]
         for j in unroll(0, LIG_FOLDS[ml]):
-            f0, f1, msg_cursor, sumcheck_target, round_quad_c, round_quad_a, fold_challenge = opening_fold(fs[0], fs[1], msg_cursor, round_quad_c, round_quad_b, round_quad_a)
-            fs = [f0, f1]
-            fold_challenges[GEN ** (folds_off + j)] = fold_challenge
-            round_quad_b = sumcheck_target + round_quad_a
+            fs, msg_cursor, sumcheck_target, round_quad_c, round_quad_a, fold_challenge = opening_fold(fs, msg_cursor, round_quad_c, round_quad_b, round_quad_a)
+            fc = fold_at(point, folds_off + j, lane_folds, tail_start)
+            fc[0:3] = fold_challenge
+            round_quad_b = add192(sumcheck_target, round_quad_a)
 
         if lvl == yr_level:
-            f0, f1, msg_cursor = opening_final_message(fs[0], fs[1], msg_cursor, final_msg, yr_len)
-            fs = [f0, f1]
+            fs, msg_cursor = opening_final_message(fs, msg_cursor, final_msg, yr_len)
         else:
-            fs, next_root_a, msg_cursor = fs_next(fs, msg_cursor)
-            fs, next_root_b, msg_cursor = fs_next(fs, msg_cursor)
             # A non-canonical half is rejected (merkle.rs `scalars_to_hash`), as
             # the commitment root was at its own read.
-            canon = StackBuf(2)
-            canon[0] = assert_canonical(next_root_a)
-            canon[1] = assert_canonical(next_root_b)
-            level_roots[GEN ** (2 * lvl + 2)] = next_root_a
-            level_roots[GEN ** (2 * lvl + 3)] = next_root_b
+            fs, root_a, msg_cursor = fs_next_half(fs, msg_cursor)
+            fs, root_b, msg_cursor = fs_next_half(fs, msg_cursor)
+            k = 4 * lvl + 4
+            level_roots[k:k + 2] = root_a[0:2]
+            level_roots[k + 2:k + 4] = root_b[0:2]
             # OOD binding for the newly observed level-(lvl+1) commitment. The
             # random point has the just-folded witness dimension, namely this
             # level's message-column dimension.
             for os in unroll(0, LIG_OOD_SAMPLES[ml + 1]):
-                oz = ood_z * GEN ** (((lvl + 1) * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
-                f0, f1 = opening_ood_point(fs[0], fs[1], oz, GEN ** LIG_LOG_MSG_COLS[ml])
-                fs = [f0, f1]
+                oz = ood_z * GEN ** (3 * ((lvl + 1) * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
+                fs = opening_ood_point(fs, oz, GEN ** LIG_LOG_MSG_COLS[ml])
                 sample = ood * GEN ** ((lvl + 1) * ood_stride + os * OOD_SLOTS)
                 fs, ood_y, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_c0, msg_cursor = fs_next(fs, msg_cursor)
                 fs, ood_c2, msg_cursor = fs_next(fs, msg_cursor)
-                sample[GEN ** OOD_Y] = ood_y
-                sample[GEN ** OOD_C0] = ood_c0
-                sample[GEN ** OOD_C2] = ood_c2  # the split fixes c1 = y + c2
-        q_nonce = msg_cursor[GEN ** 0]  # raw transport word: bound by the DS_POW_NONCE absorb below
-        msg_cursor = msg_cursor * GEN
+                sample[OOD_Y:OOD_Y + 3] = ood_y
+                sample[OOD_C0:OOD_C0 + 3] = ood_c0
+                sample[OOD_C2:OOD_C2 + 3] = ood_c2  # the split fixes c1 = y + c2
+        q_nonce = msg_cursor[0:3]  # raw transport scalar: bound by the DS_POW_NONCE absorb below
+        msg_cursor = msg_cursor * GEN ** 3
         if LIG_QUERY_GRIND_BITS[ml] != 0:
-            grind_check(fs[0], fs[1], q_nonce, GEN ** LIG_QUERY_GRIND_BITS[ml])
+            grind_check(fs, q_nonce, GEN ** LIG_QUERY_GRIND_BITS[ml])
         else:
-            assert q_nonce == 0
-        fs = absorb_nonce(fs, q_nonce)
+            assert_eq192(q_nonce, ZERO)
+        nonce_state = StackBuf(4)
+        blake2s(fs, [q_nonce, DS_POW_NONCE], nonce_state)
+        fs = nonce_state
 
-        sqz = HeapBuf((GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1)) ** PAIR_SLOTS)
-        sqz[GEN ** 0] = fs[0]
-        sqz[GEN ** 1] = fs[1]
+        sqz = HeapBuf((GEN ** (LIG_MAX_SQUEEZES[m_idx] + 1)) ** FS_SLOTS)
+        sqz[0:4] = fs
         for xs in mul_range(1, GEN ** LIG_SQUEEZES[ml]):
             # a loop body captures free names BY VALUE, so the compile-time aliases
             # are rebound here (m_idx and lvl are substituted literals)
             depth = LIG_TREE_DEPTH[m_idx * LIG_MAX_LEVELS + lvl]
             pos_off = LIG_POSITIONS_OFF[m_idx * LIG_MAX_LEVELS + lvl]
-            row = sqz * xs ** PAIR_SLOTS
-            packed_word, next_c0, next_c1 = squeeze_step(row[GEN ** 0], row[GEN ** 1])
-            row[GEN ** PAIR_SLOTS] = next_c0
-            row[GEN ** (PAIR_SLOTS + 1)] = next_c1
+            row = sqz * xs ** FS_SLOTS
+            nb, packed = squeeze(row[0:4])
+            row[4:8] = nb
             query_ptr = xs ** (FIELD_BITS // depth)
-            decode_query_bits(packed_word, query_positions * GEN ** pos_off * query_ptr, query_bit_ptrs * GEN ** pos_off * query_ptr, depth)
-        sqz_end = sqz * (GEN ** LIG_SQUEEZES[ml]) ** PAIR_SLOTS
-        fs = [sqz_end[GEN ** 0], sqz_end[GEN ** 1]]
+            decode_query_bits(packed, query_positions * GEN ** pos_off * query_ptr, query_bit_ptrs * GEN ** pos_off * query_ptr, depth)
+        sqz_end = sqz * (GEN ** LIG_SQUEEZES[ml]) ** FS_SLOTS
+        fs = sqz_end[0:4]
 
         # One batching challenge for the level, drawn once every claim it batches is
         # fixed: its OOD claims above and these query positions. Claim tau of the
@@ -1161,160 +1179,146 @@ def open_stacked(m_idx: Const, fs0, fs1, target, commit_root_0, commit_root_1, c
         # Protocol 1 step 1): query i is claim n_ood + 1 + i, so its weight splits
         # into lam^i here and the level scalar lam^(n_ood+1) below.
         fs, lam = squeeze(fs)
-        lam_pow = 1
+        lam_pow = ONE
         for i in unroll(0, n_queries):
-            query_weights[GEN ** (lvl * max_q + i)] = lam_pow
-            lam_pow = lam_pow * lam
-        # At level 0, slot i of a leaf image is interleaving index n-1-i: the image
-        # reads its lanes from the top down, so the lanes a padding-free commitment
-        # leaves out are its LEADING words, whose whole blocks the committer hashes
-        # once for all leaves. The flip is a compile-time index and the guest still
-        # hashes the full image. Deeper levels commit every lane, ascending.
-        row_eq_weights = HeapBuf(GEN ** (LIG_MAX_INTERLEAVE[m_idx]))
-        opening_row_weights(fold_challenges * GEN ** folds_off, row_eq_weights, LIG_FOLDS[ml], 1 // (lvl + 1))
+            k = 3 * (lvl * max_q + i)
+            query_weights[k:k + 3] = lam_pow
+            lam_pow = mul192(lam_pow, lam)
 
         cap_depth = LIG_CAP_DEPTH[ml]
-        cap = merkle_caps * GEN ** (4 * LIG_CAP_OFF[ml])
+        cap = merkle_caps * GEN ** (8 * LIG_CAP_OFF[ml])
         flags = cap_flags * GEN ** LIG_CAP_OFF[ml]
-        root_0, root_1 = verify_merkle_cap(cap, flags, cap_depth)
-        level_roots[GEN ** (2 * lvl)] = root_0
-        level_roots[GEN ** (2 * lvl + 1)] = root_1
+        level_root = verify_merkle_cap(cap, flags, cap_depth)
+        k = 4 * lvl
+        level_roots[k:k + 4] = level_root
 
-        level_query_sum = opening_queries(cap, flags, query_weights * GEN ** (lvl * max_q), query_bit_ptrs * GEN ** pos_off, row_eq_weights, GEN ** n_queries, 1 // (lvl + 1), interleave, LIG_LEAF_BLOCKS[ml], depth, cap_depth)
+        level_query_sum = opening_queries(cap, flags, query_weights * GEN ** (3 * lvl * max_q), query_bit_ptrs * GEN ** pos_off, fold_at(point, folds_off, lane_folds, tail_start), GEN ** n_queries, 1 // (lvl + 1), LIG_FOLDS[ml], LIG_LEAF_BLOCKS[ml], depth, cap_depth)
 
         # Every level, including the last, ties its commitment in through an intro
         # message. The level's claims then enter the running one with powers of
         # `lam`: the OOD claims held above first, then this query batch.
         fs, intro_c0, msg_cursor = fs_next(fs, msg_cursor)
         fs, intro_c2, msg_cursor = fs_next(fs, msg_cursor)
-        intro_c1 = level_query_sum + intro_c2  # the split fixes the linear coefficient
+        intro_c1 = add192(level_query_sum, intro_c2)  # the split fixes the linear coefficient
         if lvl == yr_level:
             beta_lvl = lam  # no OOD claim at the last level: no new oracle
         else:
             ood_scalar = lam
             for os in unroll(0, LIG_OOD_SAMPLES[ml + 1]):
                 sample = ood * GEN ** ((lvl + 1) * ood_stride + os * OOD_SLOTS)
-                ood_y = sample[GEN ** OOD_Y]
-                ood_c2 = sample[GEN ** OOD_C2]
-                sample[GEN ** OOD_BETA] = ood_scalar
-                round_quad_c += ood_scalar * sample[GEN ** OOD_C0]
-                round_quad_b += ood_scalar * (ood_y + ood_c2)
-                round_quad_a += ood_scalar * ood_c2
-                sumcheck_target += ood_scalar * ood_y
-                ood_scalar = ood_scalar * lam
+                ood_y = sample[OOD_Y:OOD_Y + 3]
+                ood_c2 = sample[OOD_C2:OOD_C2 + 3]
+                sample[OOD_BETA:OOD_BETA + 3] = ood_scalar
+                round_quad_c = add192(round_quad_c, mul192(ood_scalar, sample[OOD_C0:OOD_C0 + 3]))
+                round_quad_b = add192(round_quad_b, mul192(ood_scalar, add192(ood_y, ood_c2)))
+                round_quad_a = add192(round_quad_a, mul192(ood_scalar, ood_c2))
+                sumcheck_target = add192(sumcheck_target, mul192(ood_scalar, ood_y))
+                ood_scalar = mul192(ood_scalar, lam)
             beta_lvl = ood_scalar
-        level_betas[GEN ** lvl] = beta_lvl
-        round_quad_c += beta_lvl * intro_c0
-        round_quad_b += beta_lvl * intro_c1
-        round_quad_a += beta_lvl * intro_c2
-        sumcheck_target += beta_lvl * level_query_sum
+        k = 3 * lvl
+        level_betas[k:k + 3] = beta_lvl
+        round_quad_c = add192(round_quad_c, mul192(beta_lvl, intro_c0))
+        round_quad_b = add192(round_quad_b, mul192(beta_lvl, intro_c1))
+        round_quad_a = add192(round_quad_a, mul192(beta_lvl, intro_c2))
+        sumcheck_target = add192(sumcheck_target, mul192(beta_lvl, level_query_sum))
 
     # ---- finish the sumcheck over the tail coordinates ----
-    tail_challenges = HeapBuf(GEN ** YR_LOG_CAP)
     for j in unroll(0, yr_log - 1):
-        f0, f1, msg_cursor, sumcheck_target, round_quad_c, round_quad_a, tail_c = opening_fold(fs[0], fs[1], msg_cursor, round_quad_c, round_quad_b, round_quad_a)
-        fs = [f0, f1]
-        tail_challenges[GEN ** j] = tail_c
-        round_quad_b = sumcheck_target + round_quad_a
+        fs, msg_cursor, sumcheck_target, round_quad_c, round_quad_a, tail_c = opening_fold(fs, msg_cursor, round_quad_c, round_quad_b, round_quad_a)
+        k = 3 * j
+        tail[k:k + 3] = tail_c
+        round_quad_b = add192(sumcheck_target, round_quad_a)
     # The closing round sends no following message.
     fs, tail_last = squeeze(fs)
-    tail_challenges[GEN ** (yr_log - 1)] = tail_last
-    sumcheck_target = round_quad_c + tail_last * round_quad_b + tail_last * tail_last * round_quad_a
-    for j in unroll(yr_log, YR_LOG_CAP):
-        tail_challenges[GEN ** j] = 0
+    k = 3 * (yr_log - 1)
+    tail[k:k + 3] = tail_last
+    sumcheck_target = add192(round_quad_c, mul192(tail_last, add192(round_quad_b, mul192(tail_last, round_quad_a))))
 
-    yr_at_tail = fold_final_msg(final_msg, tail_challenges, yr_log)
-
-    # ---- the same point, indexed by committed-witness coordinate ----
-    # The folds bind coordinates in ROUND order, and level 0's folds are the lane
-    # fold, binding the witness's TOP k coordinates: lane l of the commitment is the
-    # stack block q[l * 2^(mu-k) ...], which is what makes the witness's zero
-    # padding whole lanes for the committer to leave out of the encode. Every
-    # transparent weight downstream is written in witness coordinates, so rotate the
-    # point left by those k rounds here, while the level shape is still
-    # compile-time. Padding is zero so shared prefix chains may compute unused
-    # entries above m without reading uninitialized cells.
-    lane_folds = LIG_FOLDS[m_idx * LIG_MAX_LEVELS]
-    fold_head = n_folds - lane_folds
-    point = HeapBuf(SIZE_BITS + SLOT_STRIDE_LOG)
-    for j in unroll(0, fold_head):
-        point[GEN ** j] = fold_challenges[GEN ** (lane_folds + j)]
-    for j in unroll(0, yr_log):
-        point[GEN ** (fold_head + j)] = tail_challenges[GEN ** j]
-    for j in unroll(0, lane_folds):
-        point[GEN ** (fold_head + yr_log + j)] = fold_challenges[GEN ** j]
-    for j in unroll(n_folds + yr_log, SIZE_BITS + SLOT_STRIDE_LOG):
-        point[GEN ** j] = 0
+    yr_at_tail = fold_final_msg(final_msg, tail, yr_log)
 
     # ---- per-level induced bases at the single terminal point ----
     # Every query of a level runs the SAME product shape over its message-column
     # coordinates; only the novel-basis chain (the query position's
-    # subspace-vanishing walk) differs. Since
+    # subspace-vanishing walk, in F64) differs. Since
     #     1 + c_t * (1 + chain_t * inv_t) == (1 + c_t) + (c_t * inv_t) * chain_t
     # a coordinate's two coefficients depend on the challenge and the baked
     # vanishing inverse alone, so they hoist out of the query loop (one row a level,
     # fold coords then tail coords) and each query is one multiply-add a
     # coordinate.
-    basis_a = HeapBuf(GEN ** (n_levels * LIG_LOG_MSG_COLS_CAP))
-    basis_b = HeapBuf(GEN ** (n_levels * LIG_LOG_MSG_COLS_CAP))
+    basis_a = HeapBuf(GEN ** (3 * n_levels * LIG_LOG_MSG_COLS_CAP))
+    basis_b = HeapBuf(GEN ** (3 * n_levels * LIG_LOG_MSG_COLS_CAP))
     for lvl in unroll(0, n_levels):
         ml = m_idx * LIG_MAX_LEVELS + lvl
         prefix_len = LIG_RESIDUAL_PREFIX_LEN[ml]
         vanish = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[ml]
         for t in unroll(0, prefix_len):
-            fold_c = fold_challenges[GEN ** (LIG_RESIDUAL_FOLD_OFF[ml] + t)]
-            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = 1 + fold_c
-            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + t)] = fold_c * LIG_VANISH_INVS[vanish + t]
+            fold_c = fold_at(point, LIG_RESIDUAL_FOLD_OFF[ml] + t, lane_folds, tail_start)
+            dst = 3 * (lvl * LIG_LOG_MSG_COLS_CAP + t)
+            basis_a[dst:dst + 3] = add192(ONE, fold_c[0:3])
+            basis_b[dst:dst + 3] = scale(LIG_VANISH_INVS[vanish + t], fold_c[0:3])
         for j in unroll(0, yr_log):
-            tail_c = tail_challenges[GEN ** j]
-            basis_a[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + prefix_len + j)] = 1 + tail_c
-            basis_b[GEN ** (lvl * LIG_LOG_MSG_COLS_CAP + prefix_len + j)] = tail_c * LIG_VANISH_INVS[vanish + prefix_len + j]
-    inner_chain = HeapBuf(GEN ** (n_levels + 1))
-    inner_chain[GEN ** 0] = 0
+            src = 3 * j
+            tail_c = tail[src:src + 3]
+            dst = 3 * (lvl * LIG_LOG_MSG_COLS_CAP + prefix_len + j)
+            basis_a[dst:dst + 3] = add192(ONE, tail_c)
+            basis_b[dst:dst + 3] = scale(LIG_VANISH_INVS[vanish + prefix_len + j], tail_c)
+    inner_chain = HeapBuf(GEN ** (3 * (n_levels + 1)))
+    inner_chain[0:3] = ZERO
     for lvl in unroll(0, n_levels):
         ml = m_idx * LIG_MAX_LEVELS + lvl
-        vanish = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[ml]
-        basis_row = lvl * LIG_LOG_MSG_COLS_CAP
-        residual_chain = HeapBuf(GEN ** (max_q + 1))
-        residual_chain[GEN ** 0] = 0
+        residual_chain = HeapBuf(GEN ** (3 * (max_q + 1)))
+        residual_chain[0:3] = ZERO
         for xr in mul_range(1, GEN ** LIG_QUERIES[ml]):
             ml = m_idx * LIG_MAX_LEVELS + lvl  # rebound: the body captures by value
             vanish = m_idx * LIG_MAX_VANISH_LEN + LIG_VANISH_OFF[ml]
             basis_row = lvl * LIG_LOG_MSG_COLS_CAP
             max_q = LIG_MAX_QUERIES[m_idx]
             basis_chain = query_positions[GEN ** LIG_POSITIONS_OFF[ml] * xr]
-            prefix_eq = basis_a[GEN ** basis_row] + basis_b[GEN ** basis_row] * basis_chain
+            b0 = 3 * basis_row
+            prefix_eq = add192(basis_a[b0:b0 + 3], scale(basis_chain, basis_b[b0:b0 + 3]))
             for t in unroll(1, LIG_LOG_MSG_COLS[ml]):
                 # subspace-vanishing recurrence for the novel-basis point
                 basis_chain *= (basis_chain + LIG_VANISH_VALS[vanish + t - 1])
-                prefix_eq *= basis_a[GEN ** (basis_row + t)] + basis_b[GEN ** (basis_row + t)] * basis_chain
-            residual_chain[xr * GEN] = residual_chain[xr] + query_weights[GEN ** (lvl * max_q)* xr] * prefix_eq
+                bt = 3 * (basis_row + t)
+                prefix_eq = mul192(prefix_eq, add192(basis_a[bt:bt + 3], scale(basis_chain, basis_b[bt:bt + 3])))
+            xr3 = xr ** 3
+            nxt = xr3 * GEN ** 3
+            qw = GEN ** (3 * lvl * max_q) * xr3
+            residual_chain[nxt:nxt + 3] = add192(residual_chain[xr3:xr3 + 3], mul192(query_weights[qw:qw + 3], prefix_eq))
         # accumulate beta_lvl * (per-level residual sum) into the grand residual
-        inner_chain[GEN ** (lvl + 1)] = inner_chain[GEN ** lvl] + level_betas[GEN ** lvl] * residual_chain[GEN ** LIG_QUERIES[ml]]
+        end = GEN ** (3 * LIG_QUERIES[ml])
+        k = 3 * lvl
+        inner_chain[k + 3:k + 6] = add192(inner_chain[k:k + 3], mul192(level_betas[k:k + 3], residual_chain[end:end + 3]))
 
     # Explicit OOD eq bases at the same terminal point.
-    ood_inner = 0
+    ood_inner = ZERO
     for ood_lvl in unroll(1, n_levels):
         ml = m_idx * LIG_MAX_LEVELS + ood_lvl
         z_folded = LIG_LOG_MSG_COLS[ml - 1] - yr_log
         ris_start = LIG_FOLDS_OFF[ml]
         for os in unroll(0, LIG_OOD_SAMPLES[ml]):
-            oz = ood_z * GEN ** ((ood_lvl * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
-            scalar = ood[GEN ** (ood_lvl * ood_stride + os * OOD_SLOTS + OOD_BETA)]
+            oz = ood_z * GEN ** (3 * (ood_lvl * LIG_MAX_OOD_SAMPLES + os) * LIG_LOG_MSG_COLS_CAP)
+            sample = ood * GEN ** (ood_lvl * ood_stride + os * OOD_SLOTS)
+            scalar = sample[OOD_BETA:OOD_BETA + 3]
             for t in unroll(0, z_folded):
-                scalar *= (1 + oz[GEN ** t] + fold_challenges[GEN ** (ris_start + t)])
+                zk = 3 * t
+                fc = fold_at(point, ris_start + t, lane_folds, tail_start)
+                scalar = mul192(scalar, add192(ONE, add192(oz[zk:zk + 3], fc[0:3])))
             for t in unroll(0, yr_log):
-                scalar *= (1 + oz[GEN ** (z_folded + t)] + tail_challenges[GEN ** t])
-            ood_inner += scalar
-    return sumcheck_target, point, inner_chain[GEN ** n_levels] + ood_inner, yr_at_tail
+                zk = 3 * (z_folded + t)
+                tk = 3 * t
+                scalar = mul192(scalar, add192(ONE, add192(oz[zk:zk + 3], tail[tk:tk + 3])))
+            ood_inner = add192(ood_inner, scalar)
+    inner_end = 3 * n_levels
+    return sumcheck_target, point, add192(inner_chain[inner_end:inner_end + 3], ood_inner), yr_at_tail
 
 
 # ============================== inner-proof verification ============================
 # The phases of `verify_sub`, in the order it runs them. Each takes and returns the
-# Fiat-Shamir state pair and the stream cursor, so the sequence is what binds them.
+# Fiat-Shamir state and the stream cursor, so the sequence is what binds them.
 
 
-def verify_bus_gkr(fs0, fs1, cursor, g_bus_mu, zeta):
+def verify_bus_gkr(fs: StackBuf(4), cursor, g_bus_mu, zeta):
     # ONE GKR grand product over push, pull and count, RLC-batched. Push and pull
     # have equal depth (matched blocks) and the count tree is padded with identity
     # leaves up to it (product unchanged), so a single sumcheck serves all three.
@@ -1324,21 +1328,18 @@ def verify_bus_gkr(fs0, fs1, cursor, g_bus_mu, zeta):
     # values with the walked Fiat-Shamir state and stream cursor.
     layers = HeapBuf((g_bus_mu * GEN ** 2) ** LAYER_SLOTS)  # mu + 2 layers
     rounds = HeapBuf(GKR_ROUNDS_CAP * ROUND_SLOTS)
-    gkr_pts = HeapBuf(GKR_POINTS_CAP)
+    gkr_pts = HeapBuf(3 * GKR_POINTS_CAP)
     assert log(g_bus_mu) < COUNT_BITS
-    fs = [fs0, fs1]
     fs, root_push, cursor = fs_next(fs, cursor)
-    root_pull = root_push
     fs, root_count, cursor = fs_next(fs, cursor)
-    assert root_count != 0  # count-tree root nonzero: no read count self-cancels
+    assert_ne192(root_count, ZERO)  # count-tree root nonzero: no read count self-cancels
     fs, root_lambda = squeeze(fs)
-    layers[GEN ** LAYER_FS0] = fs[0]
-    layers[GEN ** LAYER_FS1] = fs[1]
+    layers[0:4] = fs
     layers[GEN ** LAYER_CURSOR] = cursor
-    layers[GEN ** LAYER_PUSH] = root_push
-    layers[GEN ** LAYER_PULL] = root_pull
-    layers[GEN ** LAYER_COUNT] = root_count
-    layers[GEN ** LAYER_LAMBDA] = root_lambda  # λ over the three roots
+    layers[LAYER_PUSH:LAYER_PUSH + 3] = root_push
+    layers[LAYER_PULL:LAYER_PULL + 3] = root_push
+    layers[LAYER_COUNT:LAYER_COUNT + 3] = root_count
+    layers[LAYER_LAMBDA:LAYER_LAMBDA + 3] = root_lambda  # λ over the three roots
     layers[GEN ** LAYER_ROW] = gkr_pts
     layers[GEN ** LAYER_POS] = GEN ** 0
 
@@ -1354,94 +1355,95 @@ def verify_bus_gkr(fs0, fs1, cursor, g_bus_mu, zeta):
     if depth_shift[g_bus_mu] != 1:
         # The odd layer is layer 0, so its round state would be written and read
         # back at the same position: read it straight off the layer instead.
-        lam = layers[GEN ** LAYER_LAMBDA]
-        tail_fs = [layers[GEN ** LAYER_FS0], layers[GEN ** LAYER_FS1]]
+        lam = layers[LAYER_LAMBDA:LAYER_LAMBDA + 3]
+        tail_fs = layers[0:4]
         tcur = layers[GEN ** LAYER_CURSOR]
-        tclaim = layers[GEN ** LAYER_PUSH] + lam * (layers[GEN ** LAYER_PULL] + lam * layers[GEN ** LAYER_COUNT])
-        nextrow = layers[GEN ** LAYER_ROW] * GEN ** MU_CAP
-        evals = StackBuf(2 * N_GKR_SIDES)  # the two children of each side, in side order
+        tclaim = add192(layers[LAYER_PUSH:LAYER_PUSH + 3], mul192(lam, add192(layers[LAYER_PULL:LAYER_PULL + 3], mul192(lam, layers[LAYER_COUNT:LAYER_COUNT + 3]))))
+        nextrow = gkr_pts * GEN ** (3 * MU_CAP)
+        evals = StackBuf(3 * 2 * N_GKR_SIDES)  # the two children of each side, in side order
         for i in unroll(0, 2 * N_GKR_SIDES):
             tail_fs, ev, tcur = fs_next(tail_fs, tcur)
-            evals[i] = ev
-        combined = 0
+            k = 3 * i
+            evals[k:k + 3] = ev
+        combined = ZERO
         for i in unroll(0, N_GKR_SIDES):
             side = N_GKR_SIDES - 1 - i  # Horner in lam, so the top side lands last
-            combined = evals[2 * side] * evals[2 * side + 1] + lam * combined
-        assert tclaim == combined
+            k = 6 * side
+            combined = add192(mul192(evals[k:k + 3], evals[k + 3:k + 6]), mul192(lam, combined))
+        assert_eq192(tclaim, combined)
         tail_fs, c0 = squeeze(tail_fs)
-        nextrow[GEN ** 0] = c0
+        nextrow[0:3] = c0
         tail_fs, tail_lambda = squeeze(tail_fs)  # fresh λ pins the tail individuals
         nxt = layers * GEN ** LAYER_SLOTS
-        nxt[GEN ** LAYER_FS0] = tail_fs[0]
-        nxt[GEN ** LAYER_FS1] = tail_fs[1]
+        nxt[0:4] = tail_fs
         nxt[GEN ** LAYER_CURSOR] = tcur
         for side in unroll(0, N_GKR_SIDES):
-            nxt[GEN ** (LAYER_PUSH + side)] = evals[2 * side] + c0 * (evals[2 * side] + evals[2 * side + 1])
-        nxt[GEN ** LAYER_LAMBDA] = tail_lambda
+            k = 6 * side
+            out = LAYER_PUSH + 3 * side
+            ev_lo = evals[k:k + 3]
+            nxt[out:out + 3] = add192(ev_lo, mul192(c0, add192(ev_lo, evals[k + 3:k + 6])))
+        nxt[LAYER_LAMBDA:LAYER_LAMBDA + 3] = tail_lambda
         nxt[GEN ** LAYER_ROW] = nextrow
         nxt[GEN ** LAYER_POS] = GEN
 
     for x_pair in mul_range(1, pair_bounds[g_bus_mu]):
         x_layer = x_pair * x_pair * depth_shift[g_bus_mu]
         layer = layers * x_layer ** LAYER_SLOTS
-        lam = layer[GEN ** LAYER_LAMBDA]
+        lam = layer[LAYER_LAMBDA:LAYER_LAMBDA + 3]
         point_row = layer[GEN ** LAYER_ROW]
         round_pos = layer[GEN ** LAYER_POS]
-        nextrow = point_row * GEN ** MU_CAP
+        nextrow = point_row * GEN ** (3 * MU_CAP)
         head = rounds * round_pos ** ROUND_SLOTS
-        head[GEN ** ROUND_FS0] = layer[GEN ** LAYER_FS0]
-        head[GEN ** ROUND_FS1] = layer[GEN ** LAYER_FS1]
+        head[0:4] = layer[0:4]
         head[GEN ** ROUND_CURSOR] = layer[GEN ** LAYER_CURSOR]
-        head[GEN ** ROUND_CLAIM] = layer[GEN ** LAYER_PUSH] + lam * (layer[GEN ** LAYER_PULL] + lam * layer[GEN ** LAYER_COUNT])
+        head[ROUND_CLAIM:ROUND_CLAIM + 3] = add192(layer[LAYER_PUSH:LAYER_PUSH + 3], mul192(lam, add192(layer[LAYER_PULL:LAYER_PULL + 3], mul192(lam, layer[LAYER_COUNT:LAYER_COUNT + 3]))))
         for x_round in mul_range(1, x_layer):
-            rd = rounds * (round_pos * x_round) ** ROUND_SLOTS
-            nfs0, nfs1, ncur, nclaim, rk = sumcheck_round5(rd[GEN ** ROUND_FS0], rd[GEN ** ROUND_FS1], rd[GEN ** ROUND_CURSOR], rd[GEN ** ROUND_CLAIM], point_row[x_round])
-            nextrow[x_round * GEN ** 2] = rk
-            rd_next = rd * GEN ** ROUND_SLOTS
-            rd_next[GEN ** ROUND_FS0] = nfs0
-            rd_next[GEN ** ROUND_FS1] = nfs1
-            rd_next[GEN ** ROUND_CURSOR] = ncur
-            rd_next[GEN ** ROUND_CLAIM] = nclaim
+            xr3 = x_round ** 3
+            sumcheck_round5(rounds * (round_pos * x_round) ** ROUND_SLOTS, point_row * xr3, nextrow * xr3 * GEN ** 6)
         tail = rounds * (round_pos * x_layer) ** ROUND_SLOTS
-        tail_fs = [tail[GEN ** ROUND_FS0], tail[GEN ** ROUND_FS1]]
+        tail_fs = tail[0:4]
         tcur = tail[GEN ** ROUND_CURSOR]
-        tclaim = tail[GEN ** ROUND_CLAIM]
-        evals = StackBuf(4 * N_GKR_SIDES)  # the four children of each side, in side order
+        tclaim = tail[ROUND_CLAIM:ROUND_CLAIM + 3]
+        evals = StackBuf(3 * 4 * N_GKR_SIDES)  # the four children of each side, in side order
         for i in unroll(0, 4 * N_GKR_SIDES):
             tail_fs, ev, tcur = fs_next(tail_fs, tcur)
-            evals[i] = ev
-        combined = 0
+            k = 3 * i
+            evals[k:k + 3] = ev
+        combined = ZERO
         for i in unroll(0, N_GKR_SIDES):
             side = N_GKR_SIDES - 1 - i  # Horner in lam, so the top side lands last
-            combined = evals[4 * side] * evals[4 * side + 1] * evals[4 * side + 2] * evals[4 * side + 3] + lam * combined
-        assert tclaim == combined
+            k = 12 * side
+            combined = add192(mul192(mul192(evals[k:k + 3], evals[k + 3:k + 6]), mul192(evals[k + 6:k + 9], evals[k + 9:k + 12])), mul192(lam, combined))
+        assert_eq192(tclaim, combined)
         tail_fs, c0 = squeeze(tail_fs)
         tail_fs, c1 = squeeze(tail_fs)
-        nextrow[GEN ** 0] = c0
-        nextrow[GEN ** 1] = c1
+        nextrow[0:3] = c0
+        nextrow[3:6] = c1
         tail_fs, tail_lambda = squeeze(tail_fs)
         nxt = layer * GEN ** (2 * LAYER_SLOTS)
-        nxt[GEN ** LAYER_FS0] = tail_fs[0]
-        nxt[GEN ** LAYER_FS1] = tail_fs[1]
+        nxt[0:4] = tail_fs
         nxt[GEN ** LAYER_CURSOR] = tcur
         for side in unroll(0, N_GKR_SIDES):
-            lo = evals[4 * side] + c0 * (evals[4 * side] + evals[4 * side + 1])
-            hi = evals[4 * side + 2] + c0 * (evals[4 * side + 2] + evals[4 * side + 3])
-            nxt[GEN ** (LAYER_PUSH + side)] = lo + c1 * (lo + hi)
-        nxt[GEN ** LAYER_LAMBDA] = tail_lambda
+            k = 12 * side
+            out = LAYER_PUSH + 3 * side
+            e0 = evals[k:k + 3]
+            e2 = evals[k + 6:k + 9]
+            lo = add192(e0, mul192(c0, add192(e0, evals[k + 3:k + 6])))
+            hi = add192(e2, mul192(c0, add192(e2, evals[k + 9:k + 12])))
+            nxt[out:out + 3] = add192(lo, mul192(c1, add192(lo, hi)))
+        nxt[LAYER_LAMBDA:LAYER_LAMBDA + 3] = tail_lambda
         nxt[GEN ** LAYER_ROW] = nextrow
         nxt[GEN ** LAYER_POS] = round_pos * x_layer * GEN
     last = layers * g_bus_mu ** LAYER_SLOTS
-    fs = [last[GEN ** LAYER_FS0], last[GEN ** LAYER_FS1]]
-    cursor = last[GEN ** LAYER_CURSOR]
     final_point_row = last[GEN ** LAYER_ROW]
     for xt in mul_range(1, g_bus_mu):
-        zeta[xt] = final_point_row[xt]  # the ONE shared point
-    return fs[0], fs[1], cursor, last[GEN ** LAYER_PUSH], last[GEN ** LAYER_PULL], last[GEN ** LAYER_COUNT]
+        x3 = xt ** 3
+        zeta[x3:x3 + 3] = final_point_row[x3:x3 + 3]  # the ONE shared point
+    return last[0:4], last[GEN ** LAYER_CURSOR], last[LAYER_PUSH:LAYER_PUSH + 3], last[LAYER_PULL:LAYER_PULL + 3], last[LAYER_COUNT:LAYER_COUNT + 3]
 
 
-def verify_tables(fs0, fs1, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_kappa, g_squares, fp_w, beta, claim_pool, claim_cplen_g, chi, claim_push, claim_pull, claim_count):
-    # Settle the bus against the six tables, in four steps: certify each side's
+def verify_tables(fs: StackBuf(4), cursor, pi: StackBuf(4), zeta, g_bus_mu, dims_g, block_kappa, g_squares, fp_w, beta: StackBuf(3), claim_pool, claim_cplen_g, chi, claim_push: StackBuf(3), claim_pull: StackBuf(3), claim_count: StackBuf(3)):
+    # Settle the bus against the eight tables, in four steps: certify each side's
     # leaf-cube tiling, decompose the three GKR leaf values over it, run the ONE
     # table sumcheck they all reduce to, and bind the public input. Pooled claims
     # land in claim_pool/claim_cplen_g and the reduced point in `chi`; the batch's
@@ -1455,11 +1457,6 @@ def verify_tables(fs0, fs1, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_ka
     # consecutive offsets force a valid tiling, and the grand product is
     # position-independent, so any tiling is sound. Pull's blocks mirror push's and
     # share zeta, so only push and count need offsets (pull's slots go unread).
-    fs = [fs0, fs1]
-    gkr_claims = StackBuf(N_GKR_SIDES)
-    gkr_claims[PUSH_SIDE] = claim_push
-    gkr_claims[PULL_SIDE] = claim_pull
-    gkr_claims[COUNT_SIDE] = claim_count
     sort_order = HeapBuf(N_BLOCKS)
     hint_witness(sort_order[0:N_BLOCKS], "sort_order")
     block_side_tab = HeapBuf(N_BLOCKS)  # global block -> its side
@@ -1492,22 +1489,24 @@ def verify_tables(fs0, fs1, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_ka
     # Index-MLE value instead of recomputing them; its column values are mostly
     # deduped pool reads (COORD_FRESH). The identity check against pull's own GKR
     # claim still binds everything.
-    bc_share = hint_witness("bytecode_val")
+    bc_share = StackBuf(3)
+    hint_witness(bc_share, "bytecode_val")
     idxc_tab = HeapBuf(SIZE_BITS)  # INDEX_MLE_FACTORS[t] = 1 + g^(2^t)
     for t in unroll(0, SIZE_BITS):
         idxc_tab[GEN ** t] = INDEX_MLE_FACTORS[t]
-    bus_table_total = StackBuf(N_GKR_SIDES)  # per side, what its tables' blocks owe
-    block_eq_hi = StackBuf(N_BLOCKS)         # every block's eq_hi, reused below
-    block_index_mle = HeapBuf(N_BLOCKS)      # per push block with an Index coord
+    bus_table_total = StackBuf(3 * N_GKR_SIDES)  # per side, what its tables' blocks owe
+    block_eq_hi = StackBuf(3 * N_BLOCKS)         # every block's eq_hi, reused below
+    block_index_mle = HeapBuf(3 * N_BLOCKS)      # per push block with an Index coord
     for s in unroll(0, N_GKR_SIDES):
-        acc = 0
-        selector_sum = 0
+        acc = ZERO
+        selector_sum = ZERO
         for b in unroll(SIDE_BLOCK_START[s], SIDE_BLOCK_START[s + 1]):
             block_has_public = 0
             kappa_g = block_kappa[GEN ** b]
             assert log(kappa_g) < SIZE_BITS
             if s == PULL_SIDE:
-                eq_hi = block_eq_hi[b - SIDE_BLOCK_START[PULL_SIDE]]
+                twin = 3 * (b - SIDE_BLOCK_START[PULL_SIDE])
+                eq_hi = block_eq_hi[twin:twin + 3]
             else:
                 # eq_hi over the ζ coords above κ against the selector bits, whose
                 # run is mu_s − κ = g^mu_s / g^κ long. Selector bits = offset >> κ:
@@ -1517,84 +1516,102 @@ def verify_tables(fs0, fs1, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_ka
                 # in one shot; the low κ bit cells are written but never read.
                 sel_len_g = g_bus_mu / kappa_g  # g^(mu - κ)
                 assert log(sel_len_g) < SIZE_BITS
-                zeta_hi = zeta * kappa_g
+                zeta_hi = zeta * kappa_g ** 3
                 offset_bits = HeapBuf(GEN ** SIZE_BITS)
                 hint_decompose_bits_exponent(offset_bits, block_off_g[GEN ** b], SIZE_BITS)
                 sel_bits = offset_bits * kappa_g
-                eq_chain = HeapBuf(MU_CAP + 2)
+                eq_chain = HeapBuf(3 * (MU_CAP + 2))
                 goff_chain = HeapBuf(MU_CAP + 2)  # rebuild g^offset from the high bits
-                eq_chain[GEN ** 0] = 1
+                eq_chain[0:3] = ONE
                 goff_chain[GEN ** 0] = 1
                 for xk in mul_range(1, sel_len_g):
                     sbit = sel_bits[xk]
                     sel_bits[xk] = sbit * sbit  # booleanity as a write-once pin
-                    eq_chain[xk * GEN] = eq_chain[xk] * (1 + sbit + zeta_hi[xk])  # eq over GF(2) is 1 + b + z
+                    x3 = xk ** 3
+                    nxt = x3 * GEN ** 3
+                    eq_chain[nxt:nxt + 3] = mul192(eq_chain[x3:x3 + 3], add64(zeta_hi[x3:x3 + 3], 1 + sbit))  # eq over GF(2) is 1 + b + z
                     goff_chain[xk * GEN] = goff_chain[xk] * (1 + sbit * (g_squares[kappa_g * xk] + 1))
-                eq_hi = eq_chain[sel_len_g]
+                sel_end = sel_len_g ** 3
+                eq_hi = eq_chain[sel_end:sel_end + 3]
                 assert goff_chain[sel_len_g] == block_off_g[GEN ** b]  # bits == offset >> κ, κ-aligned
-            selector_sum += eq_hi
-            block_eq_hi[b] = eq_hi
+            selector_sum = add192(selector_sum, eq_hi)
+            bk = 3 * b
+            block_eq_hi[bk:bk + 3] = eq_hi
             # A TABLE's block streams no value here: the table sumcheck settles its
             # fingerprint from that table's column evaluations. Only the framework
             # blocks (boundary, memory, bytecode) still decompose.
             if BLOCK_TABLE[b] == NO_TABLE:
                 # inner fingerprint Σ_i w_i · coord_i(ζ_lo); the count side weighs
                 # slot 0 alone (α⃗ = 0), γ = 0.
-                inner_sum = 0
+                inner_sum = ZERO
                 for i in unroll(0, BLOCK_COORD_COUNT[b]):
                     ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
+                    coord_val = ZERO
+                    slot = 3 * COORD_CLAIM_SLOT[ci]
                     if COORD_TYPE[ci] == COORD_KIND_CONST:
-                        coord_val = COORD_CONST[ci]
+                        coord_val = f192(COORD_CONST[ci], 0, 0)
                     if COORD_TYPE[ci] == COORD_KIND_COL:
                         if COORD_FRESH[ci] == 1:
                             fs, coord_val, cursor = fs_next(fs, cursor)
-                            claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = coord_val
+                            claim_pool[slot:slot + 3] = coord_val
                             claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = kappa_g  # cplen = block kappa
                         else:
-                            coord_val = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
+                            coord_val = claim_pool[slot:slot + 3]
                     if COORD_TYPE[ci] == COORD_KIND_GCOL:
                         if COORD_FRESH[ci] == 1:
                             fs, rawv, cursor = fs_next(fs, cursor)
-                            claim_pool[GEN ** COORD_CLAIM_SLOT[ci]] = rawv
+                            claim_pool[slot:slot + 3] = rawv
                             claim_cplen_g[GEN ** COORD_CLAIM_SLOT[ci]] = kappa_g
                         else:
-                            rawv = claim_pool[GEN ** COORD_CLAIM_SLOT[ci]]
-                        coord_val = COORD_CONST[ci] * rawv
+                            rawv = claim_pool[slot:slot + 3]
+                        coord_val = scale(COORD_CONST[ci], rawv)
                     if COORD_TYPE[ci] == COORD_KIND_INDEX:
                         if s == PULL_SIDE:
-                            coord_val = block_index_mle[GEN ** (b - SIDE_BLOCK_START[PULL_SIDE])]
+                            twin = 3 * (b - SIDE_BLOCK_START[PULL_SIDE])
+                            coord_val = block_index_mle[twin:twin + 3]
                         else:
                             # Index-coord MLE: prod_t (1 + zeta_t * (1 + g^(2^t)))
-                            idx_chain = HeapBuf(MU_CAP + 2)
-                            idx_chain[GEN ** 0] = 1
+                            idx_chain = HeapBuf(3 * (MU_CAP + 2))
+                            idx_chain[0:3] = ONE
                             for xt in mul_range(1, kappa_g):
-                                idx_chain[xt * GEN] = idx_chain[xt] * (1 + zeta[xt] * idxc_tab[xt])
-                            coord_val = idx_chain[kappa_g]
+                                x3 = xt ** 3
+                                nxt = x3 * GEN ** 3
+                                idx_chain[nxt:nxt + 3] = mul192(idx_chain[x3:x3 + 3], add64(scale(idxc_tab[xt], zeta[x3:x3 + 3]), 1))
+                            idx_end = kappa_g ** 3
+                            coord_val = idx_chain[idx_end:idx_end + 3]
                             if s == PUSH_SIDE:
-                                block_index_mle[GEN ** b] = coord_val
+                                block_index_mle[bk:bk + 3] = coord_val
                     if COORD_TYPE[ci] == COORD_KIND_PUBLIC:
                         # The public slots carry no value of their own here: their
                         # alpha-weighted sum IS bc_share, added once per block below
                         # (push and pull share zeta, so both get the same one).
-                        coord_val = 0
                         block_has_public = 1
                     if s == COUNT_SIDE:
-                        inner_sum += coord_val
+                        inner_sum = add192(inner_sum, coord_val)
                     else:
-                        inner_sum += fp_w[GEN ** i] * coord_val
-                inner_sum += block_has_public * bc_share  # the bytecode blocks' public slots
+                        wk = 3 * i
+                        inner_sum = add192(inner_sum, mul192(fp_w[wk:wk + 3], coord_val))
+                if block_has_public == 1:
+                    inner_sum = add192(inner_sum, bc_share)  # the bytecode blocks' public slots
                 if s == COUNT_SIDE:
-                    acc += eq_hi * inner_sum
+                    acc = add192(acc, mul192(eq_hi, inner_sum))
                 else:
-                    acc += eq_hi * (beta + inner_sum)
-        acc += 1 + selector_sum
+                    acc = add192(acc, mul192(eq_hi, add192(beta, inner_sum)))
+        acc = add64(add192(acc, selector_sum), 1)
         # What the tables' blocks owe this side: its GKR leaf value less the
         # framework decomposition. DERIVED, not read: a transmitted total would be a
         # free value in its own check. The table sumcheck's target pins it below.
-        bus_table_total[s] = acc + gkr_claims[s]
-    claim_idx = N_BUS_CLAIMS  # AIR/PI/pin claims pool after the deduped bus claims
+        if s == PUSH_SIDE:
+            leaf = claim_push
+        if s == PULL_SIDE:
+            leaf = claim_pull
+        if s == COUNT_SIDE:
+            leaf = claim_count
+        sk = 3 * s
+        bus_table_total[sk:sk + 3] = add192(acc, leaf)
+    claim_idx = N_BUS_CLAIMS  # table and PI claims pool after the deduped bus claims
 
-    # ---- ONE table sumcheck for all six tables ----
+    # ---- ONE table sumcheck for all eight tables ----
     # Mirrors lean_vm::constraints::verify. zc_xi ONCE, each table folding its own
     # identities with a DISJOINT range of its powers (ETA_OFFSET[t]); one shared
     # point zeta (the bus GKR's); n = max_t tau_t rounds. Rounds bind the HIGHEST
@@ -1616,135 +1633,133 @@ def verify_tables(fs0, fs1, cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_ka
     # zeta only holds mu coords: unwritten heap there is prover-chosen.
     assert log(g_bus_mu / g_zc_n) < COUNT_BITS
     fs, zc_xi = squeeze(fs)
-    zc_xi_pows = StackBuf(N_ETA_POWS)
-    zc_xi_pows[0] = 1
+    zc_xi_pows = StackBuf(3 * N_ETA_POWS)
+    zc_xi_pows[0:3] = ONE
     for k in unroll(1, N_ETA_POWS):
-        zc_xi_pows[k] = zc_xi_pows[k - 1] * zc_xi
+        c = 3 * k
+        zc_xi_pows[c:c + 3] = mul192(zc_xi_pows[c - 3:c], zc_xi)
     # The eq point is the bus GKR's zeta, NOT a fresh one, which is what lets the
     # batch settle the bus forms alongside the constraints. It is also why no target
     # is read: what the three sides' tables owe, each in its own shared power of
     # zc_xi, IS the sum the batch must reach, and zc_xi is squeezed after those
     # totals are fixed, so hitting one number forces all three side equations.
-    bus_target = 0
+    bus_target = ZERO
     for sd in unroll(0, N_GKR_SIDES):
-        bus_target += zc_xi_pows[ETA_FORM_BASE + sd] * bus_table_total[sd]
+        e = 3 * (ETA_FORM_BASE + sd)
+        k = 3 * sd
+        bus_target = add192(bus_target, mul192(zc_xi_pows[e:e + 3], bus_table_total[k:k + 3]))
     # n vanilla sumcheck rounds: the round polynomial arrives whole, so a round is
     # `h(0) + h(1) == claim` and a fold, with no eq to reapply. The tables still
     # waiting ride inside h, so nothing here is indexed by height; the heights enter
     # only the per-table weights below.
     zc_rounds = HeapBuf((g_zc_n * GEN) ** ROUND_SLOTS)
-    zc_cprod = HeapBuf(g_zc_n * GEN)  # the challenges bound so far, multiplied
-    zc_rounds[GEN ** ROUND_FS0] = fs[0]
-    zc_rounds[GEN ** ROUND_FS1] = fs[1]
+    zc_cprod = HeapBuf((g_zc_n * GEN) ** 3)  # the challenges bound so far, multiplied
+    zc_rounds[0:4] = fs
     zc_rounds[GEN ** ROUND_CURSOR] = cursor
-    zc_rounds[GEN ** ROUND_CLAIM] = bus_target
-    zc_cprod[GEN ** 0] = 1
+    zc_rounds[ROUND_CLAIM:ROUND_CLAIM + 3] = bus_target
+    zc_cprod[0:3] = ONE
     for xk in mul_range(1, g_zc_n):
-        rd = zc_rounds * xk ** ROUND_SLOTS
-        nfs0, nfs1, ncur, nclaim, rk = sumcheck_round4(rd[GEN ** ROUND_FS0], rd[GEN ** ROUND_FS1], rd[GEN ** ROUND_CURSOR], rd[GEN ** ROUND_CLAIM])
-        chi[g_zc_n * INV_GEN / xk] = rk  # g^(n-1-j): the variable round j binds
-        nxt = rd * GEN ** ROUND_SLOTS
-        nxt[GEN ** ROUND_FS0] = nfs0
-        nxt[GEN ** ROUND_FS1] = nfs1
-        nxt[GEN ** ROUND_CURSOR] = ncur
-        nxt[GEN ** ROUND_CLAIM] = nclaim
+        rk = sumcheck_round4(zc_rounds * xk ** ROUND_SLOTS)
+        bound = (g_zc_n * INV_GEN / xk) ** 3  # g^(n-1-j): the variable round j binds
+        chi[bound:bound + 3] = rk
         # cprod is the weight of a table that joins here; peq below is the rest
-        zc_cprod[xk * GEN] = zc_cprod[xk] * rk
+        x3 = xk ** 3
+        nxt = x3 * GEN ** 3
+        zc_cprod[nxt:nxt + 3] = mul192(zc_cprod[x3:x3 + 3], rk)
     zc_last = zc_rounds * g_zc_n ** ROUND_SLOTS
-    fs = [zc_last[GEN ** ROUND_FS0], zc_last[GEN ** ROUND_FS1]]
+    fs = zc_last[0:4]
     cursor = zc_last[GEN ** ROUND_CURSOR]
-    claim = zc_last[GEN ** ROUND_CLAIM]
+    claim = zc_last[ROUND_CLAIM:ROUND_CLAIM + 3]
     # peq[g^tau] = eq(zeta[..tau], chi[..tau]), as a prefix chain.
-    zc_peq = HeapBuf(g_zc_n * GEN)
-    zc_peq[GEN ** 0] = 1
-    for xi in mul_range(1, g_zc_n):
-        zc_peq[xi * GEN] = zc_peq[xi] * (1 + zeta[xi] + chi[xi])
+    zc_peq = HeapBuf((g_zc_n * GEN) ** 3)
+    eq_prefix_chain(zc_peq, ONE, zeta, chi, g_zc_n)
     # Per table: every committed column's evaluation (pooled), its AIR constraint
     # at its own reduced point chi[..tau_t], weighted into the batch's final claim.
-    air_acc = 0
+    air_acc = ZERO
     for t in unroll(0, N_TABLES):
         tau_g = dims_g[GEN ** (t + 1)]
-        col_evals = StackBuf(TABLE_COLS_CAP)
+        col_evals = StackBuf(3 * TABLE_COLS_CAP)
         for k in unroll(0, N_TABLE_COLS[t]):
             fs, e, cursor = fs_next(fs, cursor)
-            col_evals[k] = e
-            claim_pool[GEN ** claim_idx] = e
+            c = 3 * k
+            col_evals[c:c + 3] = e
+            p = 3 * claim_idx
+            claim_pool[p:p + 3] = e
             claim_cplen_g[GEN ** claim_idx] = tau_g  # cplen = tau_t
             claim_idx += 1
         # The table's AIR constraint at the final point (col_evals is indexed by
         # local column index; the formulas mirror tables.rs eval_constraint). Every
-        # value relation now rides the bus as a degree-2 coordinate, so only JUMP's
+        # value relation rides the bus as a degree-2 coordinate, so only JUMP's
         # is-nonzero indicator is left with an identity of its own.
-        constraint_eval = 0
+        constraint_eval = ZERO
         if t == TABLE_JUMP:
-            # `b = c*w` and `c*(b+1) = 0`. The condition is K-valued, its memory read
-            # carrying literal zeros above the low limb, so both identities are
-            # single-lane (tables.rs jump_identity). Local columns: v_cond at 5, w at
-            # 12, the indicator b at 13.
-            c = col_evals[5]
-            b = col_evals[13]
-            constraint_eval = zc_xi_pows[ETA_OFFSET[t] + 0] * (b + c * col_evals[12])
-            constraint_eval += zc_xi_pows[ETA_OFFSET[t] + 1] * (c * (b + 1))
+            # `b = c*w` and `c*(b+1) = 0` (tables.rs jump_identity). Local columns:
+            # v_cond at 5, w at 12, the indicator b at 13.
+            cond = col_evals[15:18]
+            indicator = col_evals[39:42]
+            x0 = 3 * ETA_OFFSET[t]
+            x1 = x0 + 3
+            constraint_eval = add192(mul192(zc_xi_pows[x0:x0 + 3], add192(indicator, mul192(cond, col_evals[36:39]))), mul192(zc_xi_pows[x1:x1 + 3], mul192(cond, add192(indicator, ONE))))
         # The table's three bus forms, evaluated at the SAME column evaluations:
         # Σ_b eq_hi(b) · (γ + Σ_i α^i · coord_i), the coords read off col_evals at
         # their local index. This is what replaces opening those columns at ζ.
         for sd in unroll(0, N_GKR_SIDES):
-            form = 0
+            form = ZERO
             for b in unroll(0, N_BLOCKS):
                 if BLOCK_SIDE[b] == sd:
                     if BLOCK_TABLE[b] == t:
-                        inner = 0
+                        inner = ZERO
                         for i in unroll(0, BLOCK_COORD_COUNT[b]):
                             # Each coord is the sum of its terms, over this table's
                             # column evaluations. A product term (an address, an
                             # arithmetic result) is degree 2, which the batch's
                             # round polynomial already allows.
                             ci = BLOCK_COORD_OFF[b] + i  # a compile-time index, so `ci` costs nothing
-                            cv = 0
+                            cv = ZERO
                             for j in unroll(0, COORD_TERM_COUNT[ci]):
                                 tj = COORD_TERM_OFF[ci] + j
+                                ca = 3 * TERM_COL_A[tj]
+                                cb = 3 * TERM_COL_B[tj]
                                 if TERM_TYPE[tj] == COORD_KIND_CONST:
-                                    cv += TERM_CONST[tj]
+                                    cv = add192(cv, f192(TERM_CONST[tj], 0, 0))
                                 if TERM_TYPE[tj] == COORD_KIND_COL:
-                                    cv += col_evals[TERM_COL_A[tj]]
+                                    cv = add192(cv, col_evals[ca:ca + 3])
                                 if TERM_TYPE[tj] == COORD_KIND_GCOL:
-                                    cv += TERM_CONST[tj] * col_evals[TERM_COL_A[tj]]
+                                    cv = add192(cv, scale(TERM_CONST[tj], col_evals[ca:ca + 3]))
                                 if TERM_TYPE[tj] == COORD_KIND_PROD:
-                                    cv += TERM_CONST[tj] * (col_evals[TERM_COL_A[tj]] * col_evals[TERM_COL_B[tj]])
+                                    cv = add192(cv, scale(TERM_CONST[tj], mul192(col_evals[ca:ca + 3], col_evals[cb:cb + 3])))
                             if sd == COUNT_SIDE:
-                                inner += cv
+                                inner = add192(inner, cv)
                             else:
-                                inner += fp_w[GEN ** i] * cv
+                                wk = 3 * i
+                                inner = add192(inner, mul192(fp_w[wk:wk + 3], cv))
+                        bk = 3 * b
                         if sd == COUNT_SIDE:
-                            form += block_eq_hi[b] * inner
+                            form = add192(form, mul192(block_eq_hi[bk:bk + 3], inner))
                         else:
-                            form += block_eq_hi[b] * (beta + inner)
-            constraint_eval += zc_xi_pows[ETA_FORM_BASE + sd] * form
-        air_acc += zc_cprod[g_zc_n / tau_g] * zc_peq[tau_g] * constraint_eval  # cprod[n - tau] * peq[tau]
-    assert air_acc == claim
+                            form = add192(form, mul192(block_eq_hi[bk:bk + 3], add192(beta, inner)))
+            e = 3 * (ETA_FORM_BASE + sd)
+            constraint_eval = add192(constraint_eval, mul192(zc_xi_pows[e:e + 3], form))
+        joins = (g_zc_n / tau_g) ** 3
+        sits = tau_g ** 3
+        air_acc = add192(air_acc, mul192(mul192(zc_cprod[joins:joins + 3], zc_peq[sits:sits + 3]), constraint_eval))  # cprod[n - tau] * peq[tau]
+    assert_eq192(air_acc, claim)
 
-    # ---- public-input binding claim: MEM as ONE logical E-column ----
-    # The VM's bind_pi_claim makes a SINGLE E-claim at [rm, 0..]:
-    #   MEM(rm) = interp(pi_0, pi_1, rm) = pi_0 + rm*(pi_0 + pi_1)
-    # over the E-valued public input (no lane splitting, no Frobenius). Both
-    # public words have a zero top limb, so that limb's evaluation is zero at
-    # every rm; only the two low ones ride the stream and must reassemble it:
-    # MEM = v_lo + Y*v_hi (doc sec:e2e-pi).
-    fs, rm = squeeze(fs)
-    mem = pi_0 + rm * (pi_0 + pi_1)
-    fs, mem_lo, cursor = fs_next(fs, cursor)
-    fs, mem_hi, cursor = fs_next(fs, cursor)
-    assert mem == mem_lo + mem_hi * Y_TOWER
-    claim_pool[GEN ** claim_idx] = mem_lo
-    claim_idx += 1
-    claim_pool[GEN ** claim_idx] = mem_hi
-    claim_idx += 1
-    claim_pool[GEN ** claim_idx] = 0
-    claim_idx += 1
-    return fs[0], fs[1], cursor, g_zc_n, bc_share, rm
+    # ---- public-input binding claim ----
+    # The VM's bind_pi_claim: the committed MEM at (r0, r1, 0, ...) equals the
+    # multilinear extension of the four public words at (r0, r1), low variable
+    # first. Both sides know the words, so the value is computed and nothing rides
+    # the stream.
+    fs, r0 = squeeze(fs)
+    fs, r1 = squeeze(fs)
+    v_lo = add64(scale(pi[0] + pi[1], r0), pi[0])
+    v_hi = add64(scale(pi[2] + pi[3], r0), pi[2])
+    p = 3 * claim_idx
+    claim_pool[p:p + 3] = add192(v_lo, mul192(r1, add192(v_lo, v_hi)))
+    return fs, cursor, g_zc_n, bc_share, r0, r1
 
 
-def verify_flock(fs0, fs1, cursor, tau_blake2s_g, zerocheck_chis, lincheck_rs, z_partial):
+def verify_flock(fs: StackBuf(4), cursor, tau_blake2s_g, zerocheck_chis, lincheck_rs, z_partial):
     # Flock's zerocheck (univariate skip, k_skip = 6) then its lincheck, whose
     # matrix evaluation is DEFERRED to the caller's statement. The three run buffers
     # come in pre-sized; the point z, lincheck's alpha and the deferred matrix part
@@ -1758,129 +1773,129 @@ def verify_flock(fs0, fs1, cursor, tau_blake2s_g, zerocheck_chis, lincheck_rs, z
     # fixed inner values then sampled outer ones. The prover builds round 1 from
     # this equality tail, so its sampled part is squeezed before round 1 is fetched,
     # and round 1 before z, which evaluates it.
-    fs = [fs0, fs1]
     mr1cs_g = tau_blake2s_g * GEN ** K_LOG  # runtime m = K_LOG + tau_5, in the exponent
-    zerocheck_r = HeapBuf(mr1cs_g)
-    for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
-        zerocheck_r[GEN ** (K_SKIP + i)] = FIXED_CHALLENGES[i]
-    flock_pts = HeapBuf((mr1cs_g * GEN ** 2) ** PAIR_SLOTS)
-    seed = flock_pts * (GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)) ** PAIR_SLOTS
-    seed[GEN ** 0] = fs[0]
-    seed[GEN ** 1] = fs[1]
+    zerocheck_r = HeapBuf(mr1cs_g ** 3)
+    flock_pts = HeapBuf((mr1cs_g * GEN ** 2) ** FS_SLOTS)
+    seed = flock_pts * (GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS)) ** FS_SLOTS
+    seed[0:4] = fs
     for xi in mul_range(GEN ** (K_SKIP + N_FIXED_CHALLENGE_ROUNDS), mr1cs_g):
-        row = flock_pts * xi ** PAIR_SLOTS
-        point_fs = [row[GEN ** 0], row[GEN ** 1]]
-        point_fs, zerocheck_challenge = squeeze(point_fs)
-        zerocheck_r[xi] = zerocheck_challenge
-        row[GEN ** PAIR_SLOTS] = point_fs[0]
-        row[GEN ** (PAIR_SLOTS + 1)] = point_fs[1]
-    pts_last = flock_pts * mr1cs_g ** PAIR_SLOTS
-    fs = [pts_last[GEN ** 0], pts_last[GEN ** 1]]
-    # round-1 message (P = P^AB + P^C on Lambda, 2^K_SKIP words): fetch +
-    # observe each word as it comes off the stream, then sample z.
-    zc_round1 = HeapBuf(2 ** K_SKIP)
+        row = flock_pts * xi ** FS_SLOTS
+        point_fs, zerocheck_challenge = squeeze(row[0:4])
+        x3 = xi ** 3
+        zerocheck_r[x3:x3 + 3] = zerocheck_challenge
+        row[4:8] = point_fs
+    pts_last = flock_pts * mr1cs_g ** FS_SLOTS
+    fs = pts_last[0:4]
+    # round-1 message (P = P^AB + P^C on Lambda, 2^K_SKIP scalars): fetch +
+    # observe each as it comes off the stream, then sample z.
+    zc_round1 = StackBuf(3 * 2 ** K_SKIP)
     for i in unroll(0, 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
-        zc_round1[GEN ** i] = w
+        k = 3 * i
+        zc_round1[k:k + 3] = w
     fs, zerocheck_z = squeeze(fs)  # cursor now sits at the multilinear round messages, walked below
     # P(z), interpolated at z over ALL 128 phi8 nodes: the transmitted Lambda values
     # (nodes 64..128) plus the S half, zero by the zerocheck identity. The finished
     # sum is scaled once by the domain's inverse denominator; the full-domain
     # product only adds the S-half factor to the Lambda numerators.
-    lagrange_nums = StackBuf(2 ** K_SKIP)
+    lagrange_nums = StackBuf(3 * 2 ** K_SKIP)
     lag64(zerocheck_z, lagrange_nums, 2 ** K_SKIP)
-    s_half_product = GEN ** 0
-    zc_running = 0  # the zerocheck running claim entering the multilinear rounds
+    s_half_product = ONE
+    zc_running = ZERO  # the zerocheck running claim entering the multilinear rounds
     for i in unroll(0, 2 ** K_SKIP):
-        s_half_product *= (zerocheck_z + PHI8_NODES[i])
-        zc_running += lagrange_nums[i] * zc_round1[GEN ** i]
-    zc_running *= s_half_product * LAGRANGE_INV_COMBINED
-    mr1cs_rounds_g = mr1cs_g * INV_GEN ** 6  # the multilinear rounds: m - 6
+        k = 3 * i
+        s_half_product = mul192(s_half_product, add192(zerocheck_z, phi8(i)))
+        zc_running = add192(zc_running, mul192(lagrange_nums[k:k + 3], zc_round1[k:k + 3]))
+    zc_running = mul192(zc_running, mul192(s_half_product, LAGRANGE_INV_COMBINED))
     for i in unroll(0, N_FIXED_CHALLENGE_ROUNDS):
-        r_eq = zerocheck_r[GEN ** (K_SKIP + i)]
         fs, g_1, cursor = fs_next(fs, cursor)  # G's coefficients, bar the constant one
         fs, g_2, cursor = fs_next(fs, cursor)
-        g_0 = zc_running + r_eq * (g_1 + g_2)  # the eq-weighted split fixes it
+        g_0 = add192(zc_running, mul192(fixed_challenge(i), add192(g_1, g_2)))  # the eq-weighted split fixes it
         fs, chi_v = squeeze(fs)
-        zerocheck_chis[GEN ** i] = chi_v
-        zc_running = g_0 + chi_v * (g_1 + chi_v * g_2)
+        k = 3 * i
+        zerocheck_chis[k:k + 3] = chi_v
+        zc_running = add192(g_0, mul192(chi_v, add192(g_1, mul192(chi_v, g_2))))
     # the sampled rounds: K_LOG + tau_5 - K_SKIP in all, certified
     nmlv_g = tau_blake2s_g * GEN ** (K_LOG - K_SKIP)
-    flock_rounds = HeapBuf((mr1cs_rounds_g * GEN ** 2) ** ROUND_SLOTS)
+    flock_rounds = HeapBuf((nmlv_g * GEN ** 2) ** ROUND_SLOTS)
     seed = flock_rounds * (GEN ** N_FIXED_CHALLENGE_ROUNDS) ** ROUND_SLOTS
-    seed[GEN ** ROUND_FS0] = fs[0]
-    seed[GEN ** ROUND_FS1] = fs[1]
+    seed[0:4] = fs
     seed[GEN ** ROUND_CURSOR] = cursor
-    seed[GEN ** ROUND_CLAIM] = zc_running
+    seed[ROUND_CLAIM:ROUND_CLAIM + 3] = zc_running
     for xi in mul_range(GEN ** N_FIXED_CHALLENGE_ROUNDS, nmlv_g):
         rd = flock_rounds * xi ** ROUND_SLOTS
-        round_fs = [rd[GEN ** ROUND_FS0], rd[GEN ** ROUND_FS1]]
-        r_eq = zerocheck_r[GEN ** K_SKIP * xi]
-        cur_i = rd[GEN ** ROUND_CURSOR]
-        round_fs, g_1, cur_i = fs_next(round_fs, cur_i)  # coefficients, bar the constant one
+        x3 = xi ** 3
+        r_at = x3 * GEN ** (3 * K_SKIP)
+        round_fs, g_1, cur_i = fs_next(rd[0:4], rd[GEN ** ROUND_CURSOR])  # coefficients, bar the constant one
         round_fs, g_2, cur_i = fs_next(round_fs, cur_i)
-        g_0 = rd[GEN ** ROUND_CLAIM] + r_eq * (g_1 + g_2)  # the eq-weighted split fixes it
+        g_0 = add192(rd[ROUND_CLAIM:ROUND_CLAIM + 3], mul192(zerocheck_r[r_at:r_at + 3], add192(g_1, g_2)))  # the eq-weighted split fixes it
         round_fs, chi_v = squeeze(round_fs)
-        zerocheck_chis[xi] = chi_v
+        zerocheck_chis[x3:x3 + 3] = chi_v
         nxt = rd * GEN ** ROUND_SLOTS
-        nxt[GEN ** ROUND_FS0] = round_fs[0]
-        nxt[GEN ** ROUND_FS1] = round_fs[1]
+        nxt[0:4] = round_fs
         nxt[GEN ** ROUND_CURSOR] = cur_i
-        nxt[GEN ** ROUND_CLAIM] = g_0 + chi_v * (g_1 + chi_v * g_2)
+        nxt[ROUND_CLAIM:ROUND_CLAIM + 3] = add192(g_0, mul192(chi_v, add192(g_1, mul192(chi_v, g_2))))
     fr_last = flock_rounds * nmlv_g ** ROUND_SLOTS
-    fs = [fr_last[GEN ** ROUND_FS0], fr_last[GEN ** ROUND_FS1]]
-    zc_running = fr_last[GEN ** ROUND_CLAIM]
-    cursor = fr_last[GEN ** ROUND_CURSOR]  # walked past all 2*n_mlv round words, now at a_eval
+    fs = fr_last[0:4]
+    zc_running = fr_last[ROUND_CLAIM:ROUND_CLAIM + 3]
+    cursor = fr_last[GEN ** ROUND_CURSOR]  # walked past all 2*n_mlv round scalars, now at a_eval
     # final: observe a_eval, b_eval; the terminal identity is what defines
     # c_eval, so nothing is checked here. C rode the rounds above, so all three
     # claims sit at the same point and lincheck pins all three at once.
     fs, a_eval, cursor = fs_next(fs, cursor)
     fs, b_eval, cursor = fs_next(fs, cursor)
-    c_eval = zc_running + a_eval * b_eval
+    c_eval = add192(zc_running, mul192(a_eval, b_eval))
     # The phi8 Lagrange weights at z over the S nodes: the quirky extension's
     # own combination, which the lincheck terminal applies to the 64 slices.
-    claim_nums = StackBuf(2 ** K_SKIP)
+    claim_nums = StackBuf(3 * 2 ** K_SKIP)
     lag64(zerocheck_z, claim_nums, 0)
 
     # ---- flock lincheck (matrix evaluation DEFERRED) ----
-    matrix_eval = hint_witness("matpart")
+    matrix_eval = StackBuf(3)
+    hint_witness(matrix_eval, "matpart")
     fs, lincheck_alpha = squeeze(fs)
-    lincheck_beta = lincheck_alpha * lincheck_alpha
-    lincheck_cube = lincheck_beta * lincheck_alpha
-    lc_running = a_eval + lincheck_alpha * b_eval + lincheck_beta * c_eval + lincheck_cube  # seed: a + alpha*b + alpha^2*c + alpha^3 (the two matrix claims, C, and the pin)
+    lincheck_beta = mul192(lincheck_alpha, lincheck_alpha)
+    lincheck_cube = mul192(lincheck_beta, lincheck_alpha)
+    # seed: a + alpha*b + alpha^2*c + alpha^3 (the two matrix claims, C, and the pin)
+    lc_running = add192(add192(a_eval, mul192(lincheck_alpha, b_eval)), add192(mul192(lincheck_beta, c_eval), lincheck_cube))
     for i in unroll(0, LINCHECK_ROUNDS):
         fs, c0, cursor = fs_next(fs, cursor)  # q's coefficients, bar the linear one
         fs, c2, cursor = fs_next(fs, cursor)
-        c1 = lc_running + c2  # the split fixes it against the running claim
+        c1 = add192(lc_running, c2)  # the split fixes it against the running claim
         fs, rv = squeeze(fs)
-        lincheck_rs[GEN ** i] = rv
-        lc_running = c0 + rv * (c1 + rv * c2)  # fold the degree-2 round poly at the challenge rv
-    # post-sumcheck collapse: fetch + observe each word
+        k = 3 * i
+        lincheck_rs[k:k + 3] = rv
+        lc_running = add192(c0, mul192(rv, add192(c1, mul192(rv, c2))))  # fold the degree-2 round poly at the challenge rv
+    # post-sumcheck collapse: fetch + observe each scalar
     for i in unroll(0, 2 ** K_SKIP):
         fs, w, cursor = fs_next(fs, cursor)
-        z_partial[GEN ** i] = w
+        k = 3 * i
+        z_partial[k:k + 3] = w
     # final consistency: running == matpart (DEFERRED) + beta * pin term. The
     # const-pin column folds through the top-variable bindings: weight =
     # prod_j (bit_{klog-1-j}(PIN_COLUMN) ? r_j : 1+r_j), surviving z_partial index
     # = PIN_COLUMN low 6 bits.
-    pin_term = lincheck_cube * eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)
-    pin_term *= z_partial[GEN ** (PIN_COLUMN % 2 ** K_SKIP)]
+    pin = 3 * (PIN_COLUMN % 2 ** K_SKIP)
+    pin_term = mul192(mul192(lincheck_cube, eq_weight(lincheck_rs, LINCHECK_ROUNDS, PIN_COLUMN, K_LOG)), z_partial[pin:pin + 3])
     # The C term. Its column weight is the row weight itself (C = I), and both
     # sides are tensors, so it collapses to eq(chi_in, chi_in_prime) times the
     # phi8 Lagrange combination of the 64 slices: no second matrix walk, no
     # second family.
-    c_point_eq = GEN ** 0
+    c_point_eq = ONE
     for t in unroll(0, LINCHECK_ROUNDS):
-        c_point_eq *= (1 + zerocheck_chis[GEN ** t] + lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)])
-    c_slice_value = 0
+        zk = 3 * t
+        lk = 3 * (LINCHECK_ROUNDS - 1 - t)
+        c_point_eq = mul192(c_point_eq, add192(ONE, add192(zerocheck_chis[zk:zk + 3], lincheck_rs[lk:lk + 3])))
+    c_slice_value = ZERO
     for i in unroll(0, 2 ** K_SKIP):
-        c_slice_value += claim_nums[i] * z_partial[GEN ** i]
-    c_slice_value *= LAGRANGE_INV_S
+        k = 3 * i
+        c_slice_value = add192(c_slice_value, mul192(claim_nums[k:k + 3], z_partial[k:k + 3]))
+    c_slice_value = mul192(c_slice_value, LAGRANGE_INV_S)
     # deferred matrix eval + pin + C
-    assert lc_running == matrix_eval + pin_term + lincheck_beta * c_point_eq * c_slice_value
+    assert_eq192(lc_running, add192(add192(matrix_eval, pin_term), mul192(mul192(lincheck_beta, c_point_eq), c_slice_value)))
     # z_partial IS the claim: the terminal identity above pins its 64 slices, and
     # ring switching binds every one of them.
-    return fs[0], fs[1], cursor, zerocheck_z, lincheck_alpha, matrix_eval
+    return fs, cursor, zerocheck_z, lincheck_alpha, matrix_eval
 
 
 def certify_placement(kappa_base, g_squares):
@@ -1927,38 +1942,45 @@ def column_selector(offset, point, kappa: Const):
     bits = StackBuf(MAX_STACK_LOG)
     hint_decompose_bits_exponent(bits, offset, MAX_STACK_LOG)
     rebuilt = GEN ** 0
-    selector = GEN ** 0
+    selector = ONE
     for k in unroll(kappa, MAX_STACK_LOG):
         bit = bits[k]
         bits[k] = bit * bit
         rebuilt *= 1 + bit * (1 + GEN ** (2 ** k))
-        selector *= 1 + bit + point[GEN ** k]
+        c = 3 * k
+        selector = mul192(selector, add64(point[c:c + 3], 1 + bit))
     assert rebuilt == offset
     return selector
 
 
-def check_opening_terminal(zeta, chi, rm, g_bus_mu, g_zc_n, g_log_mem, tau_blake2s_g, claim_cplen_g, lam_pool, col_offsets, col_kappas, z_vals, c_table, point, inner_total, yr_at_tail, sumcheck_target):
+def check_opening_terminal(zeta, chi, r0: StackBuf(3), r1: StackBuf(3), g_bus_mu, g_zc_n, g_log_mem, tau_blake2s_g, claim_cplen_g, lam_pool, col_offsets, col_kappas, z_vals, c_table, point, inner_total: StackBuf(3), yr_at_tail: StackBuf(3), sumcheck_target: StackBuf(3)):
     # Evaluate each transparent weight at the complete point in witness order.
     # A claim is its low point followed by the certified column's selector bits;
     # q_flock slots prepend their fixed slot bits to the low point.
-    zeta_eq_chain = HeapBuf(SIZE_BITS + 1)
-    eq_prefix_chain(zeta_eq_chain, 1, zeta, point, g_bus_mu)
-    chi_eq_chain = HeapBuf(SIZE_BITS + 1)
-    eq_prefix_chain(chi_eq_chain, 1, chi, point, g_zc_n)
-    chi_slot_eq_chain = HeapBuf(SIZE_BITS + 1)
-    eq_prefix_chain(chi_slot_eq_chain, 1, chi, point * GEN ** SLOT_STRIDE_LOG, tau_blake2s_g)
-    pi_chain = HeapBuf(SIZE_BITS + 1)
-    pi_chain[GEN ** 0] = 1
-    pi_chain[GEN ** 1] = 1 + rm + point[GEN ** 0]
-    for xk in mul_range(GEN, g_log_mem):
-        pi_chain[xk * GEN] = pi_chain[xk] * (1 + point[xk])
-    pi_eq = pi_chain[g_log_mem]
+    zeta_eq_chain = HeapBuf(3 * (SIZE_BITS + 1))
+    eq_prefix_chain(zeta_eq_chain, ONE, zeta, point, g_bus_mu)
+    chi_eq_chain = HeapBuf(3 * (SIZE_BITS + 1))
+    eq_prefix_chain(chi_eq_chain, ONE, chi, point, g_zc_n)
+    chi_slot_eq_chain = HeapBuf(3 * (SIZE_BITS + 1))
+    eq_prefix_chain(chi_slot_eq_chain, ONE, chi, point * GEN ** (3 * SLOT_STRIDE_LOG), tau_blake2s_g)
+    # The PI claim's point is (r0, r1, 0, ..., 0) over log_mem coordinates.
+    pi_chain = HeapBuf(3 * (SIZE_BITS + 1))
+    pi_chain[3:6] = add192(ONE, add192(r0, point[0:3]))
+    pi_chain[6:9] = mul192(pi_chain[3:6], add192(ONE, add192(r1, point[3:6])))
+    for xk in mul_range(GEN ** 2, g_log_mem):
+        x3 = xk ** 3
+        nxt = x3 * GEN ** 3
+        pi_chain[nxt:nxt + 3] = mul192(pi_chain[x3:x3 + 3], add192(ONE, point[x3:x3 + 3]))
+    pi_end = g_log_mem ** 3
+    pi_eq = pi_chain[pi_end:pi_end + 3]
 
-    selectors = StackBuf(N_COMMITTED_COLS)
+    selectors = StackBuf(3 * N_COMMITTED_COLS)
     for c in unroll(0, N_COMMITTED_COLS):
         offset = col_offsets[GEN ** c]
         kappa_g = col_kappas[GEN ** c]
-        selectors[c] = match(log(kappa_g), range(0, N_COLUMN_LOGS), lambda kappa: column_selector(offset, point, kappa))
+        selector = match(log(kappa_g), range(0, N_COLUMN_LOGS), lambda kappa: column_selector(offset, point, kappa))
+        k = 3 * c
+        selectors[k:k + 3] = selector
 
     inner_sum = inner_total
     for j in unroll(0, N_CLAIMS):
@@ -1968,66 +1990,79 @@ def check_opening_terminal(zeta, chi, rm, g_bus_mu, g_zc_n, g_log_mem, tau_blake
         else:
             cplen_g = claim_cplen_g[GEN ** j]
         nlow = cplen_g
+        low_at = cplen_g ** 3
         if CLAIM_POINT_BUF[j] == POINT_BUF_ZETA:
-            low_eq = zeta_eq_chain[cplen_g]
+            low_eq = zeta_eq_chain[low_at:low_at + 3]
         if CLAIM_POINT_BUF[j] == POINT_BUF_RHO:
-            low_eq = chi_eq_chain[cplen_g]
+            low_eq = chi_eq_chain[low_at:low_at + 3]
         if CLAIM_POINT_BUF[j] == POINT_BUF_QFLOCK_RHO:
-            slot_eq = GEN ** 0
+            slot_eq = ONE
             for k in unroll(0, SLOT_STRIDE_LOG):
-                slot_eq *= 1 + CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k] + point[GEN ** k]
-            low_eq = slot_eq * chi_slot_eq_chain[cplen_g]
+                pk = 3 * k
+                if CLAIM_QFLOCK_SLOT_BITS[SLOT_STRIDE_LOG * j + k] == 1:
+                    slot_eq = mul192(slot_eq, point[pk:pk + 3])
+                else:
+                    slot_eq = mul192(slot_eq, add192(ONE, point[pk:pk + 3]))
+            low_eq = mul192(slot_eq, chi_slot_eq_chain[low_at:low_at + 3])
             nlow = cplen_g * GEN ** SLOT_STRIDE_LOG
         assert nlow == col_kappas[GEN ** CLAIM_COMMITTED_COL[j]]
-        inner_sum += lam_pool[GEN ** j] * low_eq * selectors[CLAIM_COMMITTED_COL[j]]
+        lk = 3 * j
+        sk = 3 * CLAIM_COMMITTED_COL[j]
+        inner_sum = add192(inner_sum, mul192(mul192(lam_pool[lk:lk + 3], low_eq), selectors[sk:sk + 3]))
 
     qflockv_g = tau_blake2s_g * GEN ** SLOT_STRIDE_LOG
     assert qflockv_g == col_kappas[GEN ** QFLOCK_COMMITTED_COL]
-    prod_chains = HeapBuf((qflockv_g * GEN) ** BASE_FIELD_BITS)
+    prod_chains = HeapBuf((qflockv_g * GEN) ** (3 * BASE_FIELD_BITS))
     for k in unroll(0, BASE_FIELD_BITS):
-        prod_chains[GEN ** k] = 1
+        c = 3 * k
+        prod_chains[c:c + 3] = ONE
     rs_eq_run(prod_chains, z_vals, point, qflockv_g)
-    prod_final = prod_chains * qflockv_g ** BASE_FIELD_BITS
-    rs_weight = 0
+    prod_final = prod_chains * qflockv_g ** (3 * BASE_FIELD_BITS)
+    rs_weight = ZERO
     for k in unroll(0, BASE_FIELD_BITS):
-        rs_weight += c_table[GEN ** k] * prod_final[GEN ** k]
-    inner_sum += rs_weight * selectors[QFLOCK_COMMITTED_COL]
-    assert inner_sum * yr_at_tail == sumcheck_target
+        c = 3 * k
+        rs_weight = add192(rs_weight, mul192(c_table[c:c + 3], prod_final[c:c + 3]))
+    qk = 3 * QFLOCK_COMMITTED_COL
+    inner_sum = add192(inner_sum, mul192(rs_weight, selectors[qk:qk + 3]))
+    assert_eq192(mul192(inner_sum, yr_at_tail), sumcheck_target)
+    return
 
 
-def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
-    # In-circuit verification of ONE inner proof for the statement (pi_0, pi_1),
-    # mirroring cpu::verify step for step; the `# ---- ... ----` headers below run
-    # in that order. All proof data is hinted HERE, so each call pops the next
-    # sub-proof's entry of every witness stream and the body lowers once. The
-    # exponent tables are shared read-only; the deferred claims go to `defer_out`.
+def verify_sub(pi: StackBuf(4), seed, g_logs_pow2, g_squares, defer_out):
+    # In-circuit verification of ONE inner proof for the statement `pi`, mirroring
+    # cpu::verify step for step; the `# ---- ... ----` headers below run in that
+    # order. All proof data is hinted HERE, so each call pops the next sub-proof's
+    # entry of every witness stream and the body lowers once. The exponent tables
+    # are shared read-only; the deferred claims go to `defer_out`, three words an
+    # element.
     #
     # The pool holds every committed-coordinate claim's value in decompose order
     # (the points are the GKR zetas, resolvable from the baked block structure) and
     # its certified low dimension, which the terminal pins its lengths against.
-    claim_pool = HeapBuf(N_CLAIMS)
+    claim_pool = HeapBuf(3 * N_CLAIMS)
     claim_cplen_g = HeapBuf(N_CLAIMS)
 
     # ---- seed (statement pre-bound: hinted sub pi + baked program digest) ----
-    fs = StackBuf(2)
-    blake2s([seed_0, seed_1], [pi_0, pi_1], fs)
+    fs = StackBuf(4)
+    blake2s(seed[0:4], pi, fs)
     stream = HeapBuf(STREAM_CAP)
     hint_witness(stream[0:STREAM_CAP], "stream")
-    cursor = stream  # the proof stream, replayed word by word (advance = * g)
+    cursor = stream  # the proof stream, replayed scalar by scalar (advance = * g^3)
 
     # ---- announced layout and PCS rate (observed, then certified) ----
-    # The stream announces the sizes as integer WORDS, one log each; the
-    # shape-generic phases need them as G-POWERS (loop bounds, match scrutinees), so
-    # each is reassembled from its advice-decomposed bits, with no hint and no
-    # g^j -> j lookup. Every table's rows are real rows (the prover's fill blocks
-    # bring each count up to a power of two), so a height is all there is to
-    # announce.
-    sizes = StackBuf(N_TABLES + 1)
-    for i in unroll(0, N_TABLES + 1):
+    # The stream announces the sizes as integer scalars, one log each, whose upper
+    # limbs must be zero; the shape-generic phases need them as G-POWERS (loop
+    # bounds, match scrutinees), so each is reassembled from its advice-decomposed
+    # bits, with no hint and no g^j -> j lookup. Every table's rows are real rows
+    # (the prover's fill blocks bring each count up to a power of two), so a height
+    # is all there is to announce.
+    sizes = StackBuf(N_TABLES + 2)
+    for i in unroll(0, N_TABLES + 2):
         fs, x, cursor = fs_next(fs, cursor)
-        sizes[i] = x
-    fs, log_inv_rate, cursor = fs_next(fs, cursor)
-    rate_sel = g_power_of_word(log_inv_rate, g_squares, LOG_WORD_BITS) / GEN
+        assert x[1] == 0
+        assert x[2] == 0
+        sizes[i] = x[0]
+    rate_sel = g_power_of_word(sizes[N_TABLES + 1], g_squares, LOG_WORD_BITS) / GEN
     assert log(rate_sel) < LIG_N_RATES
     dims_g = HeapBuf(N_TABLES + 1)  # [g^log_mem, g^tau_0 .. g^tau_{N_TABLES-1}]
     g_log_mem = g_power_of_word(sizes[0], g_squares, LOG_WORD_BITS)
@@ -2058,46 +2093,43 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     for b in unroll(SIDE_BLOCK_START[PUSH_SIDE], SIDE_BLOCK_START[PUSH_SIDE + 1]):
         push_total *= g_squares[block_kappa[GEN ** b]]  # g^(sum of 2^kappa)
     g_bus_mu = log2_ceil_in_the_exponent(push_total, g_logs_pow2, g_squares, 0, SIZE_BITS)
-    zeta = HeapBuf(g_bus_mu)  # the ONE shared GKR point: exactly mu coords
+    zeta = HeapBuf(g_bus_mu ** 3)  # the ONE shared GKR point: exactly mu coords
 
-    # ---- commitment root (2 words), kept for the opening phase ----
-    fs, commit_root_0, cursor = fs_next(fs, cursor)
-    fs, commit_root_1, cursor = fs_next(fs, cursor)
+    # ---- commitment root (two halves), kept for the opening phase ----
     # A non-canonical half is rejected here (merkle.rs `scalars_to_hash`); the level
     # roots get the same treatment at their own read.
-    root_cells = StackBuf(2)
-    root_cells[0] = assert_canonical(commit_root_0)
-    root_cells[1] = assert_canonical(commit_root_1)
+    fs, root_a, cursor = fs_next_half(fs, cursor)
+    fs, root_b, cursor = fs_next_half(fs, cursor)
+    commit_root = [root_a[0], root_a[1], root_b[0], root_b[1]]
 
     # ---- bus challenges (F192 provides the soundness margin without grinding) ----
     # A tuple is fingerprinted multilinearly: slot x weighs eq(alphas, x), so a leaf
     # factor has total degree N_TUPLE_BITS in the challenges and the aligned bytecode
     # polynomial is read off at the challenge vector itself (doc sec:gp, sec:e2e-bc).
-    bus_alpha = HeapBuf(N_TUPLE_BITS)
+    bus_alpha = HeapBuf(3 * N_TUPLE_BITS)
     for t in unroll(0, N_TUPLE_BITS):
         fs, av = squeeze(fs)
-        bus_alpha[GEN ** t] = av
-    fp_w = HeapBuf(N_TUPLE_SLOTS)
+        k = 3 * t
+        bus_alpha[k:k + 3] = av
+    fp_w = HeapBuf(3 * N_TUPLE_SLOTS)
     for x in unroll(0, N_TUPLE_SLOTS):
-        fp_w[GEN ** x] = eq_weight(bus_alpha, N_TUPLE_BITS, x, 0)
+        k = 3 * x
+        fp_w[k:k + 3] = eq_weight(bus_alpha, N_TUPLE_BITS, x, 0)
     fs, beta = squeeze(fs)
 
     # ---- ONE GKR grand product: push, pull, and count RLC-batched ----
-    fs0, fs1, cursor, claim_push, claim_pull, claim_count = verify_bus_gkr(fs[0], fs[1], cursor, g_bus_mu, zeta)
-    fs = [fs0, fs1]
+    fs, cursor, claim_push, claim_pull, claim_count = verify_bus_gkr(fs, cursor, g_bus_mu, zeta)
 
     # ---- the bus leaves, the table sumcheck, and the public-input claim ----
-    chi = HeapBuf(SIZE_BITS)  # chi[i] = the challenge that bound variable i
-    fs0, fs1, cursor, g_zc_n, bc_share, rm = verify_tables(fs[0], fs[1], cursor, pi_0, pi_1, zeta, g_bus_mu, dims_g, block_kappa, g_squares, fp_w, beta, claim_pool, claim_cplen_g, chi, claim_push, claim_pull, claim_count)
-    fs = [fs0, fs1]
+    chi = HeapBuf(3 * SIZE_BITS)  # chi[i] = the challenge that bound variable i
+    fs, cursor, g_zc_n, bc_share, r0, r1 = verify_tables(fs, cursor, pi, zeta, g_bus_mu, dims_g, block_kappa, g_squares, fp_w, beta, claim_pool, claim_cplen_g, chi, claim_push, claim_pull, claim_count)
 
     # ---- flock zerocheck and lincheck (the matrix evaluation is DEFERRED) ----
     tau_blake2s_g = dims_g[GEN ** (TABLE_BLAKE2s + 1)]  # the BLAKE2s table's certified tau
-    zerocheck_chis = HeapBuf(tau_blake2s_g * GEN ** (K_LOG - K_SKIP))  # m - 6 rounds
-    lincheck_rs = HeapBuf(LINCHECK_ROUNDS)
-    z_partial = HeapBuf(2 ** K_SKIP)
-    fs0, fs1, cursor, zerocheck_z, lincheck_alpha, matrix_eval = verify_flock(fs[0], fs[1], cursor, tau_blake2s_g, zerocheck_chis, lincheck_rs, z_partial)
-    fs = [fs0, fs1]
+    zerocheck_chis = HeapBuf((tau_blake2s_g * GEN ** (K_LOG - K_SKIP)) ** 3)  # m - 6 rounds
+    lincheck_rs = HeapBuf(3 * LINCHECK_ROUNDS)
+    z_partial = HeapBuf(3 * 2 ** K_SKIP)
+    fs, cursor, zerocheck_z, lincheck_alpha, matrix_eval = verify_flock(fs, cursor, tau_blake2s_g, zerocheck_chis, lincheck_rs, z_partial)
 
     # ---- stacked mixed opening: ring-switch front + claim combination ----
     # The ring-switch slices are z_partial, read and bound above; this block only
@@ -2105,49 +2137,58 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # 32,16,8,4,2,1: their expansion has all 64 Frobenius terms soundness needs,
     # while direct application costs 63 squarings and only six general
     # multiplications.
-    map_challenges = HeapBuf(6)  # len(RING_MAP_SHIFTS)
-    c_table = HeapBuf(BASE_FIELD_BITS)
-    z_vals = HeapBuf(QFLOCK_VARS_CAP)
+    map_challenges = HeapBuf(3 * 6)  # len(RING_MAP_SHIFTS)
+    c_table = HeapBuf(3 * BASE_FIELD_BITS)
+    z_vals = HeapBuf(3 * QFLOCK_VARS_CAP)
     for stage in unroll(0, len(RING_MAP_SHIFTS)):
         fs, map_challenge = squeeze(fs)
-        map_challenges[GEN ** stage] = map_challenge
+        k = 3 * stage
+        map_challenges[k:k + 3] = map_challenge
     # Expand the same composition once for the later transparent-weight evaluation.
     # Before shift d, the populated coefficients are exactly at multiples of 2d; the
     # new branch fills the adjacent d-offset entries.
-    c_table[GEN ** 0] = 1
+    c_table[0:3] = ONE
     for stage in unroll(0, len(RING_MAP_SHIFTS)):
         shift = RING_MAP_SHIFTS[stage]
-        map_challenge = map_challenges[GEN ** stage]
+        mk = 3 * stage
+        map_challenge = map_challenges[mk:mk + 3]
         for slot in unroll(0, BASE_FIELD_BITS // (2 * shift)):
-            coefficient = c_table[GEN ** (slot * 2 * shift)]
+            src = 3 * (slot * 2 * shift)
+            coefficient = c_table[src:src + 3]
             for k in unroll(0, shift):
-                coefficient *= coefficient
-            c_table[GEN ** (slot * 2 * shift + shift)] = map_challenge * coefficient
-    # Evaluate the claim and combine its 64 packing rows: the running x-power and
-    # the running sum ride one two-slot chain.
-    rs_chain = HeapBuf(((2 ** K_SKIP) + 1) * PAIR_SLOTS)
+                coefficient = mul192(coefficient, coefficient)
+            dst = 3 * (slot * 2 * shift + shift)
+            c_table[dst:dst + 3] = mul192(map_challenge, coefficient)
+    # Evaluate the claim and combine its 64 packing rows: the running x-power (a
+    # word) and the running sum ride one four-slot chain.
+    rs_chain = HeapBuf(4 * ((2 ** K_SKIP) + 1))
     rs_chain[GEN ** 0] = GEN ** 0  # x^i
-    rs_chain[GEN ** 1] = 0         # the running sum
+    rs_chain[1:4] = ZERO           # the running sum
     for x_round in mul_range(1, GEN ** (2 ** K_SKIP)):
-        lin_eval = z_partial[x_round]
+        x3 = x_round ** 3
+        lin_eval = z_partial[x3:x3 + 3]
         for stage in unroll(0, len(RING_MAP_SHIFTS)):
             frobenius = lin_eval
             for k in unroll(0, RING_MAP_SHIFTS[stage]):
-                frobenius *= frobenius
-            lin_eval += map_challenges[GEN ** stage] * frobenius
-        row = rs_chain * x_round ** PAIR_SLOTS
+                frobenius = mul192(frobenius, frobenius)
+            mk = 3 * stage
+            lin_eval = add192(lin_eval, mul192(map_challenges[mk:mk + 3], frobenius))
+        row = rs_chain * x_round ** 4
         x_pow = row[GEN ** 0]
-        row[GEN ** PAIR_SLOTS] = x_pow * 2
-        row[GEN ** (PAIR_SLOTS + 1)] = row[GEN ** 1] + x_pow * lin_eval
-    rs_end = rs_chain * (GEN ** (2 ** K_SKIP)) ** PAIR_SLOTS
-    transposed_claim = rs_end[GEN ** 1]
+        row[GEN ** 4] = x_pow * 2
+        row[5:8] = add192(row[1:4], scale(x_pow, lin_eval))
+    rs_end = rs_chain * (GEN ** (2 ** K_SKIP)) ** 4
+    transposed_claim = rs_end[1:4]
     # Suffix point for the transparent weight.
     for t in unroll(0, LINCHECK_ROUNDS):
-        z_vals[GEN ** t] = lincheck_rs[GEN ** (LINCHECK_ROUNDS - 1 - t)]
-    zv_lo = z_vals * GEN ** LINCHECK_ROUNDS
-    zr_hi = zerocheck_chis * GEN ** LINCHECK_ROUNDS
+        dst = 3 * t
+        src = 3 * (LINCHECK_ROUNDS - 1 - t)
+        z_vals[dst:dst + 3] = lincheck_rs[src:src + 3]
+    zv_lo = z_vals * GEN ** (3 * LINCHECK_ROUNDS)
+    zr_hi = zerocheck_chis * GEN ** (3 * LINCHECK_ROUNDS)
     for xt in mul_range(1, tau_blake2s_g):
-        zv_lo[xt] = zr_hi[xt]
+        x3 = xt ** 3
+        zv_lo[x3:x3 + 3] = zr_hi[x3:x3 + 3]
     # ONE batching challenge for the whole pool: N_CLAIMS - 1 fewer Fiat-Shamir
     # compressions than a challenge per claim, and none for the values themselves,
     # `fs_next` having bound every one of them as it read it, so `lam_cl` already
@@ -2155,12 +2196,13 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # the ring-switch claim takes lam_cl^0, the pool lam_cl^1 onward.
     fs, lam_cl = squeeze(fs)
     target = transposed_claim
-    lam_pool = HeapBuf(N_CLAIMS)
+    lam_pool = HeapBuf(3 * N_CLAIMS)
     lam_pow = lam_cl
     for j in unroll(0, N_CLAIMS):
-        lam_pool[GEN ** j] = lam_pow
-        target += lam_pow * claim_pool[GEN ** j]
-        lam_pow *= lam_cl
+        k = 3 * j
+        lam_pool[k:k + 3] = lam_pow
+        target = add192(target, mul192(lam_pow, claim_pool[k:k + 3]))
+        lam_pow = mul192(lam_pow, lam_cl)
 
     g_total, col_offsets, col_kappas = certify_placement(kappa_base, g_squares)
 
@@ -2174,51 +2216,61 @@ def verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, defer_out):
     # dispatch independently for every inner proof in a mixed-rate batch.
     config_sel = size_sel * rate_sel ** LIG_N_LOG_SIZES
     assert log(config_sel) < LIG_N_CANDIDATES
-    sumcheck_target, point, inner_total, yr_at_tail = match(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs[0], fs[1], target, commit_root_0, commit_root_1, cursor))
+    sumcheck_target, point, inner_total, yr_at_tail = match(log(config_sel), range(0, LIG_N_CANDIDATES), lambda m_idx: open_stacked(m_idx, fs, target, commit_root, cursor))
     # `stream` is a fixed-capacity witness transport. The shape fixes the exact
     # consumed prefix, whose every word is transcript-bound; the unused suffix
     # is outside the recursively verified proof and intentionally unconstrained.
 
     # ---- generalized eval_b terminal (runtime claim shapes) ----
-    check_opening_terminal(zeta, chi, rm, g_bus_mu, g_zc_n, g_log_mem, tau_blake2s_g, claim_cplen_g, lam_pool, col_offsets, col_kappas, z_vals, c_table, point, inner_total, yr_at_tail, sumcheck_target)
+    check_opening_terminal(zeta, chi, r0, r1, g_bus_mu, g_zc_n, g_log_mem, tau_blake2s_g, claim_cplen_g, lam_pool, col_offsets, col_kappas, z_vals, c_table, point, inner_total, yr_at_tail, sumcheck_target)
 
     # ---- export this sub-proof's deferred-claim data to the caller (FRESH_*) ----
     for k in unroll(0, BYTECODE_LOG):
-        defer_out[GEN ** k] = zeta[GEN ** k]
+        c = 3 * k
+        defer_out[c:c + 3] = zeta[c:c + 3]
     for k in unroll(0, LOG2_BYTECODE_COLS):
-        defer_out[GEN ** (BYTECODE_LOG + k)] = bus_alpha[GEN ** k]
-    defer_out[GEN ** FRESH_BC_VALUE] = bc_share
-    defer_out[GEN ** FRESH_ALPHA] = lincheck_alpha
-    defer_out[GEN ** FRESH_Z_SKIP] = zerocheck_z
+        src = 3 * k
+        dst = 3 * (BYTECODE_LOG + k)
+        defer_out[dst:dst + 3] = bus_alpha[src:src + 3]
+    k = 3 * FRESH_BC_VALUE
+    defer_out[k:k + 3] = bc_share
+    k = 3 * FRESH_ALPHA
+    defer_out[k:k + 3] = lincheck_alpha
+    k = 3 * FRESH_Z_SKIP
+    defer_out[k:k + 3] = zerocheck_z
     for k in unroll(0, LINCHECK_ROUNDS):
-        defer_out[GEN ** (FRESH_ZCHI + k)] = zerocheck_chis[GEN ** k]
-        defer_out[GEN ** (FRESH_LINCHECK_RS + k)] = lincheck_rs[GEN ** k]
+        c = 3 * k
+        dst = 3 * (FRESH_ZCHI + k)
+        defer_out[dst:dst + 3] = zerocheck_chis[c:c + 3]
+        dst = 3 * (FRESH_LINCHECK_RS + k)
+        defer_out[dst:dst + 3] = lincheck_rs[c:c + 3]
     for k in unroll(0, 2 ** K_SKIP):
-        defer_out[GEN ** (FRESH_Z_PARTIAL + k)] = z_partial[GEN ** k]
-    defer_out[GEN ** FRESH_MATPART] = matrix_eval
+        c = 3 * k
+        dst = 3 * (FRESH_Z_PARTIAL + k)
+        defer_out[dst:dst + 3] = z_partial[c:c + 3]
+    k = 3 * FRESH_MATPART
+    defer_out[k:k + 3] = matrix_eval
     return
 
 
 # ============================ XMSS signature verification ===========================
 # One signature of its epoch group's (epoch, message), against the signer's public
-# key at `pk_ptr[g^0..g^1]` = (merkle_root, public_param). Every 16-byte native
-# value (tweak, digest, chain tip, sibling, pp) is one canonical 128-bit cell.
-# Tweak table layout (tweak index t at cell g^t):
-#     0                        : encoding tweak
-#     1 + CHAIN_STEPS·i + s    : chain tweak, chain i < V, step s < CHAIN_STEPS
-#     WOTS_PK_TWEAK_IDX        : wots-pk tweak
-#     MERKLE_TWEAK_IDX + l     : merkle tweak, level l < LOG_LIFETIME
+# key at `pk[0:4]` = (merkle_root, public_param), two words each. A tweak is two
+# words: a constant first word, and the index word shared by every hash at one
+# epoch or, for a Merkle node, the parent's. Index table layout (at cell g^t):
+#     0              : the epoch's index word (encoding, chains, wots-pk)
+#     1 + l          : the parent index word of Merkle level l < LOG_LIFETIME
 
 
-def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
-    # The tweak table and the Merkle direction bits at `epoch`, shared by every XMSS
+def fill_xmss_epoch_tables(epoch, merkle_bits, index_table):
+    # The index words and the Merkle direction bits at `epoch`, shared by every XMSS
     # signature this node verifies at it. One bit decomposition gives all three uses:
     # a tweak's index field is the epoch (encoding, chain, wots-pk) or the parent
-    # index `epoch >> lvl` at Merkle level lvl - 1, and the direction bit at that
-    # level IS bit lvl - 1. Booleanity is a write-once pin and the reconstruction
-    # ties the bits back to the epoch, which also bounds it to LOG_LIFETIME bits.
-    # SPHINCS shares none of this, deriving every tweak from the index its own
-    # digest picks, which is neither public nor shared between signers.
+    # index `epoch >> (l + 1)` at Merkle level l, and the direction bit at that
+    # level IS bit l. Booleanity is a write-once pin and the reconstruction ties the
+    # bits back to the epoch, which also bounds it to LOG_LIFETIME bits. SPHINCS
+    # shares none of this, deriving every tweak from the index its own digest picks,
+    # which is neither public nor shared between signers.
     hint_decompose_bits(merkle_bits, epoch, LOG_LIFETIME)
     bits = StackBuf(LOG_LIFETIME)
     reconstructed = 0
@@ -2227,97 +2279,98 @@ def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
         bit = merkle_bits[GEN ** b]
         merkle_bits[GEN ** b] = bit * bit
         bits[b] = bit
-        reconstructed += bit * COORD_BASIS[b]
+        reconstructed += bit * 2 ** b
         index += bit * XM_INDEX_WEIGHT[b]
     assert reconstructed == epoch
-    tweak_table[1] = index + XM_ENC_TWEAK
-    for i in unroll(0, V):
-        for s in unroll(0, CHAIN_STEPS):
-            tweak_table[GEN ** (1 + CHAIN_STEPS * i + s)] = index + XM_CHAIN_TWEAKS[CHAIN_STEPS * i + s]
-    tweak_table[GEN ** WOTS_PK_TWEAK_IDX] = index + XM_PK_TWEAK
+    index_table[GEN ** 0] = index
     # Merkle level lvl - 1 hashes the parent at `epoch >> lvl`: the epoch's bits from
     # lvl up, each weighed lvl places down. The top level gets the empty sum.
     for lvl in unroll(1, LOG_LIFETIME + 1):
         parent = 0
         for b in unroll(lvl, LOG_LIFETIME):
             parent += bits[b] * XM_INDEX_WEIGHT[b - lvl]
-        tweak_table[GEN ** (MERKLE_TWEAK_IDX + lvl - 1)] = parent + XM_MERKLE_TWEAKS[lvl - 1]
+        index_table[GEN ** lvl] = parent
     return
 
 
-def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
-    pp = pk_ptr[GEN]
+def verify_sig(message, index_table, merkle_bits, pk):
+    pp = pk[2:4]
+    index = index_table[GEN ** 0]
 
     # Encoding digest D = BLAKE2s(tweak | pp | msg | randomness | zero-pad), 96
-    # bytes: one full 64-byte block then a 32-byte final block (24 bytes of
-    # randomness and the specified 8-byte zero pad). A packing helper source is read
-    # as (lo, 0, 0) where BLAKE2s reads (lo, hi, 0), which is what pins that pad.
-    after_msg = StackBuf(WORDS_PER_BLOCK)
-    blake2s([tweak_table[1], pp], [message[1], message[GEN]], after_msg, counter=64, final=0)
-    rand_block = StackBuf(WORDS_PER_BLOCK)
-    hint_witness(rand_block, "rand")
-    assert_in_k(rand_block[1], 0)
-    digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s(rand_block, [0, 0], digest, cv=after_msg, counter=96, final=1)
+    # bytes: one full 64-byte block then a 32-byte final block, 24 bytes of
+    # randomness and the specified 8-byte zero pad, which is a zero word.
+    after_msg = StackBuf(4)
+    blake2s([XM_ENC_TWEAK, index, pp], message[0:4], after_msg, counter=64, final=0)
+    rand = StackBuf(3)
+    hint_witness(rand, "rand")
+    digest = StackBuf(4)
+    blake2s([rand, 0], [0, 0, 0, 0], digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain the digit is hinted in the exponent (g^{e_i}), range
     # checked and dispatched once; arm k walks the remaining CHAIN_STEPS-k steps and
-    # returns the tip cell plus the digit literal. The product of the digits is the
+    # returns the tip plus the digit literal. The product of the digits is the
     # target sum (g^{Σe_i}); the digits, weighted by CHAIN_LENGTH^i inside their own
-    # 64-bit lane (DIGITS_PER_WORD digits a lane, GF(2^64)'s monomial budget, each
-    # lane's leftover top bits ground to zero by the signer), reconstruct D's first
-    # cell as `acc_lo + acc_hi·Y`.
-    tips = StackBuf(TIP_CELLS)
-    chain_tweaks = tweak_table * GEN ** WORDS_PER_VALUE  # chain i at cell 1 + CHAIN_STEPS·i
+    # digest word (DIGITS_PER_WORD digits a word, GF(2^64)'s monomial budget, each
+    # word's leftover top bits ground to zero by the signer), reconstruct D's first
+    # two words.
+    tips = StackBuf(TIP_WORDS)
     digit_product = 1
     acc_lo = 0
     acc_hi = 0
     for i in unroll(0, V):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
-        chain_start = hint_witness("chain_starts")
-        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        start = StackBuf(2)
+        hint_witness(start, "chain_starts")
+        tips[2 * i], tips[2 * i + 1], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(start[0], start[1], XM_CHAIN_TWEAK + i * CHAIN_LENGTH * XM_P_MUL, index, pp[0], pp[1], k))
         digit_product = digit_product * digit
         term = e * CHAIN_LENGTH ** (i % DIGITS_PER_WORD)  # e_i in its monomial subspace
         if i // DIGITS_PER_WORD == 0:
             acc_lo = acc_lo + term
         else:
             acc_hi = acc_hi + term
-        chain_tweaks = chain_tweaks * GEN ** (WORDS_PER_VALUE * CHAIN_STEPS)
     assert digit_product == GEN ** TARGET_SUM
-    assert acc_lo + acc_hi * Y_TOWER == digest[0]
+    assert acc_lo == digest[0]
+    assert acc_hi == digest[1]
 
     # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.
-    leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)], pp], tips[0:2], leaf, counter=64, final=0)
+    leaf = StackBuf(4)
+    blake2s([XM_PK_TWEAK, index, pp], tips[0:4], leaf, counter=64, final=0)
     for q in unroll(1, WOTS_PK_BLOCKS):
-        next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
+        next_leaf = StackBuf(4)
+        blake2s(tips[8 * q - 4:8 * q], tips[8 * q:8 * q + 4], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the epoch bit orders the two children at
     # each level, and the tweak carries that level's parent index.
-    node = leaf[0]
+    n0 = leaf[0]
+    n1 = leaf[1]
     for lvl in unroll(0, LOG_LIFETIME):
-        sibling = hint_witness("siblings")
-        children = order_children(node, sibling, merkle_bits[GEN ** (WORDS_PER_VALUE * lvl)])
-        parent = StackBuf(WORDS_PER_BLOCK)
-        blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * (MERKLE_TWEAK_IDX + lvl))], pp], children, parent)
-        node = parent[0]
-    assert node == pk_ptr[1]
+        sibling = StackBuf(2)
+        hint_witness(sibling, "siblings")
+        children = order_children(n0, n1, sibling, merkle_bits[GEN ** lvl])
+        parent = StackBuf(4)
+        blake2s([XM_MERKLE_TWEAK + const((lvl + 1) * XM_P_MUL), index_table[GEN ** (lvl + 1)], pp], children, parent)
+        n0 = parent[0]
+        n1 = parent[1]
+    assert n0 == pk[1]
+    assert n1 == pk[GEN]
     return
 
 
-def walk(value, chain_tweaks, pp, k: Const):
-    # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0). Step s
-    # reads its tweak at cell s off the chain's subtable, a compile-time offset.
-    word = value
+def walk(v0, v1, tw, index, pp0, pp1, k: Const):
+    # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0). Step s's
+    # tweak is the chain's first word plus s sub-positions.
+    w0 = v0
+    w1 = v1
     for s in unroll(k, CHAIN_STEPS):
-        out = StackBuf(WORDS_PER_BLOCK)
-        blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * s)], pp], [word, 0], out, counter=48, final=1)
-        word = out[0]
-    return word, k
+        out = StackBuf(4)
+        blake2s([tw + s * XM_P_MUL, index, pp0, pp1], [w0, w1, 0, 0], out, counter=48, final=1)
+        w0 = out[0]
+        w1 = out[1]
+    return w0, w1, k
 
 
 # ========================== SPHINCS+ signature verification =========================
@@ -2325,56 +2378,58 @@ def walk(value, chain_tweaks, pp, k: Const):
 
 @inline
 def sp_bit_field(bits_ptr, off: Const, n: Const, pos: Const):
-    # The integer held by bits [off, off+n) of the digest, weighed into the
-    # coordinate basis at `pos`: a tweak field placed where the tweak wants it, one
-    # fused multiply-add a bit, whatever lane the bits came from.
+    # The integer held by bits [off, off+n) of the digest, weighed into a tweak word
+    # at bit `pos`: a tweak field placed where the tweak wants it, one fused
+    # multiply-add a bit, whatever digest word the bits came from.
     acc = 0
     for i in unroll(0, n):
-        acc += bits_ptr[GEN ** (off + i)] * COORD_BASIS[pos + i]
+        acc += bits_ptr[GEN ** (off + i)] * 2 ** (pos + i)
     return acc
 
 
-def sp_walk(value, tw_base, pp, k: Const):
+def sp_walk(v0, v1, tw, tw1, pp0, pp1, k: Const):
     # Walk chain steps k..SP_CHAIN_STEPS-1: value' = Th(P, tw_chain, value).
-    # `tw_base` already carries the type byte, the layer, 2^w*i and the position
-    # (tau, e), so step s's tweak is one addition of a compile-time literal.
-    word = value
+    # `tw` already carries the type byte, the layer and 2^w*i, and `tw1` the
+    # position (tau, e), so step s's tweak is one addition of a compile-time literal.
+    w0 = v0
+    w1 = v1
     for s in unroll(k, SP_CHAIN_STEPS):
-        out = StackBuf(WORDS_PER_BLOCK)
-        blake2s([tw_base + s * SP_P_MUL, pp], [word, 0], out, counter=48, final=1)
-        word = out[0]
-    return word, k
+        out = StackBuf(4)
+        blake2s([tw + s * SP_P_MUL, tw1, pp0, pp1], [w0, w1, 0, 0], out, counter=48, final=1)
+        w0 = out[0]
+        w1 = out[1]
+    return w0, w1, k
 
 
-def sp_ots_leaf(tw_pos, pp, msg):
-    # One layer's one-time verification: the encoding of `msg` under the hinted
+def sp_ots_leaf(tw_lay, tw1, pp0, pp1, m0, m1):
+    # One layer's one-time verification: the encoding of `m` under the hinted
     # counter, the V chains walked from the revealed values, and the leaf they hash
-    # to. `tw_pos` is the position's tweak base (layer, tau, e); this function is
-    # called once per layer, so the V dispatch tables are compiled once for the
-    # whole scheme.
+    # to. `tw_lay` is the layer's first-word field and `tw1` the position word (tau,
+    # e); this function is called once per layer, so the V dispatch tables are
+    # compiled once for the whole scheme.
     ctr = hint_witness("sp_counter")
     ctr_bits = HeapBuf(GEN ** SP_COUNTER_BITS)
     hint_decompose_bits(ctr_bits, ctr, SP_COUNTER_BITS)
-    bind_bits(ctr_bits, ctr, SP_COUNTER_BITS)  # LE_32: four counter bytes, twelve of padding
+    bind_bits(ctr_bits, ctr, SP_COUNTER_BITS)  # LE_32: four counter bytes, four of padding
 
-    # D = Th(P, tw_enc, msg | LE_32(c)), a 52-byte one-block hash.
-    digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s([tw_pos + SP_TW_ENC, pp], [msg, ctr], digest, counter=52, final=1)
+    # D = Th(P, tw_enc, m | LE_32(c)), a 52-byte one-block hash.
+    digest = StackBuf(4)
+    blake2s([tw_lay + SP_TW_ENC, tw1, pp0, pp1], [m0, m1, ctr, 0], digest, counter=52, final=1)
 
     # The codeword, as in XMSS: each digit hinted in the exponent, range checked and
     # dispatched once, arm k walking the remaining steps; the product of the digits
-    # is the target sum, and the digits weighted by 2^w within each 64-bit lane
-    # reconstruct D, which pins each lane's leftover top bits to zero.
-    tips = StackBuf(SP_TIP_CELLS)
+    # is the target sum, and the digits weighted by 2^w within each digest word
+    # reconstruct D, which pins each word's leftover top bits to zero.
+    tips = StackBuf(SP_TIP_WORDS)
     digit_product = 1
     acc_lo = 0
     acc_hi = 0
     for i in unroll(0, SP_V):
         digit = hint_witness("sp_digits")
         assert log(digit) < SP_CHAIN_LENGTH
-        chain_start = hint_witness("sp_chain_starts")
-        tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        tips[i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
+        start = StackBuf(2)
+        hint_witness(start, "sp_chain_starts")
+        tips[2 * i], tips[2 * i + 1], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(start[0], start[1], tw_lay + SP_TW_CHAIN + i * SP_CHAIN_MUL, tw1, pp0, pp1, k))
         digit_product = digit_product * digit
         term = e * SP_CHAIN_LENGTH ** (i % SP_DIGITS_PER_WORD)
         if i // SP_DIGITS_PER_WORD == 0:
@@ -2382,51 +2437,42 @@ def sp_ots_leaf(tw_pos, pp, msg):
         else:
             acc_hi = acc_hi + term
     assert digit_product == GEN ** SP_TARGET_SUM
-    assert acc_lo + acc_hi * Y_TOWER == digest[0]
+    assert acc_lo == digest[0]
+    assert acc_hi == digest[1]
 
-    leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s([tw_pos + SP_TW_LEAF, pp], tips[0:2], leaf, counter=64, final=0)
+    leaf = StackBuf(4)
+    blake2s([tw_lay + SP_TW_LEAF, tw1, pp0, pp1], tips[0:4], leaf, counter=64, final=0)
     for q in unroll(1, SP_LEAF_BLOCKS):
-        next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // SP_LEAF_BLOCKS)
+        next_leaf = StackBuf(4)
+        blake2s(tips[8 * q - 4:8 * q], tips[8 * q:8 * q + 4], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // SP_LEAF_BLOCKS)
         leaf = next_leaf
-    return leaf[0]
+    return leaf[0], leaf[1]
 
 
 def verify_sig_sphincs(signer):
-    # `signer` is one 4-cell entry of the SPHINCS coverage table: the key's root and
+    # `signer` is one 8-word entry of the SPHINCS coverage table: the key's root and
     # public parameter, then the message THAT signer signed. Where XMSS's message is
     # one statement field for the whole node, a SPHINCS message rides its own slot,
     # and the signer-set digest binds the two together.
-    pp = signer[GEN]
+    pp = signer[2:4]
 
     # ---- the message digest, which chooses the few-time key ----
     # D = Truncate(H(tw_msg | P | rho | root | m)), 96 bytes in two blocks.
-    rho_root = StackBuf(WORDS_PER_BLOCK)
-    hint_witness(rho_root[0:1], "sp_rand")
-    rho_root[1] = signer[1]
-    prefix = StackBuf(WORDS_PER_BLOCK)
-    blake2s([SP_TW_MSG, pp], rho_root, prefix, counter=64, final=0)
-    digest = StackBuf(WORDS_PER_BLOCK)
-    blake2s([signer[GEN ** 2], signer[GEN ** 3]], [0, 0], digest, cv=prefix, counter=96, final=1)
+    rho = StackBuf(2)
+    hint_witness(rho, "sp_rand")
+    prefix = StackBuf(4)
+    blake2s([SP_TW_MSG, 0, pp], [rho, signer[0:2]], prefix, counter=64, final=0)
+    digest = StackBuf(4)
+    blake2s(signer[4:8], [0, 0, 0, 0], digest, cv=prefix, counter=96, final=1)
 
     # The index and the k leaf indices are bit fields of that digest, so its bits are
-    # advice-decomposed here and bound lane by lane. Nothing else derives them: every
+    # advice-decomposed here and bound word by word. Nothing else derives them: every
     # tweak below is built from these bits.
     bits = HeapBuf(GEN ** SP_BIT_CELLS)
-    lo = StackBuf(1)
-    hint_f192_limbs(lo, digest[0])
-    hi = (digest[0] + lo[0]) * Y_INV
-    assert_in_k(lo[0], hi)
-    tail = StackBuf(1)
-    hint_f192_limbs(tail, digest[1])
-    tail_hi = (digest[1] + tail[0]) * Y_INV
-    assert_in_k(tail[0], tail_hi)
-    lanes = [lo[0], hi, tail[0]]
     for lane in unroll(0, SP_BIT_LANES):
-        run = bits * GEN ** (lane * BASE_FIELD_BITS)
-        hint_decompose_bits(run, lanes[lane], BASE_FIELD_BITS)
-        bind_bits(run, lanes[lane], BASE_FIELD_BITS)
+        lane_bits = bits * GEN ** (lane * BASE_FIELD_BITS)
+        hint_decompose_bits(lane_bits, digest[lane], BASE_FIELD_BITS)
+        bind_bits(lane_bits, digest[lane], BASE_FIELD_BITS)
 
     # The digest is admissible only if its last leaf index is zero, which is what
     # lets the forest drop that tree.
@@ -2435,34 +2481,39 @@ def verify_sig_sphincs(signer):
 
     # ---- the few-time signature: one opened leaf per tree of the forest ----
     idx_tau = sp_bit_field(bits, 0, SP_H, SP_TAU_POS)
-    roots = StackBuf(SP_N_FTS)
+    roots = StackBuf(2 * SP_N_FTS)
     for kappa in unroll(0, SP_N_FTS):
         leaf_off = SP_H + kappa * SP_A
-        secret = StackBuf(WORDS_PER_BLOCK)
-        hint_witness(secret[0:1], "sp_fts_secrets")
-        fts_leaf = StackBuf(WORDS_PER_BLOCK)
+        secret = StackBuf(2)
+        hint_witness(secret, "sp_fts_secrets")
+        fts_leaf = StackBuf(4)
         node_index = sp_bit_field(bits, leaf_off, SP_A, SP_J_POS)
-        blake2s([SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + node_index, pp], [secret[0], 0], fts_leaf, counter=48, final=1)
-        node = fts_leaf[0]
+        blake2s([SP_TW_FTS_LEAF + kappa * SP_LAY_MUL, idx_tau + node_index, pp], [secret, 0, 0], fts_leaf, counter=48, final=1)
+        n0 = fts_leaf[0]
+        n1 = fts_leaf[1]
         for level in unroll(0, SP_A):
-            sibling = hint_witness("sp_fts_paths")
-            children = order_children(node, sibling, bits[GEN ** (leaf_off + level)])
-            parent = StackBuf(WORDS_PER_BLOCK)
+            sibling = StackBuf(2)
+            hint_witness(sibling, "sp_fts_paths")
+            children = order_children(n0, n1, sibling, bits[GEN ** (leaf_off + level)])
+            parent = StackBuf(4)
             if const(level + 1 == SP_A):
                 node_index = 0
             else:
-                # The index fits in one lane; clearing its low bit makes division by GEN a right shift.
-                node_index = (node_index + bits[GEN ** (leaf_off + level)] * COORD_BASIS[SP_J_POS]) / GEN
-            blake2s([SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + node_index, pp], children, parent)
-            node = parent[0]
-        roots[kappa] = node
-    fts_key = StackBuf(WORDS_PER_BLOCK)
-    blake2s([SP_TW_FTS_ROOTS + idx_tau, pp], roots[0:2], fts_key, counter=64, final=0)
+                # The index fits in one word; clearing its low bit makes division by GEN a right shift.
+                node_index = (node_index + bits[GEN ** (leaf_off + level)] * 2 ** SP_J_POS) / GEN
+            blake2s([SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL), idx_tau + node_index, pp], children, parent)
+            n0 = parent[0]
+            n1 = parent[1]
+        roots[2 * kappa] = n0
+        roots[2 * kappa + 1] = n1
+    fts_key = StackBuf(4)
+    blake2s([SP_TW_FTS_ROOTS, idx_tau, pp], roots[0:4], fts_key, counter=64, final=0)
     for q in unroll(1, SP_ROOT_BLOCKS):
-        next_key = StackBuf(WORDS_PER_BLOCK)
-        blake2s(roots[4 * q - 2:4 * q], roots[4 * q:4 * q + 2], next_key, cv=fts_key, counter=64 * (q + 1), final=(q + 1) // SP_ROOT_BLOCKS)
+        next_key = StackBuf(4)
+        blake2s(roots[8 * q - 4:8 * q], roots[8 * q:8 * q + 4], next_key, cv=fts_key, counter=64 * (q + 1), final=(q + 1) // SP_ROOT_BLOCKS)
         fts_key = next_key
-    signed = fts_key[0]
+    s0 = fts_key[0]
+    s1 = fts_key[1]
 
     # ---- the hypertree, bottom layer first ----
     # Layer lay signs what the layer below produced: the few-time key at the bottom,
@@ -2472,103 +2523,144 @@ def verify_sig_sphincs(signer):
         leaf_index_off = SP_SUFFIX[lay + 1]
         tau_field = sp_bit_field(bits, SP_SUFFIX[lay], SP_H - SP_SUFFIX[lay], SP_TAU_POS)
         node_index = sp_bit_field(bits, leaf_index_off, SP_HEIGHTS[lay], SP_J_POS)
-        tw_pos = tau_field + node_index + lay * SP_LAY_MUL
-        node = sp_ots_leaf(tw_pos, pp, signed)
+        n0, n1 = sp_ots_leaf(lay * SP_LAY_MUL, tau_field + node_index, pp[0], pp[1], s0, s1)
         for level in unroll(0, SP_HEIGHTS[lay]):
-            sibling = hint_witness("sp_siblings")
-            children = order_children(node, sibling, bits[GEN ** (leaf_index_off + level)])
-            parent = StackBuf(WORDS_PER_BLOCK)
+            sibling = StackBuf(2)
+            hint_witness(sibling, "sp_siblings")
+            children = order_children(n0, n1, sibling, bits[GEN ** (leaf_index_off + level)])
+            parent = StackBuf(4)
             if const(level + 1 == SP_HEIGHTS[lay]):
                 node_index = 0
             else:
-                node_index = (node_index + bits[GEN ** (leaf_index_off + level)] * COORD_BASIS[SP_J_POS]) / GEN
-            blake2s([SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + node_index, pp], children, parent)
-            node = parent[0]
-        signed = node
-    assert signed == signer[1]
+                node_index = (node_index + bits[GEN ** (leaf_index_off + level)] * 2 ** SP_J_POS) / GEN
+            blake2s([SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL), tau_field + node_index, pp], children, parent)
+            n0 = parent[0]
+            n1 = parent[1]
+        s0 = n0
+        s1 = n1
+    assert s0 == signer[1]
+    assert s1 == signer[GEN]
     return
 
 
 # =========================== statements and the signer set ==========================
 
 
-def statement_digest(seed_0, seed_1, signers_hash, da_0, da_1, defer):
-    # A node's statement, hashed to the two words the VM publishes, over the
-    # proving environment's Fiat-Shamir seed (flock's R1CS and this bytecode), the
-    # two-cell signer-set digest, the digest of its possibly empty DA root list,
-    # and the DEFER_STMT_CELLS deferred-claim cells. A
-    # parent rebuilds a child's statement with this same call, over a signer-set
-    # digest it re-absorbed itself, which forces the child to be a proof of THIS
-    # bytecode over groups checked against the parent's own.
+def statement_digest(seed, signers: StackBuf(4), da: StackBuf(4), defer):
+    # A node's statement, hashed to the four words the VM publishes, over the
+    # proving environment's Fiat-Shamir seed (at `seed`: flock's R1CS and this
+    # bytecode), the signer-set digest, the digest of its possibly empty DA root
+    # list, and the DEFER_STMT_CELLS deferred elements. A parent rebuilds a child's
+    # statement with this same call, over a signer-set digest it re-absorbed itself,
+    # which forces the child to be a proof of THIS bytecode over groups checked
+    # against the parent's own.
     #
-    # The preimage is fixed-length, so a plain BLAKE2s beats the Fiat-Shamir chain.
-    # A header value is a canonical cell and needs no check, the BLAKE2s table
-    # reading only cells whose top limb is zero. A deferred cell is a full field
-    # element, so two fill three cells as (s0,s1) (s2,t0) (t1,t2), each top limb
-    # derived from the two hinted below it and each pack proving its lanes in K.
-    cells = StackBuf(4 * STMT_BLOCKS)
-    cells[0] = seed_0  # the STMT_HEADER header cells
-    cells[1] = seed_1
-    cells[2] = signers_hash[1]
-    cells[3] = signers_hash[GEN]
-    cells[4] = da_0
-    cells[5] = da_1
-    for p in unroll(0, STMT_PAIRS):
-        s = defer[GEN ** (2 * p)]
-        if const(2 * p + 1 == DEFER_STMT_CELLS):
-            t = 0  # an odd cell count pairs the last one with a zero partner
-        else:
-            t = defer[GEN ** (2 * p + 1)]
-        s_lo = StackBuf(2)
-        t_lo = StackBuf(2)
-        hint_f192_limbs(s_lo, s)
-        hint_f192_limbs(t_lo, t)
-        cells[STMT_DEFER_OFF + 3 * p] = pack64x2(s_lo[0], s_lo[1])
-        cells[STMT_DEFER_OFF + 3 * p + 1] = pack64x2(((s + s_lo[0]) * Y_INV + s_lo[1]) * Y_INV, t_lo[0])
-        cells[STMT_DEFER_OFF + 3 * p + 2] = pack64x2(t_lo[1], ((t + t_lo[0]) * Y_INV + t_lo[1]) * Y_INV)
-    for k in unroll(0, STMT_PAD_CELLS):
-        cells[STMT_DEFER_OFF + 3 * STMT_PAIRS + k] = 0
-    st = StackBuf(2)
-    blake2s(cells[0:2], cells[2:4], st, counter=64, final=1 // STMT_BLOCKS)
+    # The preimage is fixed-length, so a plain BLAKE2s beats the Fiat-Shamir chain:
+    # the seed and signer-set digest are the first block, then the DA digest and
+    # the deferred elements' limbs, zero-filled to a whole block.
+    words = StackBuf(8 * (STMT_BLOCKS - 1))
+    words[0:4] = da
+    for p in unroll(0, DEFER_STMT_CELLS):
+        k = 3 * p
+        words[4 + k:4 + k + 3] = defer[k:k + 3]
+    for k in unroll(0, STMT_PAD):
+        words[4 + 3 * DEFER_STMT_CELLS + k] = 0
+    st = StackBuf(4)
+    blake2s(seed[0:4], signers, st, counter=64, final=0)
     for b in unroll(1, STMT_BLOCKS):
-        nxt = StackBuf(2)
-        blake2s(cells[4 * b:4 * b + 2], cells[4 * b + 2:4 * b + 4], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // STMT_BLOCKS)
+        lo = 8 * (b - 1)
+        nxt = StackBuf(4)
+        blake2s(words[lo:lo + 4], words[lo + 4:lo + 8], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // STMT_BLOCKS)
         st = nxt
-    return st[0], st[1]
+    return st
 
 
-def keys_window(state_0, state_1, base, keys_ptr, x_q, g_squares):
+def keys_window(state: StackBuf(4), base, keys_ptr, x_q, g_squares):
     # One window of an epoch group's key hash: SIGNERS_WINDOW blocks, two declared
-    # keys each (a key is two cells, a block four). Counters as in `sphincs_window`.
+    # keys each (a key is four words, a block eight). Counters as in `sphincs_window`.
     nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
+    st = state
     for j in unroll(0, SIGNERS_WINDOW):
-        pair = keys_ptr * (GEN ** (4 * j))
-        hint_witness(pair[0:4], "pubkeys")
-        out = StackBuf(2)
+        pair = keys_ptr * GEN ** (8 * j)
+        hint_witness(pair[0:8], "pubkeys")
+        out = StackBuf(4)
         if const(j + 1 == SIGNERS_WINDOW):
-            blake2s(pair[0:2], pair[2:4], out, cv=st, md=nxt)
+            blake2s(pair[0:4], pair[4:8], out, cv=st, md=[nxt, 0])
         else:
-            blake2s(pair[0:2], pair[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+            blake2s(pair[0:4], pair[4:8], out, cv=st, md=[base + const(64 * (j + 1)), 0])
         st = out
-    return st[0], st[1], nxt
+    return st, nxt
 
 
-def keys_tail(state_0, state_1, base, keys_ptr, k: Const):
-    # The key pairs past the last whole window, all non-final, so every offset stays
-    # below the base's lowest set bit.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    for j in unroll(0, k):
-        pair = keys_ptr * (GEN ** (4 * j))
-        hint_witness(pair[0:4], "pubkeys")
-        out = StackBuf(2)
-        blake2s(pair[0:2], pair[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+
+
+def list_chunk(state: StackBuf(4), off, ptr, cover, marks, origin_g, limit_g, size: Const, kind: Const):
+    # `size` non-final blocks of a list hash, block j's counter `off + 64(j + 1)`,
+    # its contents by list kind (`tail_blocks`).
+    st = state
+    for j in unroll(0, size):
+        out = StackBuf(4)
+        md = [off + const(64 * (j + 1)), 0]
+        if const(kind == LIST_CHILD_KEYS):
+            two = StackBuf(2)
+            hint_witness(two, "child_index")
+            assert log(two[0]) < log(limit_g)
+            assert log(two[1]) < log(limit_g)
+            cover[origin_g * two[0]] = marks * GEN ** (2 * j)
+            cover[origin_g * two[1]] = marks * GEN ** (2 * j + 1)
+            key_a = ptr * two[0] ** 4
+            key_b = ptr * two[1] ** 4
+            blake2s(key_a[0:4], key_b[0:4], out, cv=st, md=md)
+        if const(kind == LIST_CHILD_SPHINCS):
+            off_hint = hint_witness("child_sphincs_index")
+            assert log(off_hint) < log(limit_g)
+            cover[origin_g * off_hint] = marks * GEN ** j
+            entry = ptr * off_hint ** 8
+            blake2s(entry[0:4], entry[4:8], out, cv=st, md=md)
+        if const(kind // 3 == 0):
+            block = ptr * GEN ** (8 * j)
+            if const(kind == LIST_KEYS):
+                hint_witness(block[0:8], "pubkeys")
+            if const(kind == LIST_SPHINCS):
+                hint_witness(block[0:8], "sphincs_signers")
+            blake2s(block[0:4], block[4:8], out, cv=st, md=md)
         st = out
-    return st[0], st[1], keys_ptr * (GEN ** (4 * k))
+    return st
+
+
+def tail_blocks(state: StackBuf(4), base, ptr, cover, marks, origin_g, limit_g, tail_g, kind: Const):
+    # The blocks a list hash has left past its last whole window, fewer than a
+    # window: tail_g = g^k, absorbed in power-of-two chunks, largest first, one per
+    # set bit of k. A chunk starts at a multiple of twice its size, so every counter
+    # offset 64(start + j + 1) in it is still one XOR onto the running base, and one
+    # chunk per size serves every k. Returns the state, then the list pointer and the
+    # coverage marks stepped past the tail.
+    bits = StackBuf(SIGNERS_WINDOW_LOG)
+    hint_decompose_bits_exponent(bits, tail_g, SIGNERS_WINDOW_LOG)
+    states = StackBuf(4 * (SIGNERS_WINDOW_LOG + 1))
+    states[0:4] = state
+    rebuilt = GEN ** 0
+    off = base
+    for i in unroll(0, SIGNERS_WINDOW_LOG):
+        b = SIGNERS_WINDOW_LOG - 1 - i
+        bit = bits[b]
+        bits[b] = bit * bit  # booleanity, as a write-once pin
+        rebuilt *= 1 + bit * (GEN ** (2 ** b) + 1)
+        cur = 4 * i
+        if bit != 0:
+            states[cur + 4:cur + 8] = list_chunk(states[cur:cur + 4], off, ptr, cover, marks, origin_g, limit_g, 2 ** b, kind)
+        else:
+            states[cur + 4:cur + 8] = states[cur:cur + 4]
+        off = off + bit * const(64 * 2 ** b)
+        if const(kind // 3 == 0):
+            ptr = ptr * (1 + bit * (GEN ** (8 * 2 ** b) + 1))
+        if const(kind == LIST_CHILD_KEYS):
+            marks = marks * (1 + bit * (GEN ** (2 * 2 ** b) + 1))
+        if const(kind == LIST_CHILD_SPHINCS):
+            marks = marks * (1 + bit * (GEN ** (2 ** b) + 1))
+    assert rebuilt == tail_g
+    last = 4 * SIGNERS_WINDOW_LOG
+    return states[last:last + 4], ptr, marks
 
 
 def key_list_digest(keys_ptr, half_g, odd_g, n_keys_g, g_squares):
@@ -2584,80 +2676,58 @@ def key_list_digest(keys_ptr, half_g, odd_g, n_keys_g, g_squares):
     assert log(tail) < SIGNERS_WINDOW
     assert log(windows) < SIGNERS_MAX_WINDOWS
     assert windows ** SIGNERS_WINDOW * tail == half_g * odd_g * INV_GEN
-    chain = HeapBuf((windows * GEN) ** 4)  # state pair, base, first key of the window
-    chain[1] = BLAKE2S_IV_0
-    chain[GEN] = BLAKE2S_IV_1
-    chain[GEN ** 2] = 0
-    chain[GEN ** 3] = keys_ptr
+    chain = HeapBuf((windows * GEN) ** 6)  # state, base, first key of the window
+    chain[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
+    chain[GEN ** 4] = 0
+    chain[GEN ** 5] = keys_ptr
     for xq in mul_range(1, windows):
-        slot = chain * (xq ** 4)
-        s0, s1, nb = keys_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
-        step = chain * ((xq * GEN) ** 4)
-        step[1] = s0
-        step[GEN] = s1
-        step[GEN ** 2] = nb
-        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
-    end = chain * (windows ** 4)
-    t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: keys_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
-    final = scaled_log(n_keys_g, g_squares, 5) + MD_FINAL
-    digest = StackBuf(2)
+        slot = chain * xq ** 6
+        st, nb = keys_window(slot[0:4], slot[GEN ** 4], slot[GEN ** 5], xq, g_squares)
+        step = slot * GEN ** 6
+        step[0:4] = st
+        step[GEN ** 4] = nb
+        step[GEN ** 5] = slot[GEN ** 5] * GEN ** (8 * SIGNERS_WINDOW)
+    end = chain * windows ** 6
+    t, last, unused = tail_blocks(end[0:4], end[GEN ** 4], end[GEN ** 5], 0, 0, 0, 0, tail, LIST_KEYS)
+    final = [scaled_log(n_keys_g, g_squares, 5), MD_FINAL]
+    digest = StackBuf(4)
     if odd_g == 1:
-        hint_witness(last[0:4], "pubkeys")
-        blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
+        hint_witness(last[0:8], "pubkeys")
+        blake2s(last[0:4], last[4:8], digest, cv=t, md=final)
     else:
         # The odd key out fills half its block, the rest being the zero bytes the
         # counter already accounts for.
-        hint_witness(last[0:2], "pubkeys")
-        blake2s(last[0:2], [0, 0], digest, cv=[t0, t1], md=final)
-    return digest[0], digest[1]
+        hint_witness(last[0:4], "pubkeys")
+        blake2s(last[0:4], [0, 0, 0, 0], digest, cv=t, md=final)
+    return digest
 
 
-def child_keys_window(state_0, state_1, base, keys_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
+def child_keys_window(state: StackBuf(4), base, keys_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
     # One window of a child's key hash, absorbed exactly as the child absorbed it,
     # but with both keys of a block read at hinted indices into THIS node's table and
     # marked in the coverage table. Each index is an offset into the parent group the
     # caller mapped this child group to, bounded by that group's size, so a child's
     # key can only ever land on an XMSS slot of the right epoch.
     nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
+    st = state
     for j in unroll(0, SIGNERS_WINDOW):
         two = StackBuf(2)
         hint_witness(two, "child_index")
         assert log(two[0]) < log(limit_g)  # precondition as in the raw loops
         assert log(two[1]) < log(limit_g)
-        cover[origin_g * two[0]] = marks * (GEN ** (2 * j))
-        cover[origin_g * two[1]] = marks * (GEN ** (2 * j + 1))
-        key_a = keys_ptr * (two[0] * two[0])
-        key_b = keys_ptr * (two[1] * two[1])
-        out = StackBuf(2)
+        cover[origin_g * two[0]] = marks * GEN ** (2 * j)
+        cover[origin_g * two[1]] = marks * GEN ** (2 * j + 1)
+        key_a = keys_ptr * two[0] ** 4
+        key_b = keys_ptr * two[1] ** 4
+        out = StackBuf(4)
         if const(j + 1 == SIGNERS_WINDOW):
-            blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=nxt)
+            blake2s(key_a[0:4], key_b[0:4], out, cv=st, md=[nxt, 0])
         else:
-            blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=base + const(64 * (j + 1)))
+            blake2s(key_a[0:4], key_b[0:4], out, cv=st, md=[base + const(64 * (j + 1)), 0])
         st = out
-    return st[0], st[1], nxt
+    return st, nxt
 
 
-def child_keys_tail(state_0, state_1, base, keys_ptr, cover, marks, origin_g, limit_g, k: Const):
-    # The child's key pairs past its last whole window, all non-final.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    for j in unroll(0, k):
-        two = StackBuf(2)
-        hint_witness(two, "child_index")
-        assert log(two[0]) < log(limit_g)
-        assert log(two[1]) < log(limit_g)
-        cover[origin_g * two[0]] = marks * (GEN ** (2 * j))
-        cover[origin_g * two[1]] = marks * (GEN ** (2 * j + 1))
-        key_a = keys_ptr * (two[0] * two[0])
-        key_b = keys_ptr * (two[1] * two[1])
-        out = StackBuf(2)
-        blake2s(key_a[0:2], key_b[0:2], out, cv=st, md=base + const(64 * (j + 1)))
-        st = out
-    return st[0], st[1], marks * (GEN ** (2 * k))
 
 
 def child_key_list_digest(keys_ptr, cover, base, origin_g, limit_g, half_g, odd_g, n_keys_g, g_squares):
@@ -2672,23 +2742,21 @@ def child_key_list_digest(keys_ptr, cover, base, origin_g, limit_g, half_g, odd_
     assert log(tail) < SIGNERS_WINDOW
     assert log(windows) < SIGNERS_MAX_WINDOWS
     assert windows ** SIGNERS_WINDOW * tail == half_g * odd_g * INV_GEN
-    chain = HeapBuf((windows * GEN) ** 4)
-    chain[1] = BLAKE2S_IV_0
-    chain[GEN] = BLAKE2S_IV_1
-    chain[GEN ** 2] = 0
-    chain[GEN ** 3] = base
+    chain = HeapBuf((windows * GEN) ** 6)  # state, base, coverage marks
+    chain[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
+    chain[GEN ** 4] = 0
+    chain[GEN ** 5] = base
     for xq in mul_range(1, windows):
-        slot = chain * (xq ** 4)
-        s0, s1, nb = child_keys_window(slot[1], slot[GEN], slot[GEN ** 2], keys_ptr, cover, slot[GEN ** 3], origin_g, limit_g, xq, g_squares)
-        step = chain * ((xq * GEN) ** 4)
-        step[1] = s0
-        step[GEN] = s1
-        step[GEN ** 2] = nb
-        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (2 * SIGNERS_WINDOW))
-    end = chain * (windows ** 4)
-    t0, t1, marks = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: child_keys_tail(end[1], end[GEN], end[GEN ** 2], keys_ptr, cover, end[GEN ** 3], origin_g, limit_g, k))
-    final = scaled_log(n_keys_g, g_squares, 5) + MD_FINAL
-    digest = StackBuf(2)
+        slot = chain * xq ** 6
+        st, nb = child_keys_window(slot[0:4], slot[GEN ** 4], keys_ptr, cover, slot[GEN ** 5], origin_g, limit_g, xq, g_squares)
+        step = slot * GEN ** 6
+        step[0:4] = st
+        step[GEN ** 4] = nb
+        step[GEN ** 5] = slot[GEN ** 5] * GEN ** (2 * SIGNERS_WINDOW)
+    end = chain * windows ** 6
+    t, unused, marks = tail_blocks(end[0:4], end[GEN ** 4], keys_ptr, cover, end[GEN ** 5], origin_g, limit_g, tail, LIST_CHILD_KEYS)
+    final = [scaled_log(n_keys_g, g_squares, 5), MD_FINAL]
+    digest = StackBuf(4)
     if odd_g == 1:
         two = StackBuf(2)
         hint_witness(two, "child_index")
@@ -2696,24 +2764,24 @@ def child_key_list_digest(keys_ptr, cover, base, origin_g, limit_g, half_g, odd_
         assert log(two[1]) < log(limit_g)
         cover[origin_g * two[0]] = marks
         cover[origin_g * two[1]] = marks * GEN
-        key_a = keys_ptr * (two[0] * two[0])
-        key_b = keys_ptr * (two[1] * two[1])
-        blake2s(key_a[0:2], key_b[0:2], digest, cv=[t0, t1], md=final)
+        key_a = keys_ptr * two[0] ** 4
+        key_b = keys_ptr * two[1] ** 4
+        blake2s(key_a[0:4], key_b[0:4], digest, cv=t, md=final)
     else:
         tail_idx = hint_witness("child_index")
         assert log(tail_idx) < log(limit_g)
         cover[origin_g * tail_idx] = marks
-        key_last = keys_ptr * (tail_idx * tail_idx)
-        blake2s(key_last[0:2], [0, 0], digest, cv=[t0, t1], md=final)
-    return digest[0], digest[1]
+        key_last = keys_ptr * tail_idx ** 4
+        blake2s(key_last[0:4], [0, 0, 0, 0], digest, cv=t, md=final)
+    return digest
 
 
 def scaled_log(x, g_squares, shift: Const):
     # 2^shift times the exponent of `x`, as a bit pattern (doc §sec:prog-byte-counter).
     # The exponent's bits are advice, tied back by the g-power product; weighing them
-    # at COORD_BASIS[j] assembles the exponent itself and the final multiply is the
-    # shift, exact because nothing reduces below degree 64. Both sides of the product
-    # stay under the order of g, so the bits ARE that exponent, hence below
+    # at 2^j assembles the exponent itself and the final multiply is the shift,
+    # exact because nothing reduces below degree 64. Both sides of the product stay
+    # under the order of g, so the bits ARE that exponent, hence below
     # 2^SIGNERS_COUNT_BITS, which every count and window index here is.
     bits = StackBuf(SIGNERS_COUNT_BITS)
     hint_decompose_bits_exponent(bits, x, SIGNERS_COUNT_BITS)
@@ -2722,47 +2790,32 @@ def scaled_log(x, g_squares, shift: Const):
     for j in unroll(0, SIGNERS_COUNT_BITS):
         b = bits[j]
         bits[j] = b * b  # booleanity, as a write-once pin
-        value += b * COORD_BASIS[j]
+        value += b * 2 ** j
         rebuilt *= (1 + b * (g_squares[GEN ** j] + 1))
     assert rebuilt == x
-    return value * COORD_BASIS[shift]
+    return value * 2 ** shift
 
 
-def sphincs_window(state_0, state_1, base, entries_ptr, x_q, g_squares):
+def sphincs_window(state: StackBuf(4), base, entries_ptr, x_q, g_squares):
     # One window of the SPHINCS list's hash: SIGNERS_WINDOW claims, one 64-byte block
     # each (the claimed key, then the message it signed). Block j's counter is
     # base + 64(j+1), one XOR, except the last, whose offset is the base's own lowest
     # bit and which therefore takes the NEXT window's base as its whole counter. That
     # base is derived here and carried out for the following window.
     nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
+    st = state
     for j in unroll(0, SIGNERS_WINDOW):
-        entry = entries_ptr * (GEN ** (4 * j))
-        hint_witness(entry[0:4], "sphincs_signers")
-        out = StackBuf(2)
+        entry = entries_ptr * GEN ** (8 * j)
+        hint_witness(entry[0:8], "sphincs_signers")
+        out = StackBuf(4)
         if const(j + 1 == SIGNERS_WINDOW):
-            blake2s(entry[0:2], entry[2:4], out, cv=st, md=nxt)
+            blake2s(entry[0:4], entry[4:8], out, cv=st, md=[nxt, 0])
         else:
-            blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+            blake2s(entry[0:4], entry[4:8], out, cv=st, md=[base + const(64 * (j + 1)), 0])
         st = out
-    return st[0], st[1], nxt
+    return st, nxt
 
 
-def sphincs_tail(state_0, state_1, base, entries_ptr, k: Const):
-    # The blocks the window loop leaves over, fewer than a window, so every offset
-    # 64(j+1) stays below the base's lowest set bit and needs no next base.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    for j in unroll(0, k):
-        entry = entries_ptr * (GEN ** (4 * j))
-        hint_witness(entry[0:4], "sphincs_signers")
-        out = StackBuf(2)
-        blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
-        st = out
-    return st[0], st[1], entries_ptr * (GEN ** (4 * k))
 
 
 def sphincs_list_digest(entries_ptr, n_g, g_squares):
@@ -2770,10 +2823,10 @@ def sphincs_list_digest(entries_ptr, n_g, g_squares):
     # over exactly 64n bytes and no block is partial. The last block is absorbed
     # apart, carrying the total length as its counter and the final-block flag; the
     # n - 1 before it run in windows plus a tail (doc §sec:prog-byte-counter).
-    digest = StackBuf(2)
+    digest = StackBuf(4)
     if n_g == 1:
         # No claims: the hash of the empty string, one compression of a zero block.
-        blake2s([0, 0], [0, 0], digest, md=MD_FINAL)
+        blake2s([0, 0, 0, 0], [0, 0, 0, 0], digest, md=[0, MD_FINAL])
     else:
         split = StackBuf(2)
         hint_witness(split, "signers_split")  # g^windows, g^tail_blocks
@@ -2782,67 +2835,48 @@ def sphincs_list_digest(entries_ptr, n_g, g_squares):
         assert log(tail) < SIGNERS_WINDOW
         assert log(windows) < SIGNERS_MAX_WINDOWS
         assert windows ** SIGNERS_WINDOW * tail == n_g * INV_GEN
-        # Four cells a window: the state pair, the window's base, its first entry.
-        chain = HeapBuf((windows * GEN) ** 4)
-        chain[1] = BLAKE2S_IV_0
-        chain[GEN] = BLAKE2S_IV_1
-        chain[GEN ** 2] = 0
-        chain[GEN ** 3] = entries_ptr
+        # Six words a window: the state, the window's base, its first entry.
+        chain = HeapBuf((windows * GEN) ** 6)
+        chain[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
+        chain[GEN ** 4] = 0
+        chain[GEN ** 5] = entries_ptr
         for xq in mul_range(1, windows):
-            slot = chain * (xq ** 4)
-            s0, s1, nb = sphincs_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
-            step = chain * ((xq * GEN) ** 4)
-            step[1] = s0
-            step[GEN] = s1
-            step[GEN ** 2] = nb
-            step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
-        end = chain * (windows ** 4)
-        t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: sphincs_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
-        hint_witness(last[0:4], "sphincs_signers")
-        final = scaled_log(n_g, g_squares, 6) + MD_FINAL
-        blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
-    return digest[0], digest[1]
+            slot = chain * xq ** 6
+            st, nb = sphincs_window(slot[0:4], slot[GEN ** 4], slot[GEN ** 5], xq, g_squares)
+            step = slot * GEN ** 6
+            step[0:4] = st
+            step[GEN ** 4] = nb
+            step[GEN ** 5] = slot[GEN ** 5] * GEN ** (8 * SIGNERS_WINDOW)
+        end = chain * windows ** 6
+        t, last, unused = tail_blocks(end[0:4], end[GEN ** 4], end[GEN ** 5], 0, 0, 0, 0, tail, LIST_SPHINCS)
+        hint_witness(last[0:8], "sphincs_signers")
+        final = [scaled_log(n_g, g_squares, 6), MD_FINAL]
+        blake2s(last[0:4], last[4:8], digest, cv=t, md=final)
+    return digest
 
 
-def child_sphincs_window(state_0, state_1, base, entries_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
+def child_sphincs_window(state: StackBuf(4), base, entries_ptr, cover, marks, origin_g, limit_g, x_q, g_squares):
     # One window of a child's SPHINCS list, absorbed exactly as the child absorbed
     # it, but with each block's claim read at a hinted index into THIS node's table
     # and marked in the coverage table. The index is an offset into the SPHINCS
     # region and bounded by that region's size, so a child's claim can only ever
     # land on a SPHINCS slot. Counters as in `sphincs_window`.
     nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
+    st = state
     for j in unroll(0, SIGNERS_WINDOW):
         off_hint = hint_witness("child_sphincs_index")
         assert log(off_hint) < log(limit_g)  # precondition as in the raw loops
-        cover[origin_g * off_hint] = marks * (GEN ** j)
-        entry = entries_ptr * (off_hint ** 4)
-        out = StackBuf(2)
+        cover[origin_g * off_hint] = marks * GEN ** j
+        entry = entries_ptr * off_hint ** 8
+        out = StackBuf(4)
         if const(j + 1 == SIGNERS_WINDOW):
-            blake2s(entry[0:2], entry[2:4], out, cv=st, md=nxt)
+            blake2s(entry[0:4], entry[4:8], out, cv=st, md=[nxt, 0])
         else:
-            blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+            blake2s(entry[0:4], entry[4:8], out, cv=st, md=[base + const(64 * (j + 1)), 0])
         st = out
-    return st[0], st[1], nxt
+    return st, nxt
 
 
-def child_sphincs_tail(state_0, state_1, base, entries_ptr, cover, marks, origin_g, limit_g, k: Const):
-    # The blocks past the child's last whole window, all of them non-final, so every
-    # offset stays below this base's lowest set bit.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    for j in unroll(0, k):
-        off_hint = hint_witness("child_sphincs_index")
-        assert log(off_hint) < log(limit_g)
-        cover[origin_g * off_hint] = marks * (GEN ** j)
-        entry = entries_ptr * (off_hint ** 4)
-        out = StackBuf(2)
-        blake2s(entry[0:2], entry[2:4], out, cv=st, md=base + const(64 * (j + 1)))
-        st = out
-    return st[0], st[1]
 
 
 def child_sphincs_list_digest(entries_ptr, cover, base, origin_g, limit_g, n_g, g_squares):
@@ -2850,9 +2884,9 @@ def child_sphincs_list_digest(entries_ptr, cover, base, origin_g, limit_g, n_g, 
     # child hashed (`sphincs_list_digest`), so the digest it rebuilds is the one the
     # child's statement carries. `base` prefixes the coverage write values, which
     # count the claims off as they are marked.
-    digest = StackBuf(2)
+    digest = StackBuf(4)
     if n_g == 1:
-        blake2s([0, 0], [0, 0], digest, md=MD_FINAL)
+        blake2s([0, 0, 0, 0], [0, 0, 0, 0], digest, md=[0, MD_FINAL])
     else:
         split = StackBuf(2)
         hint_witness(split, "signers_split")
@@ -2861,59 +2895,44 @@ def child_sphincs_list_digest(entries_ptr, cover, base, origin_g, limit_g, n_g, 
         assert log(tail) < SIGNERS_WINDOW
         assert log(windows) < SIGNERS_MAX_WINDOWS
         assert windows ** SIGNERS_WINDOW * tail == n_g * INV_GEN
-        chain = HeapBuf((windows * GEN) ** 4)
-        chain[1] = BLAKE2S_IV_0
-        chain[GEN] = BLAKE2S_IV_1
-        chain[GEN ** 2] = 0
+        chain = HeapBuf((windows * GEN) ** 5)  # state, base
+        chain[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
+        chain[GEN ** 4] = 0
         for xq in mul_range(1, windows):
-            slot = chain * (xq ** 4)
-            marks = base * (xq ** SIGNERS_WINDOW)
-            s0, s1, nb = child_sphincs_window(slot[1], slot[GEN], slot[GEN ** 2], entries_ptr, cover, marks, origin_g, limit_g, xq, g_squares)
-            step = chain * ((xq * GEN) ** 4)
-            step[1] = s0
-            step[GEN] = s1
-            step[GEN ** 2] = nb
-        end = chain * (windows ** 4)
-        marks = base * (windows ** SIGNERS_WINDOW)
-        t0, t1 = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: child_sphincs_tail(end[1], end[GEN], end[GEN ** 2], entries_ptr, cover, marks, origin_g, limit_g, k))
+            slot = chain * xq ** 5
+            marks = base * xq ** SIGNERS_WINDOW
+            st, nb = child_sphincs_window(slot[0:4], slot[GEN ** 4], entries_ptr, cover, marks, origin_g, limit_g, xq, g_squares)
+            step = slot * GEN ** 5
+            step[0:4] = st
+            step[GEN ** 4] = nb
+        end = chain * windows ** 5
+        marks = base * windows ** SIGNERS_WINDOW
+        t, unused, unused_marks = tail_blocks(end[0:4], end[GEN ** 4], entries_ptr, cover, marks, origin_g, limit_g, tail, LIST_CHILD_SPHINCS)
         off_hint = hint_witness("child_sphincs_index")
         assert log(off_hint) < log(limit_g)
         cover[origin_g * off_hint] = base * (n_g * INV_GEN)
-        entry = entries_ptr * (off_hint ** 4)
-        final = scaled_log(n_g, g_squares, 6) + MD_FINAL
-        blake2s(entry[0:2], entry[2:4], digest, cv=[t0, t1], md=final)
-    return digest[0], digest[1]
+        entry = entries_ptr * off_hint ** 8
+        final = [scaled_log(n_g, g_squares, 6), MD_FINAL]
+        blake2s(entry[0:4], entry[4:8], digest, cv=t, md=final)
+    return digest
 
 
-def plain_window(state_0, state_1, base, run_ptr, x_q, g_squares):
-    # One window over a run of cells already in memory, four to a block, hinting
+def plain_window(state: StackBuf(4), base, run_ptr, x_q, g_squares):
+    # One window over a run of words already in memory, eight to a block, hinting
     # nothing. Counters as in `sphincs_window`.
     nxt = scaled_log(x_q * GEN, g_squares, const(6 + SIGNERS_WINDOW_LOG))
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
+    st = state
     for j in unroll(0, SIGNERS_WINDOW):
-        block = run_ptr * (GEN ** (4 * j))
-        out = StackBuf(2)
+        block = run_ptr * GEN ** (8 * j)
+        out = StackBuf(4)
         if const(j + 1 == SIGNERS_WINDOW):
-            blake2s(block[0:2], block[2:4], out, cv=st, md=nxt)
+            blake2s(block[0:4], block[4:8], out, cv=st, md=[nxt, 0])
         else:
-            blake2s(block[0:2], block[2:4], out, cv=st, md=base + const(64 * (j + 1)))
+            blake2s(block[0:4], block[4:8], out, cv=st, md=[base + const(64 * (j + 1)), 0])
         st = out
-    return st[0], st[1], nxt
+    return st, nxt
 
 
-def plain_tail(state_0, state_1, base, run_ptr, k: Const):
-    # The blocks of the run past its last whole window, all non-final.
-    st = StackBuf(2)
-    st[0] = state_0
-    st[1] = state_1
-    for j in unroll(0, k):
-        block = run_ptr * (GEN ** (4 * j))
-        out = StackBuf(2)
-        blake2s(block[0:2], block[2:4], out, cv=st, md=base + const(64 * (j + 1)))
-        st = out
-    return st[0], st[1], run_ptr * (GEN ** (4 * k))
 
 
 def signer_set_digest(run_ptr, n_epochs_g, g_squares):
@@ -2930,25 +2949,23 @@ def signer_set_digest(run_ptr, n_epochs_g, g_squares):
     assert log(tail) < SIGNERS_WINDOW
     assert log(windows) < SIGNERS_MAX_WINDOWS
     assert windows ** SIGNERS_WINDOW * tail == blocks * INV_GEN
-    chain = HeapBuf((windows * GEN) ** 4)
-    chain[1] = BLAKE2S_IV_0
-    chain[GEN] = BLAKE2S_IV_1
-    chain[GEN ** 2] = 0
-    chain[GEN ** 3] = run_ptr
+    chain = HeapBuf((windows * GEN) ** 6)
+    chain[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
+    chain[GEN ** 4] = 0
+    chain[GEN ** 5] = run_ptr
     for xq in mul_range(1, windows):
-        slot = chain * (xq ** 4)
-        s0, s1, nb = plain_window(slot[1], slot[GEN], slot[GEN ** 2], slot[GEN ** 3], xq, g_squares)
-        step = chain * ((xq * GEN) ** 4)
-        step[1] = s0
-        step[GEN] = s1
-        step[GEN ** 2] = nb
-        step[GEN ** 3] = slot[GEN ** 3] * (GEN ** (4 * SIGNERS_WINDOW))
-    end = chain * (windows ** 4)
-    t0, t1, last = match(log(tail), range(0, SIGNERS_WINDOW), lambda k: plain_tail(end[1], end[GEN], end[GEN ** 2], end[GEN ** 3], k))
-    final = scaled_log(blocks, g_squares, 6) + MD_FINAL
-    digest = StackBuf(2)
-    blake2s(last[0:2], last[2:4], digest, cv=[t0, t1], md=final)
-    return digest[0], digest[1]
+        slot = chain * xq ** 6
+        st, nb = plain_window(slot[0:4], slot[GEN ** 4], slot[GEN ** 5], xq, g_squares)
+        step = slot * GEN ** 6
+        step[0:4] = st
+        step[GEN ** 4] = nb
+        step[GEN ** 5] = slot[GEN ** 5] * GEN ** (8 * SIGNERS_WINDOW)
+    end = chain * windows ** 6
+    t, last, unused = tail_blocks(end[0:4], end[GEN ** 4], end[GEN ** 5], 0, 0, 0, 0, tail, LIST_PLAIN)
+    final = [scaled_log(blocks, g_squares, 6), MD_FINAL]
+    digest = StackBuf(4)
+    blake2s(last[0:4], last[4:8], digest, cv=t, md=final)
+    return digest
 
 
 def rebuild_child_groups(nsub_e_g, run_ptr, base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover, g_squares):
@@ -2963,16 +2980,15 @@ def rebuild_child_groups(nsub_e_g, run_ptr, base, epochs, msgs, group_base, grou
     counts = HeapBuf(nsub_e_g * GEN)
     counts[GEN ** 0] = 1
     for xj in mul_range(1, nsub_e_g):
-        grp = StackBuf(4)
-        hint_witness(grp, "child_group")  # epoch, msg_lo, msg_hi, count
-        n_keys = grp[3]
+        grp = StackBuf(6)
+        hint_witness(grp, "child_group")  # epoch, message (four words), count
+        n_keys = grp[5]
         assert log(n_keys) < MAX_KEYS
         parent = hint_witness("child_group_map")
         assert log(parent) < log(n_epochs_g)
         assert epochs[parent] == grp[0]
-        parent_msg = msgs * (parent * parent)
-        assert parent_msg[1] == grp[1]
-        assert parent_msg[GEN] == grp[2]
+        parent_msg = msgs * parent ** 4
+        parent_msg[0:4] = grp[1:5]
         halves = StackBuf(2)
         hint_witness(halves, "child_halves")
         assert log(halves[1]) < 2
@@ -2980,16 +2996,15 @@ def rebuild_child_groups(nsub_e_g, run_ptr, base, epochs, msgs, group_base, grou
         assert halves[0] * halves[0] * halves[1] == n_keys
         gb = group_base[parent]
         prefix = counts[xj]
-        kd_0, kd_1 = child_key_list_digest(xmss_table * (gb * gb), cover, base * prefix, gb, group_slots[parent], halves[0], halves[1], n_keys, g_squares)
-        slot = run_ptr * (xj ** 8) * (GEN ** 4)
+        kd = child_key_list_digest(xmss_table * gb ** 4, cover, base * prefix, gb, group_slots[parent], halves[0], halves[1], n_keys, g_squares)
+        slot = run_ptr * xj ** 16 * GEN ** 8
         slot[1] = grp[0]
-        slot[GEN] = n_keys
-        slot[GEN ** 2] = grp[1]
-        slot[GEN ** 3] = grp[2]
-        slot[GEN ** 4] = kd_0
-        slot[GEN ** 5] = kd_1
-        slot[GEN ** 6] = 0
-        slot[GEN ** 7] = 0
+        slot[GEN] = 0
+        slot[GEN ** 2] = n_keys
+        slot[GEN ** 3] = 0
+        slot[4:8] = grp[1:5]
+        slot[8:12] = kd
+        slot[12:16] = [0, 0, 0, 0]
         counts[xj * GEN] = prefix * n_keys
     return counts[nsub_e_g]
 
@@ -3000,7 +3015,7 @@ def rebuild_child_groups(nsub_e_g, run_ptr, base, epochs, msgs, group_base, grou
 
 
 def da_verify(g_squares):
-    # Returns the matrix root and membership-vector hash, two canonical cells each.
+    # Returns the matrix root and membership-vector hash, four words each.
     # The row count is a run-time parameter. The trees need a compile-time depth,
     # so the rows are padded to a power of two and the two `match`es below dispatch
     # on its log; everything else walks the real rows only. A padding row is the
@@ -3012,30 +3027,29 @@ def da_verify(g_squares):
     g_log_pad = shape[1]
     n_pad_g, gap_g = da_row_shape(n_blob_g, g_log_pad, g_squares)
 
-    prefix_digests = HeapBuf(n_pad_g ** (2 * DA_PREFIX_CELLS))
+    prefix_digests = HeapBuf(n_pad_g ** (4 * DA_PREFIX_CELLS))
     prefix_bases = HeapBuf(n_blob_g)
     for xi in mul_range(1, n_blob_g):
-        prefix_bases[xi] = prefix_digests * (xi ** (2 * DA_PREFIX_CELLS))
+        prefix_bases[xi] = prefix_digests * xi ** (4 * DA_PREFIX_CELLS)
 
-    hashes = HeapBuf(2 * (DA_CELLS + 1))
-    hashes[1] = BLAKE2S_IV_0
-    hashes[GEN] = BLAKE2S_IV_1
+    hashes = HeapBuf(4 * (DA_CELLS + 1))
+    hashes[0:4] = [BLAKE2S_IV_0, BLAKE2S_IV_1, BLAKE2S_IV_2, BLAKE2S_IV_3]
     counter_values = StackBuf(3 * DA_CELLS + 1)
     for w in unroll(0, 3 * DA_CELLS + 1):
         counter_values[w] = const(w * 2 ** (DA_LOG_CELL + 3))
     counters = addr(counter_values)
 
-    # Each row's running sum uses a fresh write-once cell per column.
-    acc = HeapBuf(n_blob_g ** (DA_CELLS + 1))
+    # Each row's running sum uses a fresh write-once element per column.
+    acc = HeapBuf(n_blob_g ** (3 * (DA_CELLS + 1)))
     rowbase = HeapBuf(n_blob_g)
     for xi in mul_range(1, n_blob_g):
-        chain = acc * (xi ** (DA_CELLS + 1))
+        chain = acc * xi ** (3 * (DA_CELLS + 1))
         rowbase[xi] = chain
-        chain[1] = 0
+        chain[0:3] = ZERO
 
     # Prefix blocks first, so the digests the row branch needs are stored by a
     # loop that knows it is inside the prefix, with no per-block branch.
-    coltree = HeapBuf(4 * DA_CELLS)
+    coltree = HeapBuf(8 * DA_CELLS)
     for xb in mul_range(1, GEN ** DA_PREFIX_CELLS):
         da_verify_column(xb, n_blob_g, n_pad_g, gap_g, g_log_pad, prefix_bases, coltree, rowbase, hashes, counters, 1)
     for xb in mul_range(GEN ** DA_PREFIX_CELLS, GEN ** DA_CELLS):
@@ -3043,31 +3057,31 @@ def da_verify(g_squares):
 
     for xi in mul_range(1, n_blob_g):
         chain = rowbase[xi]
-        assert chain[GEN ** DA_CELLS] == 0
-    rc0, rc1 = da_levels(coltree, DA_CELLS, DA_BLOCK_BITS)
+        k = 3 * DA_CELLS
+        assert_eq192(chain[k:k + 3], ZERO)
+    col_root = da_levels(coltree, DA_CELLS, DA_BLOCK_BITS)
 
     # The row branch: each row's prefix digests, hashed as one string.
-    rowtree = HeapBuf(n_pad_g ** 4)
+    rowtree = HeapBuf(n_pad_g ** 8)
     for xi in mul_range(1, n_blob_g):
-        run = prefix_bases[xi]
-        st = StackBuf(2)
-        blake2s(run[0:2], run[2:4], st, counter=64, final=1 // DA_ROW_BLOCKS)
+        prefix = prefix_bases[xi]
+        st = StackBuf(4)
+        blake2s(prefix[0:4], prefix[4:8], st, counter=64, final=1 // DA_ROW_BLOCKS)
         for b in unroll(1, DA_ROW_BLOCKS):
-            nxt = StackBuf(2)
-            blake2s(run[4 * b:4 * b + 2], run[4 * b + 2:4 * b + 4], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // DA_ROW_BLOCKS)
+            nxt = StackBuf(4)
+            blake2s(prefix[8 * b:8 * b + 4], prefix[8 * b + 4:8 * b + 8], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // DA_ROW_BLOCKS)
             st = nxt
-        slot = rowtree * (xi ** 2)
-        slot[1] = st[0]
-        slot[GEN] = st[1]
+        slot = rowtree * xi ** 4
+        slot[0:4] = st
     for xd in mul_range(1, gap_g):
-        pad = rowtree * (n_blob_g ** 2) * (xd ** 2)
-        pad[1] = DA_PAD_ROW_0
-        pad[GEN] = DA_PAD_ROW_1
-    rr0, rr1 = match(log(g_log_pad), range(0, DA_TREE_ARMS), lambda k: da_levels(rowtree, 2 ** k, k))
+        pad = rowtree * n_blob_g ** 4 * xd ** 4
+        pad[0:4] = [DA_PAD_ROW[0], DA_PAD_ROW[1], DA_PAD_ROW[2], DA_PAD_ROW[3]]
+    row_root = match(log(g_log_pad), range(0, DA_TREE_ARMS), lambda k: da_levels(rowtree, 2 ** k, k))
 
-    root = StackBuf(2)
-    blake2s([rr0, rr1], [rc0, rc1], root)
-    return root[0], root[1], hashes[GEN ** (2 * DA_CELLS)], hashes[GEN ** (2 * DA_CELLS + 1)]
+    root = StackBuf(4)
+    blake2s(row_root, col_root, root)
+    vec = 4 * DA_CELLS
+    return root, hashes[vec:vec + 4]
 
 
 def da_row_shape(n_blob_g, g_log_pad, g_squares):
@@ -3083,151 +3097,135 @@ def da_row_shape(n_blob_g, g_log_pad, g_squares):
 
 
 def da_verify_column(xb, n_blob_g, n_pad_g, gap_g, g_log_pad, prefix_bases, coltree, rowbase, hashes, counters, store: Const):
-    st = hashes * (xb ** 2)
-    h0, h1, lvals = da_vector_dispatch(xb, st[1], st[GEN], counters)
-    nxt = hashes * ((xb * GEN) ** 2)
-    nxt[1] = h0
-    nxt[GEN] = h1
-    node = HeapBuf(n_pad_g ** 4)
+    st = hashes * xb ** 4
+    h, lvals = da_vector_dispatch(xb, st[0:4], counters)
+    nxt = st * GEN ** 4
+    nxt[0:4] = h
+    node = HeapBuf(n_pad_g ** 8)
+    xb3 = xb ** 3
     for xi in mul_range(1, n_blob_g):
-        d0, d1, s = da_verify_cell(lvals)
-        chain = rowbase[xi] * xb
-        chain[GEN] = chain[1] + s
-        leaf = node * (xi ** 2)
-        leaf[1] = d0
-        leaf[GEN] = d1
+        d, s = da_verify_cell(lvals)
+        chain = rowbase[xi] * xb3
+        chain[3:6] = add192(chain[0:3], s)
+        leaf = node * xi ** 4
+        leaf[0:4] = d
         if const(store == 1):
-            slot = prefix_bases[xi] * (xb * xb)
-            slot[1] = d0
-            slot[GEN] = d1
+            slot = prefix_bases[xi] * xb ** 4
+            slot[0:4] = d
     for xd in mul_range(1, gap_g):
-        pad = node * (n_blob_g ** 2) * (xd ** 2)
-        pad[1] = DA_PAD_CELL_0
-        pad[GEN] = DA_PAD_CELL_1
-    c0, c1 = match(log(g_log_pad), range(0, DA_TREE_ARMS), lambda k: da_levels(node, 2 ** k, k))
-    out = coltree * (xb * xb)
-    out[1] = c0
-    out[GEN] = c1
+        pad = node * n_blob_g ** 4 * xd ** 4
+        pad[0:4] = [DA_PAD_CELL[0], DA_PAD_CELL[1], DA_PAD_CELL[2], DA_PAD_CELL[3]]
+    c = match(log(g_log_pad), range(0, DA_TREE_ARMS), lambda k: da_levels(node, 2 ** k, k))
+    out = coltree * xb ** 4
+    out[0:4] = c
     return
 
 
 def da_verify_cell(lvals):
-    # Packing checks that each symbol used by both the hash and dot product is in K.
+    # The symbols are words, so the hash and the dot product read them directly; the
+    # weights are elements, three words each, so the dot product runs limb by limb.
     sym = StackBuf(DA_CELL)
     hint_witness(sym, "da_symbols")
-    packed = StackBuf(DA_CELL // 2)
-    s = 0
-    for e in unroll(0, DA_CELL // 2):
-        packed[e] = pack64x2(sym[2 * e], sym[2 * e + 1])
-        s = s + lvals[GEN ** (2 * e)] * sym[2 * e]
-        s = s + lvals[GEN ** (2 * e + 1)] * sym[2 * e + 1]
-    st = StackBuf(2)
-    blake2s(packed[0:2], packed[2:4], st, counter=64, final=1 // DA_CELL_BLOCKS)
+    s0 = 0
+    s1 = 0
+    s2 = 0
+    for e in unroll(0, DA_CELL):
+        k = 3 * e
+        sv = sym[e]
+        s0 += sv * lvals[GEN ** k]
+        s1 += sv * lvals[GEN ** (k + 1)]
+        s2 += sv * lvals[GEN ** (k + 2)]
+    st = StackBuf(4)
+    blake2s(sym[0:4], sym[4:8], st, counter=64, final=1 // DA_CELL_BLOCKS)
     for b in unroll(1, DA_CELL_BLOCKS):
-        nxt = StackBuf(2)
-        blake2s(packed[4 * b:4 * b + 2], packed[4 * b + 2:4 * b + 4], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // DA_CELL_BLOCKS)
+        nxt = StackBuf(4)
+        blake2s(sym[8 * b:8 * b + 4], sym[8 * b + 4:8 * b + 8], nxt, cv=st, counter=64 * (b + 1), final=(b + 1) // DA_CELL_BLOCKS)
         st = nxt
-    return st[0], st[1], s
+    return st, [s0, s1, s2]
 
 
 def da_levels(tree, n: Const, log_n: Const):
     # The internal levels of a Merkle tree whose leaves already sit at level 0 of
-    # `tree` (2 cells a node, level lvl at 4n - 4n//2**lvl). Returns the root pair.
+    # `tree` (4 words a node, level lvl at 8n - 8n//2**lvl). Returns the root.
     for lvl in unroll(0, log_n):
         for xp in mul_range(1, GEN ** (n // 2 ** (lvl + 1))):
-            a = tree * (GEN ** (4 * n - 4 * n // 2 ** lvl)) * (xp ** 4)
-            b = tree * (GEN ** (4 * n - 4 * n // 2 ** (lvl + 1))) * (xp * xp)
-            blake2s(a[0:2], a[2:4], b[0:2])
-    return tree[GEN ** (4 * n - 4)], tree[GEN ** (4 * n - 3)]
+            a = tree * GEN ** (8 * n - 8 * n // 2 ** lvl) * xp ** 8
+            b = tree * GEN ** (8 * n - 8 * n // 2 ** (lvl + 1)) * xp ** 4
+            blake2s(a[0:4], a[4:8], b[0:4])
+    root = 8 * n - 8
+    return tree[root:root + 4]
 
 
-def da_vector_dispatch(xb, h0, h1, counters):
-    out = StackBuf(3)
+def da_vector_dispatch(xb, h: StackBuf(4), counters):
+    out = StackBuf(4)
+    weights = StackBuf(1)
     if xb == GEN ** (DA_CELLS - 1):
-        a, b, weights = da_vector_cell(xb, h0, h1, counters, 1)
-        out[0] = a
-        out[1] = b
-        out[2] = weights
+        a, w = da_vector_cell(xb, h, counters, 1)
+        out[0:4] = a
+        weights[0] = w
     else:
-        a, b, weights = da_vector_cell(xb, h0, h1, counters, 0)
-        out[0] = a
-        out[1] = b
-        out[2] = weights
-    return out[0], out[1], out[2]
+        a, w = da_vector_cell(xb, h, counters, 0)
+        out[0:4] = a
+        weights[0] = w
+    return out, weights[0]
 
 
-def da_vector_cell(xb, h0, h1, counters, final: Const):
-    weights = StackBuf(DA_CELL)
-    hint_witness(weights[0:DA_CELL], "da_weights")
-    packed = StackBuf(3 * DA_CELL // 2)
-    # Two extension-field entries become three canonical 128-bit cells, without padding.
-    for p in unroll(0, DA_CELL // 2):
-        s = weights[2 * p]
-        t = weights[2 * p + 1]
-        slo = StackBuf(2)
-        tlo = StackBuf(2)
-        hint_f192_limbs(slo, s)
-        hint_f192_limbs(tlo, t)
-        packed[3 * p] = pack64x2(slo[0], slo[1])
-        packed[3 * p + 1] = pack64x2(((s + slo[0]) * Y_INV + slo[1]) * Y_INV, tlo[0])
-        packed[3 * p + 2] = pack64x2(tlo[1], ((t + tlo[0]) * Y_INV + tlo[1]) * Y_INV)
-    st = StackBuf(2)
-    st[0] = h0
-    st[1] = h1
+def da_vector_cell(xb, h: StackBuf(4), counters, final: Const):
+    weights = StackBuf(3 * DA_CELL)
+    hint_witness(weights, "da_weights")
+    st = h
     # Three power-of-two byte windows per cell keep counter offsets disjoint from the base.
     base = counters[xb ** 3]
     for w in unroll(0, 3):
         window = xb ** 3 * GEN ** w
         end = counters[window * GEN]
         for b in unroll(0, DA_CELL_BLOCKS):
-            out = StackBuf(2)
+            out = StackBuf(4)
             if const(b + 1 == DA_CELL_BLOCKS):
-                md = end
+                counter = end
             else:
-                md = base + const(64 * (b + 1))
+                counter = base + const(64 * (b + 1))
+            flags = 0
             if const(final == 1):
                 if const(w == 2):
                     if const(b + 1 == DA_CELL_BLOCKS):
-                        md = md + MD_FINAL
-            blake2s(packed[w * (DA_CELL // 2) + 4 * b:w * (DA_CELL // 2) + 4 * b + 2], packed[w * (DA_CELL // 2) + 4 * b + 2:w * (DA_CELL // 2) + 4 * b + 4], out, cv=st, md=md)
+                        flags = MD_FINAL
+            lo = w * DA_CELL + 8 * b
+            blake2s(weights[lo:lo + 4], weights[lo + 4:lo + 8], out, cv=st, md=[counter, flags])
             st = out
         base = end
     weights_ptr = addr(weights)
-    return st[0], st[1], weights_ptr
+    return st, weights_ptr
 
 # ================================ the aggregation node ==============================
 
 
 def da_list_digest(roots, n_g):
     # At most 16 roots: every BLAKE2s byte counter and final flag is constant.
-    a, b = match(log(n_g), range(0, DA_ROOT_COUNTS), lambda n: da_hash_roots(roots, n))
-    return a, b
+    digest = match(log(n_g), range(0, DA_ROOT_COUNTS), lambda n: da_hash_roots(roots, n))
+    return digest
 
 
 def da_hash_roots(roots, n: Const):
-    digest = StackBuf(2)
+    digest = StackBuf(4)
     if const(n == 0):
-        blake2s([0, 0], [0, 0], digest, counter=0, final=1)
+        blake2s([0, 0, 0, 0], [0, 0, 0, 0], digest, counter=0, final=1)
     else:
-        st = StackBuf(2)
-        st[0] = BLAKE2S_IV_0
-        st[1] = BLAKE2S_IV_1
-        for i in unroll(0, n):
-            claim = roots * GEN ** (4 * i)
-            out = StackBuf(2)
-            blake2s(claim[0:2], claim[2:4], out, cv=st, counter=64 * (i + 1), final=(i + 1) // n)
-            st = out
-        digest[0] = st[0]
-        digest[1] = st[1]
-    return digest[0], digest[1]
+        blake2s(roots[0:4], roots[4:8], digest, counter=64, final=1 // n)
+        for i in unroll(1, n):
+            claim = roots * GEN ** (8 * i)
+            out = StackBuf(4)
+            blake2s(claim[0:4], claim[4:8], out, cv=digest, counter=64 * (i + 1), final=(i + 1) // n)
+            digest = out
+    return digest
 
 
 def cover_da_root(roots, cover, n_slots_g, mark):
+    # Marks one DA slot and returns its eight words: the root, then the vector hash.
     index = hint_witness("da_index")
     assert log(index) < log(n_slots_g)
     cover[index] = mark
-    root = roots * (index ** 4)
-    return root[1], root[GEN], root[GEN ** 2], root[GEN ** 3]
+    return roots * index ** 8
 
 
 def main():
@@ -3249,8 +3247,8 @@ def main():
     #
     # so one range check per write keeps each writer inside its own region: that is
     # what makes the statement's split mean which scheme verified which key against
-    # which (epoch, message). An XMSS slot is two cells, a SPHINCS slot four: a key
-    # and the message that key signed. A DA root occupies two cells.
+    # which (epoch, message). An XMSS slot is four words, a SPHINCS slot eight: a key
+    # and the message that key signed. A DA root occupies eight words.
     meta = StackBuf(7)
     hint_witness(meta, "meta")  # every count in the exponent
     n_decl_g = meta[0]
@@ -3280,14 +3278,14 @@ def main():
     assert log(da_slots_g) < MAX_RECURSIONS * MAX_DA_ROOTS + 2
 
     # ---- the epoch groups: geometry pass ----
-    # Per group: its epoch, its two message cells, and its declared, duplicate and
+    # Per group: its epoch, its four message words, and its declared, duplicate and
     # raw-signature counts, each count bounded before it enters a product (up to
     # 2^16 factors of exponent < 2^17 stay far from the order 2^64 - 1, so nothing
     # wraps). Region bases and the three totals ride a stride-4 chain; the per-group
     # values land in heap buffers the later passes and the children's hinted group
     # maps read back at runtime.
     epochs = HeapBuf(n_epochs_g)
-    msgs = HeapBuf(n_epochs_g * n_epochs_g)
+    msgs = HeapBuf(n_epochs_g ** 4)
     group_n_keys = HeapBuf(n_epochs_g)
     group_n_dups = HeapBuf(n_epochs_g)
     group_n_raw = HeapBuf(n_epochs_g)
@@ -3298,28 +3296,27 @@ def main():
     geo[GEN] = 1
     geo[GEN ** 2] = 1
     for xe in mul_range(1, n_epochs_g):
-        grp = StackBuf(6)
-        hint_witness(grp, "group")  # epoch, msg_lo, msg_hi, n, n_dup, n_raw
-        assert log(grp[3]) < MAX_KEYS
-        assert log(grp[4]) < MAX_KEYS
+        grp = StackBuf(8)
+        hint_witness(grp, "group")  # epoch, message (four words), n, n_dup, n_raw
         assert log(grp[5]) < MAX_KEYS
+        assert log(grp[6]) < MAX_KEYS
+        assert log(grp[7]) < MAX_KEYS
         epochs[xe] = grp[0]
-        msg = msgs * (xe * xe)
-        msg[1] = grp[1]
-        msg[GEN] = grp[2]
-        group_n_keys[xe] = grp[3]
-        group_n_dups[xe] = grp[4]
-        group_n_raw[xe] = grp[5]
-        state = geo * (xe ** 4)
+        msg = msgs * xe ** 4
+        msg[0:4] = grp[1:5]
+        group_n_keys[xe] = grp[5]
+        group_n_dups[xe] = grp[6]
+        group_n_raw[xe] = grp[7]
+        state = geo * xe ** 4
         base = state[1]
         group_base[xe] = base
-        slots = grp[3] * grp[4]
+        slots = grp[5] * grp[6]
         group_slots[xe] = slots
-        nxt = geo * ((xe * GEN) ** 4)
+        nxt = geo * (xe * GEN) ** 4
         nxt[1] = base * slots
-        nxt[GEN] = state[GEN] * grp[3]
-        nxt[GEN ** 2] = state[GEN ** 2] * grp[5]
-    geo_end = geo * (n_epochs_g ** 4)
+        nxt[GEN] = state[GEN] * grp[5]
+        nxt[GEN ** 2] = state[GEN ** 2] * grp[7]
+    geo_end = geo * n_epochs_g ** 4
     xmss_slots_g = geo_end[1]
     n_raw_x_g = geo_end[GEN ** 2]
     sphincs_slots_g = n_sphincs_g * n_sdup_g
@@ -3332,21 +3329,20 @@ def main():
     # The proving environment (flock's R1CS and this bytecode) as one digest. It
     # rides the statement rather than the bytecode, so nothing here has to know its
     # own hash; the outer verifier pins it, and every child statement rebuilt below
-    # copies it, which is what keeps a whole tree on one bytecode.
-    fs_seed = StackBuf(2)
-    hint_witness(fs_seed, "fs_seed")
-    seed_0 = fs_seed[0]
-    seed_1 = fs_seed[1]
+    # copies it, which is what keeps a whole tree on one bytecode. It lives on the
+    # heap, where the loops over children can reach it.
+    seed = HeapBuf(4)
+    hint_witness(seed[0:4], "fs_seed")
 
     # ---- the signer set ----
     g_logs_pow2, g_squares = exponent_tables()
 
     # ---- data availability ----
-    da_roots = HeapBuf(da_slots_g ** 4)
+    da_roots = HeapBuf(da_slots_g ** 8)
     for xd in mul_range(1, da_slots_g):
-        root = da_roots * (xd ** 4)
-        hint_witness(root[0:4], "da_roots")
-    da_0, da_1 = da_list_digest(da_roots, n_da_g)
+        root = da_roots * xd ** 8
+        hint_witness(root[0:8], "da_roots")
+    da_digest = da_list_digest(da_roots, n_da_g)
     # One table per scheme, the XMSS one an epoch group at a time: each group its
     # declared list (strictly sorted, checked by the outer verifier, which holds it)
     # followed by its own duplicate slots. The coverage indices below run over one
@@ -3359,14 +3355,16 @@ def main():
     # prefix of another's and the digest binds its own lengths. `half` and `odd` are
     # hinted per group and pinned by half*half*odd == n with odd in {0, 1}, which
     # leaves half = n // 2 and odd = n % 2 as the only solution.
-    xmss_table = HeapBuf(xmss_slots_g * xmss_slots_g)
-    sphincs_table = HeapBuf(sphincs_slots_g ** 4)
+    xmss_table = HeapBuf(xmss_slots_g ** 4)
+    sphincs_table = HeapBuf(sphincs_slots_g ** 8)
     # The run the set's hash covers: both lengths and the SPHINCS list's digest
-    # in one block, then two a group. Eight cells a group, so a group's
+    # in one block, then two a group. Sixteen words a group, so a group's
     # header and its key digest are one block each.
-    signers_run = HeapBuf(n_decl_g ** 8 * GEN ** 4)
+    signers_run = HeapBuf(n_decl_g ** 16 * GEN ** 8)
     signers_run[1] = n_decl_g
-    signers_run[GEN] = n_sphincs_g
+    signers_run[GEN] = 0
+    signers_run[GEN ** 2] = n_sphincs_g
+    signers_run[GEN ** 3] = 0
     decl_keys = HeapBuf(n_decl_g * GEN)
     decl_keys[GEN ** 0] = 1
     for xe in mul_range(1, n_decl_g):
@@ -3378,38 +3376,33 @@ def main():
         assert log(halves[1]) < 2
         assert log(halves[0]) < MAX_KEYS
         assert halves[0] * halves[0] * halves[1] == n_keys
-        kd_0, kd_1 = key_list_digest(xmss_table * (base * base), halves[0], halves[1], n_keys, g_squares)
-        group_msg = msgs * (xe * xe)
-        slot = signers_run * (xe ** 8) * (GEN ** 4)
+        kd = key_list_digest(xmss_table * base ** 4, halves[0], halves[1], n_keys, g_squares)
+        group_msg = msgs * xe ** 4
+        slot = signers_run * xe ** 16 * GEN ** 8
         slot[1] = epochs[xe]
-        slot[GEN] = n_keys
-        slot[GEN ** 2] = group_msg[1]
-        slot[GEN ** 3] = group_msg[GEN]
-        slot[GEN ** 4] = kd_0
-        slot[GEN ** 5] = kd_1
-        slot[GEN ** 6] = 0
-        slot[GEN ** 7] = 0
+        slot[GEN] = 0
+        slot[GEN ** 2] = n_keys
+        slot[GEN ** 3] = 0
+        slot[4:8] = group_msg[0:4]
+        slot[8:12] = kd
+        slot[12:16] = [0, 0, 0, 0]
     # The duplicate slots ride the same table but outside the hashed prefix, past
     # each group's declared keys. Over the whole table: a dropped group has only these.
     for xe in mul_range(1, n_epochs_g):
         n_keys = group_n_keys[xe]
         base = group_base[xe]
-        dup_ptr = xmss_table * (base * base * n_keys * n_keys)
+        dup_ptr = xmss_table * (base * n_keys) ** 4
         for xd in mul_range(1, group_n_dups[xe]):
-            dup = dup_ptr * (xd * xd)
-            hint_witness(dup[0:2], "dup_pubkeys")
-    sp_0, sp_1 = sphincs_list_digest(sphincs_table, n_sphincs_g, g_squares)
-    signers_run[GEN ** 2] = sp_0
-    signers_run[GEN ** 3] = sp_1
+            dup = dup_ptr * xd ** 4
+            hint_witness(dup[0:4], "dup_pubkeys")
+    sp_digest = sphincs_list_digest(sphincs_table, n_sphincs_g, g_squares)
+    signers_run[4:8] = sp_digest
     # At least one published signature claim or DA root also ensures a nonempty coverage table.
     assert decl_keys[n_decl_g] * n_sphincs_g * n_da_g != 1
-    set_0, set_1 = signer_set_digest(signers_run, n_decl_g, g_squares)
-    signers_hash = HeapBuf(WORDS_PER_BLOCK)
-    signers_hash[1] = set_0
-    signers_hash[GEN] = set_1
+    signers_hash = signer_set_digest(signers_run, n_decl_g, g_squares)
     for xd in mul_range(1, n_sdup_g):
-        dup = sphincs_table * ((n_sphincs_g * xd) ** 4)
-        hint_witness(dup[0:4], "dup_sphincs")
+        dup = sphincs_table * (n_sphincs_g * xd) ** 8
+        hint_witness(dup[0:8], "dup_sphincs")
 
     # ---- coverage ----
     # Every one of the n_total slots is written exactly once: write-once memory
@@ -3418,25 +3411,25 @@ def main():
     # declared claim is covered by a direct check of its own kind or by a verified
     # child. Each writer is confined to its own region, including DA roots.
     # The raw XMSS walk runs one loop per epoch group, each signature verified
-    # against that group's tables (built here, only for a group that holds raw
+    # against that group's index words (built here, only for a group that holds raw
     # signatures); a stride-1 chain threads the running count across the groups.
     cover = HeapBuf(n_total_g)
     da_cover = cover * da_base_g
-    merkle_bits = HeapBuf(n_epochs_g ** MERKLE_BIT_CELLS)
-    tweak_tables = HeapBuf(n_epochs_g ** N_TWEAK_CELLS)
+    merkle_bits = HeapBuf(n_epochs_g ** LOG_LIFETIME)
+    index_tables = HeapBuf(n_epochs_g ** (LOG_LIFETIME + 1))
     raw_count = HeapBuf(n_epochs_g * GEN)
     raw_count[GEN ** 0] = 1
     for xe in mul_range(1, n_epochs_g):
         n_raw = group_n_raw[xe]
         prefix = raw_count[xe]
         if n_raw != 1:
-            tweak_table = tweak_tables * (xe ** N_TWEAK_CELLS)
-            group_bits = merkle_bits * (xe ** MERKLE_BIT_CELLS)
-            fill_xmss_epoch_tables(epochs[xe], group_bits, tweak_table)
+            index_table = index_tables * xe ** (LOG_LIFETIME + 1)
+            group_bits = merkle_bits * xe ** LOG_LIFETIME
+            fill_xmss_epoch_tables(epochs[xe], group_bits, index_table)
             slots = group_slots[xe]
             base = group_base[xe]
-            keys = xmss_table * (base * base)
-            group_msg = msgs * (xe * xe)
+            keys = xmss_table * base ** 4
+            group_msg = msgs * xe ** 4
             for xi in mul_range(1, n_raw):
                 idx = hint_witness("raw_index")
                 # A runtime bound, whose `n_total < 2^MIN_LOG_MEM` precondition is
@@ -3447,7 +3440,7 @@ def main():
                 # message) covers no other group's declared key.
                 assert log(idx) < log(slots)
                 cover[base * idx] = prefix * xi
-                verify_sig(group_msg, tweak_table, group_bits, keys * (idx * idx))
+                verify_sig(group_msg, index_table, group_bits, keys * idx ** 4)
             raw_count[xe * GEN] = prefix * n_raw
         else:
             raw_count[xe * GEN] = prefix
@@ -3455,28 +3448,26 @@ def main():
         off_hint = hint_witness("sp_raw_index")
         assert log(off_hint) < log(sphincs_slots_g)
         cover[xmss_slots_g * off_hint] = n_raw_x_g * xj
-        verify_sig_sphincs(sphincs_table * (off_hint ** 4))
+        verify_sig_sphincs(sphincs_table * off_hint ** 8)
 
     if n_direct_da_g == GEN:
-        root_0, root_1, vector_0, vector_1 = da_verify(g_squares)
-        expected_0, expected_1, expected_v0, expected_v1 = cover_da_root(da_roots, da_cover, da_slots_g, n_raw_x_g * n_raw_s_g)
-        assert root_0 == expected_0
-        assert root_1 == expected_1
-        assert vector_0 == expected_v0
-        assert vector_1 == expected_v1
+        da_root, da_vector = da_verify(g_squares)
+        expected = cover_da_root(da_roots, da_cover, da_slots_g, n_raw_x_g * n_raw_s_g)
+        expected[0:4] = da_root
+        expected[4:8] = da_vector
 
     # ---- children ----
-    child_pi = HeapBuf(n_children_g * n_children_g)
-    child_fresh = HeapBuf(n_children_g ** DEFER_SIZE)
-    child_carried = HeapBuf(n_children_g ** DEFER_STMT_CELLS)
+    child_pi = HeapBuf(n_children_g ** 4)
+    child_fresh = HeapBuf(n_children_g ** (3 * DEFER_SIZE))
+    child_carried = HeapBuf(n_children_g ** (3 * DEFER_STMT_CELLS))
     written = HeapBuf(n_children_g * GEN)  # loop-carried write count, one per child
     written[GEN ** 0] = n_raw_x_g * n_raw_s_g * n_direct_da_g
     for xc in mul_range(1, n_children_g):
         base = written[xc]
         # The child's two list lengths, then its groups, rebuilt into its signer-set
-        # chain by rebuild_child_groups: everything hinted there is pinned by the
-        # chain, which the child's statement digest carries, so a lie about any of
-        # it changes the public input its proof has to satisfy. Nothing demands a
+        # run by rebuild_child_groups: everything hinted there is pinned by the
+        # run's hash, which the child's statement digest carries, so a lie about any
+        # of it changes the public input its proof has to satisfy. Nothing demands a
         # mid-tree statement be canonical (sorted, distinct groups); it still binds
         # every claim to its (epoch, message), which is all the group map relies on.
         child_meta = StackBuf(2)
@@ -3485,65 +3476,63 @@ def main():
         nsub_s_g = child_meta[1]
         assert log(nsub_e_g) < MAX_EPOCHS + 1
         assert log(nsub_s_g) < MAX_KEYS
-        sub_run = HeapBuf(nsub_e_g ** 8 * GEN ** 4)
+        sub_run = HeapBuf(nsub_e_g ** 16 * GEN ** 8)
         sub_run[1] = nsub_e_g
-        sub_run[GEN] = nsub_s_g
+        sub_run[GEN] = 0
+        sub_run[GEN ** 2] = nsub_s_g
+        sub_run[GEN ** 3] = 0
         nsub_x_g = rebuild_child_groups(nsub_e_g, sub_run, base, epochs, msgs, group_base, group_slots, n_epochs_g, xmss_table, cover, g_squares)
         # Implied by the per-group bounds and the child's own n_total assert; stands
         # as documentation.
         assert log(nsub_x_g) < MAX_KEYS
         nsub_g = nsub_x_g * nsub_s_g
-        csp_0, csp_1 = child_sphincs_list_digest(sphincs_table, cover, base * nsub_x_g, xmss_slots_g, sphincs_slots_g, nsub_s_g, g_squares)
-        sub_run[GEN ** 2] = csp_0
-        sub_run[GEN ** 3] = csp_1
-        sub_set_0, sub_set_1 = signer_set_digest(sub_run, nsub_e_g, g_squares)
-        sub_hash = HeapBuf(WORDS_PER_BLOCK)
-        sub_hash[1] = sub_set_0
-        sub_hash[GEN] = sub_set_1
-        carried = child_carried * xc ** DEFER_STMT_CELLS
-        hint_witness(carried[0:DEFER_STMT_CELLS], "child_defer")
+        csp = child_sphincs_list_digest(sphincs_table, cover, base * nsub_x_g, xmss_slots_g, sphincs_slots_g, nsub_s_g, g_squares)
+        sub_run[4:8] = csp
+        sub_hash = signer_set_digest(sub_run, nsub_e_g, g_squares)
+        carried = child_carried * xc ** (3 * DEFER_STMT_CELLS)
+        hint_witness(carried[0:3 * DEFER_STMT_CELLS], "child_defer")
         nsub_da_g = hint_witness("child_da_count")
         assert log(nsub_da_g) < MAX_DA_ROOTS + 1
-        child_da = HeapBuf(nsub_da_g ** 4)
+        child_da = HeapBuf(nsub_da_g ** 8)
         for xd in mul_range(1, nsub_da_g):
-            root = child_da * (xd ** 4)
-            root_0, root_1, vector_0, vector_1 = cover_da_root(da_roots, da_cover, da_slots_g, base * nsub_g * xd)
-            root[1] = root_0
-            root[GEN] = root_1
-            root[GEN ** 2] = vector_0
-            root[GEN ** 3] = vector_1
-        child_da_0, child_da_1 = da_list_digest(child_da, nsub_da_g)
-        pi_0, pi_1 = statement_digest(seed_0, seed_1, sub_hash, child_da_0, child_da_1, carried)
-        pi = xc * xc
-        child_pi[pi] = pi_0
-        child_pi[pi * GEN] = pi_1
-        verify_sub(pi_0, pi_1, seed_0, seed_1, g_logs_pow2, g_squares, child_fresh * xc ** DEFER_SIZE)
+            covered = cover_da_root(da_roots, da_cover, da_slots_g, base * nsub_g * xd)
+            slot = child_da * xd ** 8
+            slot[0:8] = covered[0:8]
+        child_da_digest = da_list_digest(child_da, nsub_da_g)
+        pi = statement_digest(seed, sub_hash, child_da_digest, carried)
+        pi_slot = child_pi * xc ** 4
+        pi_slot[0:4] = pi
+        verify_sub(pi, seed, g_logs_pow2, g_squares, child_fresh * xc ** (3 * DEFER_SIZE))
         written[xc * GEN] = base * nsub_g * nsub_da_g
     assert written[n_children_g] == n_total_g
 
     # ---- this node's own deferred claims ----
-    defer_stmt = HeapBuf(DEFER_STMT_CELLS)
+    defer_stmt = HeapBuf(3 * DEFER_STMT_CELLS)
     if n_children_g == 1:
         # A leaf has nothing to batch, so it defers the three fixed polynomials at
         # the all-zeros point. Their values ride a hint and are checked nowhere
         # here: the outer verifier recomputes them and rebuilds the statement, so a
         # lie changes the public input rather than the claim.
-        leaf_values = StackBuf(3)
+        leaf_values = StackBuf(9)
         hint_witness(leaf_values, "leaf_defer")
         for k in unroll(0, BYTECODE_VARS):
-            defer_stmt[GEN ** k] = 0
-        defer_stmt[GEN ** DEFER_STMT_BC_VALUE] = leaf_values[0]
-        for k in unroll(0, 2 * K_LOG):
-            defer_stmt[GEN ** (DEFER_STMT_MAT_POINT + k)] = 0
-        defer_stmt[GEN ** DEFER_STMT_A_VALUE] = leaf_values[1]
-        defer_stmt[GEN ** DEFER_STMT_B_VALUE] = leaf_values[2]
+            c = 3 * k
+            defer_stmt[c:c + 3] = ZERO
+        k = 3 * DEFER_STMT_BC_VALUE
+        defer_stmt[k:k + 3] = leaf_values[0:3]
+        for j in unroll(0, 2 * K_LOG):
+            c = 3 * (DEFER_STMT_MAT_POINT + j)
+            defer_stmt[c:c + 3] = ZERO
+        k = 3 * DEFER_STMT_A_VALUE
+        defer_stmt[k:k + 3] = leaf_values[3:6]
+        k = 3 * DEFER_STMT_B_VALUE
+        defer_stmt[k:k + 3] = leaf_values[6:9]
     else:
         aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_stmt)
 
-    own_0, own_1 = statement_digest(seed_0, seed_1, signers_hash, da_0, da_1, defer_stmt)
-    pub_ptr = GEN ** 0
-    assert pub_ptr[1] == own_0
-    assert pub_ptr[GEN] == own_1
+    own = statement_digest(seed, signers_hash, da_digest, defer_stmt)
+    pub = GEN ** 0
+    pub[0:4] = own
     return
 
 
@@ -3558,160 +3547,171 @@ def aggregate_claims(n_children_g, child_pi, child_fresh, child_carried, defer_s
     # A carried claim is a plain point, so its weight is an eq product; a fresh one
     # carries flock's zerocheck/lincheck structure and keeps the succinct weight the
     # sub-verifier exported. That is the only asymmetry.
-    bc_msgs = HeapBuf(2 * BYTECODE_VARS)
-    hint_witness(bc_msgs[0:2 * BYTECODE_VARS], "bc_sumcheck_msgs")
-    mat_msgs = HeapBuf(4 * K_LOG)
-    hint_witness(mat_msgs[0:4 * K_LOG], "mat_sumcheck_msgs")
-    bytecode_star = hint_witness("bc_star_hint")
-    mat_stars = StackBuf(2)
-    hint_witness(mat_stars[0:2], "mat_stars_hint")
+    bc_msgs = HeapBuf(6 * BYTECODE_VARS)
+    hint_witness(bc_msgs[0:6 * BYTECODE_VARS], "bc_sumcheck_msgs")
+    mat_msgs = HeapBuf(12 * K_LOG)
+    hint_witness(mat_msgs[0:12 * K_LOG], "mat_sumcheck_msgs")
+    bytecode_star = StackBuf(3)
+    hint_witness(bytecode_star, "bc_star_hint")
+    mat_stars = StackBuf(6)
+    hint_witness(mat_stars, "mat_stars_hint")
 
     # ---- one transcript over every child's statement and both its claim sets ----
+    # A child's public input is observed as two scalars, a 128-bit half each.
     fresh_row = HeapBuf(n_children_g)
     carried_row = HeapBuf(n_children_g)
-    agg_fs = [AGG_SEED_0, AGG_SEED_1]
-    agg_fs = obs(agg_fs, n_children_g)
-    absorb = HeapBuf((n_children_g * GEN) ** PAIR_SLOTS)
-    absorb[GEN ** 0] = agg_fs[0]
-    absorb[GEN ** 1] = agg_fs[1]
+    agg_fs = obs([AGG_SEED_0, AGG_SEED_1, AGG_SEED_2, AGG_SEED_3], [n_children_g, 0, 0])
+    absorb = HeapBuf((n_children_g * GEN) ** FS_SLOTS)
+    absorb[0:4] = agg_fs
     for xc in mul_range(1, n_children_g):
-        row = absorb * xc ** PAIR_SLOTS
-        st = [row[GEN ** 0], row[GEN ** 1]]
-        pi = xc * xc
-        st = obs(st, child_pi[pi])
-        st = obs(st, child_pi[pi * GEN])
-        fresh = child_fresh * xc ** DEFER_SIZE
+        row = absorb * xc ** FS_SLOTS
+        pi = child_pi * xc ** 4
+        st = obs(row[0:4], [pi[1], pi[GEN], 0])
+        st = obs(st, [pi[GEN ** 2], pi[GEN ** 3], 0])
+        fresh = child_fresh * xc ** (3 * DEFER_SIZE)
         fresh_row[xc] = fresh
         for k in unroll(0, DEFER_SIZE):
-            st = obs(st, fresh[GEN ** k])
-        carried = child_carried * xc ** DEFER_STMT_CELLS
+            st = obs_at(st, fresh * GEN ** (3 * k))
+        carried = child_carried * xc ** (3 * DEFER_STMT_CELLS)
         carried_row[xc] = carried
         for k in unroll(0, DEFER_STMT_CELLS):
-            st = obs(st, carried[GEN ** k])
-        row[GEN ** PAIR_SLOTS] = st[0]
-        row[GEN ** (PAIR_SLOTS + 1)] = st[1]
-    absorbed = absorb * n_children_g ** PAIR_SLOTS
+            st = obs_at(st, carried * GEN ** (3 * k))
+        row[4:8] = st
+    absorbed = absorb * n_children_g ** FS_SLOTS
 
     # ---- bytecode batching sumcheck (BYTECODE_VARS variables, 2 per child) ----
     # Fresh and carried share the bytecode layout (point, then value), so the two
     # differ only in which buffer they come from.
-    lam_bc = HeapBuf(n_children_g * n_children_g)
+    lam_bc = HeapBuf(n_children_g ** 6)
     bc_chain = HeapBuf((n_children_g * GEN) ** ACC_SLOTS)
-    bc_chain[GEN ** ACC_FS0] = absorbed[GEN ** 0]
-    bc_chain[GEN ** ACC_FS1] = absorbed[GEN ** 1]
-    bc_chain[GEN ** ACC_VALUE] = 0
+    bc_chain[0:4] = absorbed[0:4]
+    bc_chain[ACC_VALUE:ACC_VALUE + 3] = ZERO
     for xc in mul_range(1, n_children_g):
         row = bc_chain * xc ** ACC_SLOTS
-        st = [row[GEN ** ACC_FS0], row[GEN ** ACC_FS1]]
-        st, lam_fresh = squeeze(st)
+        st, lam_fresh = squeeze(row[0:4])
         st, lam_carried = squeeze(st)
-        pair = xc * xc
-        lam_bc[pair] = lam_fresh
-        lam_bc[pair * GEN] = lam_carried
+        pair = lam_bc * xc ** 6
+        pair[0:3] = lam_fresh
+        pair[3:6] = lam_carried
         fresh = fresh_row[xc]
         carried = carried_row[xc]
         nxt = row * GEN ** ACC_SLOTS
-        nxt[GEN ** ACC_FS0] = st[0]
-        nxt[GEN ** ACC_FS1] = st[1]
-        nxt[GEN ** ACC_VALUE] = row[GEN ** ACC_VALUE] + lam_fresh * fresh[GEN ** FRESH_BC_VALUE] + lam_carried * carried[GEN ** DEFER_STMT_BC_VALUE]
+        nxt[0:4] = st
+        fb = 3 * FRESH_BC_VALUE
+        cb = 3 * DEFER_STMT_BC_VALUE
+        nxt[ACC_VALUE:ACC_VALUE + 3] = add192(row[ACC_VALUE:ACC_VALUE + 3], add192(mul192(lam_fresh, fresh[fb:fb + 3]), mul192(lam_carried, carried[cb:cb + 3])))
     bc_end = bc_chain * n_children_g ** ACC_SLOTS
-    agg_fs = [bc_end[GEN ** ACC_FS0], bc_end[GEN ** ACC_FS1]]
-    bc_running = bc_end[GEN ** ACC_VALUE]
-    bc_point = HeapBuf(BYTECODE_VARS)
-    fs0, fs1, bc_running = batch_sumcheck(agg_fs[0], agg_fs[1], bc_msgs, bc_running, bc_point, BYTECODE_VARS)
-    agg_fs = [fs0, fs1]
-    bc_wsum = HeapBuf(n_children_g * GEN)
-    bc_wsum[GEN ** 0] = 0
+    bc_point = HeapBuf(3 * BYTECODE_VARS)
+    agg_fs, bc_running = batch_sumcheck(bc_end[0:4], bc_msgs, bc_end[ACC_VALUE:ACC_VALUE + 3], bc_point, BYTECODE_VARS)
+    bc_wsum = HeapBuf((n_children_g * GEN) ** 3)
+    bc_wsum[0:3] = ZERO
     for xc in mul_range(1, n_children_g):
         fresh = fresh_row[xc]
         carried = carried_row[xc]
-        eq_fresh = GEN ** 0
-        eq_carried = GEN ** 0
+        eq_fresh = ONE
+        eq_carried = ONE
         for k in unroll(0, BYTECODE_VARS):
-            rk = bc_point[GEN ** k]
-            eq_fresh *= (1 + fresh[GEN ** k] + rk)
-            eq_carried *= (1 + carried[GEN ** k] + rk)
-        pair = xc * xc
-        bc_wsum[xc * GEN] = bc_wsum[xc] + lam_bc[pair] * eq_fresh + lam_bc[pair * GEN] * eq_carried
-    assert bc_running == bytecode_star * bc_wsum[n_children_g]
+            c = 3 * k
+            rk = bc_point[c:c + 3]
+            eq_fresh = mul192(eq_fresh, add192(ONE, add192(fresh[c:c + 3], rk)))
+            eq_carried = mul192(eq_carried, add192(ONE, add192(carried[c:c + 3], rk)))
+        pair = lam_bc * xc ** 6
+        x3 = xc ** 3
+        nxt = x3 * GEN ** 3
+        bc_wsum[nxt:nxt + 3] = add192(bc_wsum[x3:x3 + 3], add192(mul192(pair[0:3], eq_fresh), mul192(pair[3:6], eq_carried)))
+    ws_end = n_children_g ** 3
+    assert_eq192(bc_running, mul192(bytecode_star, bc_wsum[ws_end:ws_end + 3]))
 
     # ---- matrix batching sumcheck (2*K_LOG variables, 3 claims per child) ----
     # The fresh claim is one value against A0 weighted by lincheck's alpha plus B0;
     # a carried claim is one value per matrix at a shared point.
-    lam_mat = HeapBuf(n_children_g ** 3)
+    lam_mat = HeapBuf(n_children_g ** 9)
     mat_chain = HeapBuf((n_children_g * GEN) ** ACC_SLOTS)
-    mat_chain[GEN ** ACC_FS0] = agg_fs[0]
-    mat_chain[GEN ** ACC_FS1] = agg_fs[1]
-    mat_chain[GEN ** ACC_VALUE] = 0
+    mat_chain[0:4] = agg_fs
+    mat_chain[ACC_VALUE:ACC_VALUE + 3] = ZERO
     for xc in mul_range(1, n_children_g):
         row = mat_chain * xc ** ACC_SLOTS
-        st = [row[GEN ** ACC_FS0], row[GEN ** ACC_FS1]]
-        st, lam_fresh = squeeze(st)
+        st, lam_fresh = squeeze(row[0:4])
         st, lam_a = squeeze(st)
         st, lam_b = squeeze(st)
-        triple = xc ** 3
-        lam_mat[triple] = lam_fresh
-        lam_mat[triple * GEN] = lam_a
-        lam_mat[triple * GEN ** 2] = lam_b
+        triple = lam_mat * xc ** 9
+        triple[0:3] = lam_fresh
+        triple[3:6] = lam_a
+        triple[6:9] = lam_b
         fresh = fresh_row[xc]
         carried = carried_row[xc]
         nxt = row * GEN ** ACC_SLOTS
-        nxt[GEN ** ACC_FS0] = st[0]
-        nxt[GEN ** ACC_FS1] = st[1]
-        nxt[GEN ** ACC_VALUE] = row[GEN ** ACC_VALUE] + lam_fresh * fresh[GEN ** FRESH_MATPART] + lam_a * carried[GEN ** DEFER_STMT_A_VALUE] + lam_b * carried[GEN ** DEFER_STMT_B_VALUE]
+        nxt[0:4] = st
+        fm = 3 * FRESH_MATPART
+        ca = 3 * DEFER_STMT_A_VALUE
+        cb = 3 * DEFER_STMT_B_VALUE
+        nxt[ACC_VALUE:ACC_VALUE + 3] = add192(row[ACC_VALUE:ACC_VALUE + 3], add192(mul192(lam_fresh, fresh[fm:fm + 3]), add192(mul192(lam_a, carried[ca:ca + 3]), mul192(lam_b, carried[cb:cb + 3]))))
     mat_end = mat_chain * n_children_g ** ACC_SLOTS
-    agg_fs = [mat_end[GEN ** ACC_FS0], mat_end[GEN ** ACC_FS1]]
-    mat_running = mat_end[GEN ** ACC_VALUE]
-    mat_point = HeapBuf(2 * K_LOG)
-    fs0, fs1, mat_running = batch_sumcheck(agg_fs[0], agg_fs[1], mat_msgs, mat_running, mat_point, 2 * K_LOG)
-    agg_fs = [fs0, fs1]
+    mat_point = HeapBuf(3 * 2 * K_LOG)
+    agg_fs, mat_running = batch_sumcheck(mat_end[0:4], mat_msgs, mat_end[ACC_VALUE:ACC_VALUE + 3], mat_point, 2 * K_LOG)
     # Terminal weights. A fresh claim's is U_t(r*) = urow_t(r*_row) * wcol_t(r*_col),
     # with row_weight = (sum_i L_i(zz_t) eq(r*[0..6], i)) * eq(zchi_t, r*[6..K_LOG])
     # and col_weight = (sum_i z_partial_t[i] eq(r*[K_LOG..K_LOG+6], i)) * prod_j (1 +
     # lrr_j + r*[2*K_LOG-1-j]) (the lincheck binds column variables top-down). A
     # carried claim's is a plain eq over all 2*K_LOG coordinates.
-    eq_rows = HeapBuf(2 ** (K_SKIP + 1) - 2)
+    eq_rows = HeapBuf(3 * (2 ** (K_SKIP + 1) - 2))
     eqtree(mat_point, eq_rows, K_SKIP)
-    eq_cols = HeapBuf(2 ** (K_SKIP + 1) - 2)
-    eqtree(mat_point * GEN ** K_LOG, eq_cols, K_SKIP)
-    w_sums = HeapBuf((n_children_g * GEN) ** PAIR_SLOTS)  # the A and B weight sums
-    w_sums[GEN ** 0] = 0
-    w_sums[GEN ** 1] = 0
+    eq_cols = HeapBuf(3 * (2 ** (K_SKIP + 1) - 2))
+    eqtree(mat_point * GEN ** (3 * K_LOG), eq_cols, K_SKIP)
+    w_sums = HeapBuf((n_children_g * GEN) ** 6)  # the A and B weight sums
+    w_sums[0:3] = ZERO
+    w_sums[3:6] = ZERO
     for xc in mul_range(1, n_children_g):
         fresh = fresh_row[xc]
-        row_nums = StackBuf(2 ** K_SKIP)
-        lag64(fresh[GEN ** FRESH_Z_SKIP], row_nums, 0)
-        row_weight = 0
+        row_nums = StackBuf(3 * 2 ** K_SKIP)
+        zs = 3 * FRESH_Z_SKIP
+        lag64(fresh[zs:zs + 3], row_nums, 0)
+        row_weight = ZERO
         for i in unroll(0, 2 ** K_SKIP):
-            row_weight += row_nums[i] * eq_rows[GEN ** (2 ** K_SKIP - 2 + i)]
-        row_weight *= LAGRANGE_INV_S
+            k = 3 * i
+            e = 3 * (2 ** K_SKIP - 2 + i)
+            row_weight = add192(row_weight, mul192(row_nums[k:k + 3], eq_rows[e:e + 3]))
+        row_weight = mul192(row_weight, LAGRANGE_INV_S)
         for k in unroll(0, LINCHECK_ROUNDS):
-            row_weight *= (1 + fresh[GEN ** (FRESH_ZCHI + k)] + mat_point[GEN ** (K_SKIP + k)])
-        col_weight = 0
+            zc = 3 * (FRESH_ZCHI + k)
+            mp = 3 * (K_SKIP + k)
+            row_weight = mul192(row_weight, add192(ONE, add192(fresh[zc:zc + 3], mat_point[mp:mp + 3])))
+        col_weight = ZERO
         for i in unroll(0, 2 ** K_SKIP):
-            col_weight += fresh[GEN ** (FRESH_Z_PARTIAL + i)] * eq_cols[GEN ** (2 ** K_SKIP - 2 + i)]
+            zp = 3 * (FRESH_Z_PARTIAL + i)
+            e = 3 * (2 ** K_SKIP - 2 + i)
+            col_weight = add192(col_weight, mul192(fresh[zp:zp + 3], eq_cols[e:e + 3]))
         for j in unroll(0, LINCHECK_ROUNDS):
-            col_weight *= (1 + fresh[GEN ** (FRESH_LINCHECK_RS + j)] + mat_point[GEN ** (2 * K_LOG - 1 - j)])
-        weight_u = row_weight * col_weight
+            lr = 3 * (FRESH_LINCHECK_RS + j)
+            mp = 3 * (2 * K_LOG - 1 - j)
+            col_weight = mul192(col_weight, add192(ONE, add192(fresh[lr:lr + 3], mat_point[mp:mp + 3])))
+        weight_u = mul192(row_weight, col_weight)
         carried = carried_row[xc]
-        eq_carried = GEN ** 0
+        eq_carried = ONE
         for k in unroll(0, 2 * K_LOG):
-            eq_carried *= (1 + carried[GEN ** (DEFER_STMT_MAT_POINT + k)] + mat_point[GEN ** k])
-        triple = xc ** 3
-        lam_fresh = lam_mat[triple]
-        row = w_sums * xc ** PAIR_SLOTS
-        row[GEN ** PAIR_SLOTS] = row[GEN ** 0] + lam_fresh * weight_u + lam_mat[triple * GEN] * eq_carried
-        row[GEN ** (PAIR_SLOTS + 1)] = row[GEN ** 1] + lam_fresh * fresh[GEN ** FRESH_ALPHA] * weight_u + lam_mat[triple * GEN ** 2] * eq_carried
-    w_end = w_sums * n_children_g ** PAIR_SLOTS
-    a_star = mat_stars[0]
-    b_star = mat_stars[1]
-    assert mat_running == a_star * w_end[GEN ** 0] + b_star * w_end[GEN ** 1]
+            cp = 3 * (DEFER_STMT_MAT_POINT + k)
+            mp = 3 * k
+            eq_carried = mul192(eq_carried, add192(ONE, add192(carried[cp:cp + 3], mat_point[mp:mp + 3])))
+        triple = lam_mat * xc ** 9
+        lam_fresh = triple[0:3]
+        fa = 3 * FRESH_ALPHA
+        row = w_sums * xc ** 6
+        row[6:9] = add192(row[0:3], add192(mul192(lam_fresh, weight_u), mul192(triple[3:6], eq_carried)))
+        row[9:12] = add192(row[3:6], add192(mul192(mul192(lam_fresh, fresh[fa:fa + 3]), weight_u), mul192(triple[6:9], eq_carried)))
+    w_end = w_sums * n_children_g ** 6
+    assert_eq192(mat_running, add192(mul192(mat_stars[0:3], w_end[0:3]), mul192(mat_stars[3:6], w_end[3:6])))
 
     for k in unroll(0, BYTECODE_VARS):
-        defer_stmt[GEN ** k] = bc_point[GEN ** k]
-    defer_stmt[GEN ** DEFER_STMT_BC_VALUE] = bytecode_star
-    for k in unroll(0, 2 * K_LOG):
-        defer_stmt[GEN ** (DEFER_STMT_MAT_POINT + k)] = mat_point[GEN ** k]
-    defer_stmt[GEN ** DEFER_STMT_A_VALUE] = a_star
-    defer_stmt[GEN ** DEFER_STMT_B_VALUE] = b_star
+        c = 3 * k
+        defer_stmt[c:c + 3] = bc_point[c:c + 3]
+    k = 3 * DEFER_STMT_BC_VALUE
+    defer_stmt[k:k + 3] = bytecode_star
+    for j in unroll(0, 2 * K_LOG):
+        c = 3 * j
+        d = 3 * (DEFER_STMT_MAT_POINT + j)
+        defer_stmt[d:d + 3] = mat_point[c:c + 3]
+    k = 3 * DEFER_STMT_A_VALUE
+    defer_stmt[k:k + 3] = mat_stars[0:3]
+    k = 3 * DEFER_STMT_B_VALUE
+    defer_stmt[k:k + 3] = mat_stars[3:6]
     return

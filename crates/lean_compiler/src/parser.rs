@@ -92,7 +92,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
     // positions that demand a parse-time literal (`StackBuf`, `**`, `assert log
     // _ < _`).
     let mut consts: BTreeMap<String, String> = BTreeMap::new();
-    let mut const_arrays: Vec<(String, Vec<F192>)> = Vec::new();
+    let mut const_arrays: Vec<(String, Vec<F64>)> = Vec::new();
     let mut start = 0;
     while start < lines.len() {
         let Line {
@@ -145,38 +145,31 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
                 if p.is_empty() {
                     continue; // tolerate a trailing comma
                 }
-                let elem = if let Some(v) = parse_f192_const(p) {
-                    v.map_err(|e| at(format!("global constant array `{name}`: {e}")))?
-                } else {
-                    let n = eval_const_int(p).map_err(|e| at(format!("global constant array `{name}`: {e}")))?;
-                    F192::new(n as u64, (n >> 64) as u64, 0)
-                };
+                let n = eval_const_int(p).map_err(|e| at(format!("global constant array `{name}`: {e}")))?;
+                let elem = lit_field(n).ok_or_else(|| {
+                    at(format!(
+                        "global constant array `{name}`: {n} does not fit in a 64-bit word"
+                    ))
+                })?;
                 elems.push(elem);
             }
             const_arrays.push((name, elems));
         } else {
-            // A scalar constant: an `f192` literal, else a compile-time integer,
-            // else a field-valued expression.
+            // A scalar constant: an `f192` literal (a 192-bit run constant), else a
+            // compile-time integer, else a field-valued expression.
             if let Some(value) = parse_f192_const(rhs) {
-                let v = value.map_err(|e| at(format!("global constant `{name}`: {e}")))?;
-                consts.insert(name, format!("f192({},{},{})", v.c0, v.c1, v.c2));
+                let [c0, c1, c2] = value.map_err(|e| at(format!("global constant `{name}`: {e}")))?;
+                consts.insert(name, format!("f192({c0},{c1},{c2})"));
             } else if let Ok(value) = eval_const_int(rhs) {
                 consts.insert(name, value.to_string());
             } else {
                 // `GEN ** 2` and friends. The ISA is written in g-powers, so this
                 // is the natural spelling for a constant one, and it is not an
-                // integer expression. Rendered as a decimal wherever the value
-                // fits the low two limbs, so the constant still works in the
-                // positions that demand a literal rather than only as a value.
+                // integer expression. Rendered as a decimal, so the constant still
+                // works in the positions that demand a literal rather than only as a
+                // value.
                 let v = parse_const(rhs).map_err(|e| at(format!("global constant `{name}`: {e}")))?;
-                consts.insert(
-                    name,
-                    if v.c2 == 0 {
-                        (v.c0 as u128 | ((v.c1 as u128) << 64)).to_string()
-                    } else {
-                        format!("f192({},{},{})", v.c0, v.c1, v.c2)
-                    },
-                );
+                consts.insert(name, v.0.to_string());
             }
         }
         start += 1;
@@ -235,21 +228,43 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
 /// may not take one of these, since the builtin would win and the body would be
 /// dead code that still looked live.
 const BUILTINS: &[&str] = &[
+    "add192",
     "addr",
-    "assert_in_k",
+    "assert_eq192",
+    "assert_ne192",
     "blake2s",
     "const",
+    "div192",
     "f192",
     "hint_decompose_bits",
     "hint_decompose_bits_exponent",
-    "hint_f192_limbs",
     "hint_log2_ceil",
     "hint_witness",
     "len",
     "match",
+    "mul192",
     "HeapBuf",
     "StackBuf",
 ];
+
+/// The builtins whose value is a three-cell 192-bit run.
+pub(crate) const RUN192_BUILTINS: &[&str] = &["add192", "mul192", "div192", "f192"];
+
+/// A slice's length when its bounds say it without running anything: two
+/// compile-time integers, or the runtime shape `i:i + k`.
+pub(crate) fn slice_len(lo: &Expr, hi: &Expr) -> Option<u32> {
+    let k = match (const_int_expr(lo), const_int_expr(hi)) {
+        (Some(lo), Some(hi)) => hi.checked_sub(lo)?,
+        _ => match hi {
+            Expr::Add(a, b) => match (a.as_ref(), b.as_ref()) {
+                (Expr::Lit(k), other) | (other, Expr::Lit(k)) if other == lo => *k,
+                _ => return None,
+            },
+            _ => return None,
+        },
+    };
+    u32::try_from(k).ok()
+}
 
 /// Infer the compile-time representation of each tail-return value: a `StackBuf`
 /// carries its static size, a `HeapBuf` stays a one-cell pointer (its allocation
@@ -265,7 +280,18 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
         Ok(match e {
             Expr::Var(v) => locals.get(v.as_str()).copied().unwrap_or(Shape::Scalar),
             Expr::StackBuf(n) => Shape::StackBuf(fits(*n)?),
-            Expr::ListLit(es) => Shape::StackBuf(fits(es.len() as u64)?),
+            Expr::ListLit(es) => {
+                let mut cells = 0u64;
+                for el in es {
+                    cells += match expr_shape(el, locals, known)? {
+                        Shape::StackBuf(n) => u64::from(n),
+                        Shape::Scalar => 1,
+                    };
+                }
+                Shape::StackBuf(fits(cells)?)
+            }
+            Expr::Slice(_, lo, hi) => slice_len(lo, hi).map_or(Shape::Scalar, Shape::StackBuf),
+            Expr::Call(f, _) if RUN192_BUILTINS.contains(&f.as_str()) => Shape::StackBuf(3),
             Expr::Call(f, _) => known
                 .get(f)
                 .filter(|r| r.len() == 1)
@@ -314,6 +340,19 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                 }
                 StmtKind::LetHintWitness { name, .. } => {
                     locals.insert(name.as_str(), Shape::Scalar);
+                }
+                // Every arm returns the same shapes, so the first arm's callee names them.
+                StmtKind::Match { targets, arms, .. } => {
+                    let shapes = match arms.first() {
+                        Some(Expr::Call(f, _)) => known.get(f),
+                        _ => None,
+                    };
+                    for (i, target) in targets.iter().enumerate() {
+                        if let Expr::Var(name) = target {
+                            let shape = shapes.and_then(|s| s.get(i)).copied().unwrap_or(Shape::Scalar);
+                            locals.insert(name.as_str(), shape);
+                        }
+                    }
                 }
                 StmtKind::Return(es) => {
                     returns = es
@@ -739,13 +778,14 @@ impl Parser<'_> {
                 });
             }
             let rhs_expr = parse_expr(rhs)?;
-            // Indexed LHS `arr[idx] = value` is a heap store.
+            // Indexed LHS `arr[idx] = value` is a store, and a sliced one
+            // `arr[lo:hi] = value` a run store.
             if lhs.trim_end().ends_with(']') {
-                let lhs = lhs.trim();
-                let open = lhs.find('[').ok_or("malformed store target")?;
-                let arr = parse_expr(&lhs[..open])?;
-                let idx = parse_expr(&lhs[open + 1..lhs.len() - 1])?;
-                return Ok(StmtKind::Store(arr, idx, rhs_expr));
+                return match parse_expr(lhs)? {
+                    Expr::Index(arr, idx) => Ok(StmtKind::Store(*arr, *idx, rhs_expr)),
+                    target @ Expr::Slice(..) => Ok(StmtKind::StoreRun(target, rhs_expr)),
+                    other => Err(format!("malformed store target `{other:?}`")),
+                };
             }
             let targets = split_top(lhs, ',');
             if targets.len() == 1 {

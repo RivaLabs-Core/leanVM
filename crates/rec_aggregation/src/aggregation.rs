@@ -155,62 +155,43 @@ const _: () = assert!(sphincs::CHAIN_LEN * sphincs::V < 1 << 32);
 const _: () = assert!(sphincs::A <= 32 && sphincs::HEIGHTS[0] <= 32);
 
 /// A count as the guest carries it: in the exponent, `g^n`.
-fn count(n: usize) -> F192 {
-    F192::new(g_pow(n).0, 0, 0)
-}
-
-/// A field element as the decimal `u128` literal the zkDSL parser accepts.
-fn dsl_u128(value: F192) -> u128 {
-    assert_eq!(value.c2, 0, "u128 DSL literal cannot encode the top F192 limb");
-    (value.c0 as u128) | ((value.c1 as u128) << 64)
+fn count(n: usize) -> F64 {
+    g_pow(n)
 }
 
 fn f192_literal(f: F192) -> String {
     format!("f192({},{},{})", f.c0, f.c1, f.c2)
 }
 
-/// Pack the Fiat-Shamir state's four K lanes as two canonical 128-bit VM cells.
-fn pack_state(state: [F64; 4]) -> [F192; 2] {
-    [
-        F192::new(state[0].0, state[1].0, 0),
-        F192::new(state[2].0, state[3].0, 0),
-    ]
+/// Field elements as the words the guest holds them in, three limbs each.
+fn limbs(values: &[F192]) -> Vec<F64> {
+    values.iter().flat_map(|v| [F64(v.c0), F64(v.c1), F64(v.c2)]).collect()
 }
 
-/// Pack a 32-byte Merkle node as the same canonical 128+128 cell pair used by
-/// the VM's sole BLAKE2s representation.
-fn pack_hash_state(hash: &[u8; 32]) -> [F192; 2] {
-    let word_at = |offset: usize| u64::from_le_bytes(hash[offset..offset + 8].try_into().unwrap());
-    [
-        F192::new(word_at(0), word_at(8), 0),
-        F192::new(word_at(16), word_at(24), 0),
-    ]
+/// A byte string of whole words as its little-endian words, the order a BLAKE2s
+/// block or digest occupies memory in.
+fn words(bytes: &[u8]) -> Vec<F64> {
+    let (chunks, rest) = bytes.as_chunks::<8>();
+    assert!(rest.is_empty(), "a byte string of whole words");
+    chunks.iter().map(|w| F64(u64::from_le_bytes(*w))).collect()
 }
 
-/// A 16-byte native value as one canonical 128-bit cell.
-fn pack_16_bytes(bytes: &[u8]) -> F192 {
-    let word_at = |offset: usize| u64::from_le_bytes(bytes[offset..offset + 8].try_into().unwrap());
-    F192::new(word_at(0), word_at(8), 0)
+/// A 32-byte digest as its four words.
+fn digest_words(hash: &[u8; 32]) -> [F64; 4] {
+    words(hash).try_into().expect("four words")
 }
 
-/// A public key as the two cells the guest hashes and `verify_sig` reads: the
+/// A public key as the four words the guest hashes and `verify_sig` reads: the
 /// root then the public parameter. Both schemes lay a key out the same way, and
 /// the statement keeps them in separate lists rather than telling them apart by
 /// their bytes.
-fn key_cells(pk: &XmssPublicKey) -> [F192; 2] {
-    [pack_16_bytes(&pk.merkle_root), pack_16_bytes(&pk.public_param)]
+fn key_words(pk: &XmssPublicKey) -> Vec<F64> {
+    [words(&pk.merkle_root), words(&pk.public_param)].concat()
 }
 
-/// A run of canonical 128-bit cells as the byte string BLAKE2s hashes: each cell
-/// is its two low limbs, little-endian, which is the order the VM's compression
-/// reads a memory cell in.
-fn cell_bytes(cells: impl IntoIterator<Item = F192>) -> Vec<u8> {
-    let mut bytes = Vec::new();
-    for cell in cells {
-        bytes.extend_from_slice(&cell.c0.to_le_bytes());
-        bytes.extend_from_slice(&cell.c1.to_le_bytes());
-    }
-    bytes
+/// A run of words as the byte string BLAKE2s hashes over it.
+fn word_bytes(words: impl IntoIterator<Item = F64>) -> Vec<u8> {
+    words.into_iter().flat_map(|w| w.0.to_le_bytes()).collect()
 }
 
 /// How the guest splits a list's `n - 1` non-final blocks: whole windows, then the
@@ -218,7 +199,7 @@ fn cell_bytes(cells: impl IntoIterator<Item = F192>) -> Vec<u8> {
 /// agree with them (`sphincs_list_digest` in the guest). A list is never empty
 /// here: a group holds at least one key, and both claim lists are guarded at the
 /// call, since the guest hashes an empty one without a split at all.
-fn signers_split(blocks: usize) -> Vec<F192> {
+fn signers_split(blocks: usize) -> Vec<F64> {
     assert!(blocks > 0, "an empty list has no window split");
     let leading = blocks - 1;
     vec![count(leading / SIGNERS_WINDOW), count(leading % SIGNERS_WINDOW)]
@@ -227,47 +208,43 @@ fn signers_split(blocks: usize) -> Vec<F192> {
 /// One epoch group's declared keys under plain BLAKE2s: 32 bytes a key, so the
 /// hashed string is `32n` bytes and only its last block is partial. The guest
 /// computes this same digest a window of blocks at a time (`key_list_digest`).
-fn key_list_digest(keys: &[XmssPublicKey]) -> [F192; 2] {
-    let cells = keys.iter().flat_map(key_cells);
-    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
+fn key_list_digest(keys: &[XmssPublicKey]) -> [F64; 4] {
+    digest_words(&primitives::hash::hash(&word_bytes(keys.iter().flat_map(key_words))))
 }
 
 /// The declared SPHINCS claims under plain BLAKE2s: one 64-byte block per claim,
 /// its key then the message it signed, so the hashed string is exactly `64n` bytes
 /// and an empty list hashes the empty string. The guest computes this same digest a
 /// window of blocks at a time (`sphincs_list_digest`).
-fn sphincs_list_digest(signers: &[SphincsClaim]) -> [F192; 2] {
-    let cells = signers.iter().flat_map(sphincs_signer_cells);
-    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
+fn sphincs_list_digest(signers: &[SphincsClaim]) -> [F64; 4] {
+    digest_words(&primitives::hash::hash(&word_bytes(
+        signers.iter().flat_map(sphincs_signer_words),
+    )))
 }
 
-/// A SPHINCS signer as the four cells the guest hashes and `verify_sig_sphincs`
+/// A SPHINCS signer as the eight words the guest hashes and `verify_sig_sphincs`
 /// reads: the key, then the message that key signed.
-fn sphincs_signer_cells((pk, message): &SphincsClaim) -> [F192; 4] {
-    [
-        pack_16_bytes(&pk.root),
-        pack_16_bytes(&pk.public_param),
-        pack_16_bytes(&message[..16]),
-        pack_16_bytes(&message[16..]),
-    ]
+fn sphincs_signer_words((pk, message): &SphincsClaim) -> Vec<F64> {
+    [words(&pk.root), words(&pk.public_param), words(message)].concat()
 }
 
-/// One XMSS tweak as the cell the guest adds into: `xmss::make_tweak`'s own
-/// output, packed. The guest holds no byte layout of its own, building a tweak
-/// as this constant half plus one [`tweak_index_weight`] per set epoch bit, so a
-/// field that moves in `make_tweak` moves both halves together.
-fn tweak_cell(tweak_type: u8, sub_position: u32) -> F192 {
-    pack_16_bytes(&xmss::make_tweak(tweak_type, sub_position, 0))
+/// The first word of an XMSS tweak, `xmss::make_tweak`'s own output: its type and
+/// sub-position. The guest holds no byte layout of its own, building a tweak from
+/// these words, a sub-position unit and one [`tweak_index_weight`] per set epoch
+/// bit, so a field that moves in `make_tweak` moves both sides together.
+fn tweak_word(tweak_type: u8, sub_position: u32) -> F64 {
+    words(&xmss::make_tweak(tweak_type, sub_position, 0))[0]
 }
 
-/// What bit `b` of the epoch weighs in a tweak's index field, so an index is its
+/// What bit `b` of the epoch weighs in a tweak's second word, so an index is its
 /// set bits summed. The one property of the layout this assumes is that the
 /// index field is linear in the index. Subtract the constant protocol prefix.
-fn tweak_index_weight(b: usize) -> F192 {
-    pack_16_bytes(&xmss::make_tweak(0, 0, 1 << b)) + pack_16_bytes(&xmss::make_tweak(0, 0, 0))
+fn tweak_index_weight(b: usize) -> F64 {
+    let second = |index: u32| words(&xmss::make_tweak(0, 0, index))[1];
+    second(1 << b) + second(0)
 }
 /// The signer-set digest: plain BLAKE2s of one byte string, laid out in whole
-/// 64-byte blocks so the guest can absorb it four cells at a time
+/// 64-byte blocks so the guest can absorb it eight words at a time
 /// (`signer_set_digest` there). The first block carries both list lengths and the
 /// SPHINCS list's own digest, followed by two blocks a group: its `(epoch,
 /// count, message)`, then its key list's digest. Leading with both lengths makes
@@ -275,25 +252,17 @@ fn tweak_index_weight(b: usize) -> F192 {
 /// digest binds its own lengths, the groups' epochs and messages, and every split.
 /// The two list digests carry the bulk, each a stock hash of its own
 /// ([`key_list_digest`], [`sphincs_list_digest`]).
-fn signers_hash(xmss_signers: &[XmssClaimGroup], sphincs_signers: &[SphincsClaim]) -> [F192; 2] {
-    let sphincs = sphincs_list_digest(sphincs_signers);
-    let mut cells = vec![
-        count(xmss_signers.len()),
-        count(sphincs_signers.len()),
-        sphincs[0],
-        sphincs[1],
-    ];
+fn signers_hash(xmss_signers: &[XmssClaimGroup], sphincs_signers: &[SphincsClaim]) -> [F64; 4] {
+    let zero = F64::ZERO;
+    let mut run = vec![count(xmss_signers.len()), zero, count(sphincs_signers.len()), zero];
+    run.extend(sphincs_list_digest(sphincs_signers));
     for XmssClaimGroup { epoch, message, keys } in xmss_signers {
-        cells.extend([
-            F192::new(*epoch as u64, 0, 0),
-            count(keys.len()),
-            pack_16_bytes(&message[..16]),
-            pack_16_bytes(&message[16..]),
-        ]);
-        let keys = key_list_digest(keys);
-        cells.extend([keys[0], keys[1], F192::ZERO, F192::ZERO]);
+        run.extend([F64(*epoch as u64), zero, count(keys.len()), zero]);
+        run.extend(words(message));
+        run.extend(key_list_digest(keys));
+        run.extend([zero; 4]);
     }
-    pack_hash_state(&primitives::hash::hash(&cell_bytes(cells)))
+    digest_words(&primitives::hash::hash(&word_bytes(run)))
 }
 
 /// The claims on the three fixed polynomials that a node defers rather than
@@ -369,20 +338,13 @@ impl DeferredClaim {
     }
 }
 
-/// The statement's fixed header, ahead of the deferred cells: the seed, the
+/// The statement's fixed header, ahead of the deferred elements: the seed, the
 /// signer-set digest (which itself binds the epoch groups and every count), and
-/// the DA root-list digest. Fed to the guest as `STMT_HEADER`, so the two cannot drift.
-const STATEMENT_HEADER: usize = 6;
+/// the DA root-list digest, four words each. Fed to the guest as `STMT_HEADER`, so
+/// the two cannot drift.
+const STATEMENT_HEADER: usize = 12;
 
-/// A plain BLAKE2s over a lane stream, zero-filled to a whole 64-byte block:
-/// what the guest gets by streaming four 128-bit cells a block.
-fn lane_hash(lanes: impl Iterator<Item = u64>) -> [F192; 2] {
-    let mut bytes: Vec<u8> = lanes.flat_map(u64::to_le_bytes).collect();
-    bytes.resize(bytes.len().next_multiple_of(64), 0);
-    pack_hash_state(&primitives::hash::hash(&bytes))
-}
-
-/// A node's public statement, hashed to the two words the VM publishes. The
+/// A node's public statement, hashed to the four words the VM publishes. The
 /// guest's `statement_digest` computes exactly this, both for itself and when it
 /// rebuilds a child's, which is what forces a whole tree onto one bytecode and
 /// each child's `(epoch, message)` groups, bound by the signer-set digest,
@@ -391,37 +353,22 @@ fn lane_hash(lanes: impl Iterator<Item = u64>) -> [F192; 2] {
 /// Fixed-length preimage, so a plain BLAKE2s, with no domain tag of its own: the
 /// header leads with the environment digest, which binds this bytecode and
 /// flock's R1CS and so already separates the preimage from every other use of
-/// BLAKE2s here. The header is hashed as the canonical cells it already is (two
-/// lanes each, whence the assert, the guest being unable to hash a third), then
-/// all three lanes of each deferred cell.
-fn statement_digest(signers_hash: [F192; 2], da_digest: [u8; 32], defer: &DeferredClaim) -> [F192; 2] {
+/// BLAKE2s here. The header's words, then all three limbs of each deferred
+/// element, zero-filled to a whole block.
+fn statement_digest(signers_hash: [F64; 4], da_digest: [u8; 32], defer: &DeferredClaim) -> [F64; 4] {
     let seed = lean_vm::cpu::fs_seed(unified_guest());
-    let da_digest = pack_hash_state(&da_digest);
-    let header = [
-        seed[0],
-        seed[1],
-        signers_hash[0],
-        signers_hash[1],
-        da_digest[0],
-        da_digest[1],
-    ];
+    let header = [seed, signers_hash, digest_words(&da_digest)].concat();
     assert_eq!(header.len(), STATEMENT_HEADER);
-    let mut cells = defer.cells();
-    if !cells.len().is_multiple_of(2) {
-        cells.push(F192::ZERO); // the guest pairs the odd cell with a zero scalar
-    }
-    let head = header.iter().flat_map(|x| {
-        assert_eq!(x.c2, 0, "a header value is a canonical cell");
-        [x.c0, x.c1]
-    });
-    lane_hash(head.chain(cells.iter().flat_map(|x| [x.c0, x.c1, x.c2])))
+    let mut bytes = word_bytes(header.into_iter().chain(limbs(&defer.cells())));
+    bytes.resize(bytes.len().next_multiple_of(64), 0);
+    digest_words(&primitives::hash::hash(&bytes))
 }
 
 /// The deferred-claim data the guest binds to the outer public input: the outer
 /// verifier checks each claim natively (`doc/leanvm/main.tex` §Deferred evaluation claims;
 /// n_rec = 1 forwards fresh claims without batching).
 struct DeferredSubproof {
-    public_input: [F192; 2],
+    public_input: [F64; 4],
     bytecode_row_point: Vec<F192>,
     bytecode_selector_point: Vec<F192>,
     bytecode_value: F192,
@@ -628,21 +575,20 @@ fn check_da_roots(roots: &[[u8; 32]]) -> Result<(), AggregateVerifyError> {
     Ok(())
 }
 
-fn da_claim_cells(root: &[u8; 32]) -> Vec<F192> {
+fn da_claim_words(root: &[u8; 32]) -> Vec<F64> {
     let vector_hash = lean_da::vector_digest(&lean_da::membership_vector(root));
-    [pack_hash_state(root), pack_hash_state(&vector_hash)].concat()
+    [words(root), words(&vector_hash)].concat()
 }
 
 fn da_list_digest(roots: &[[u8; 32]]) -> [u8; 32] {
     // Recompute vector hashes from the roots, including when verifying a received proof.
     // Trusting prover-supplied hashes would let zero weights certify any matrix.
-    let cells = roots.iter().flat_map(da_claim_cells);
-    primitives::hash::hash(&cell_bytes(cells))
+    primitives::hash::hash(&word_bytes(roots.iter().flat_map(da_claim_words)))
 }
 
 impl EthereumProof {
     /// This aggregate's own public statement, as the VM publishes it.
-    fn public_input(&self) -> [F192; 2] {
+    fn public_input(&self) -> [F64; 4] {
         statement_digest(
             signers_hash(&self.xmss_signers, &self.sphincs_signers),
             self.da_commitments_digest(),
@@ -1011,10 +957,12 @@ fn aggregate_deferred_claims(
     let klog = flock::hash::K_LOG;
 
     let mut transcript = FiatShamirState::from_label(RECURSION_AGG_LABEL);
-    transcript.observe(count(child_count));
+    transcript.observe(count(child_count).into());
     for (subproof, carried) in subproofs.iter().zip(carried_claims) {
-        transcript.observe(subproof.public_input[0]);
-        transcript.observe(subproof.public_input[1]);
+        // A public input is observed as two scalars, one 128-bit half each.
+        let pi = subproof.public_input;
+        transcript.observe(F192::new(pi[0].0, pi[1].0, 0));
+        transcript.observe(F192::new(pi[2].0, pi[3].0, 0));
         for &value in &subproof.bytecode_row_point {
             transcript.observe(value);
         }
@@ -1272,10 +1220,10 @@ fn aggregate_deferred_claims(
 
     drop(_span);
     let hints = vec![
-        ("bc_sumcheck_msgs", bscr),
-        ("mat_sumcheck_msgs", mscr),
-        ("bc_star_hint", vec![v_bc]),
-        ("mat_stars_hint", vec![v_a, v_b]),
+        ("bc_sumcheck_msgs", limbs(&bscr)),
+        ("mat_sumcheck_msgs", limbs(&mscr)),
+        ("bc_star_hint", limbs(&[v_bc])),
+        ("mat_stars_hint", limbs(&[v_a, v_b])),
     ];
     (
         hints,
@@ -1332,8 +1280,8 @@ enum ClaimSite {
     /// A table column; `is_virtual` marks the q_flock-backed value
     /// columns, whose claim is a strided slot rather than a plain column.
     TableColumn { column: usize, is_virtual: bool },
-    /// One of the three PI memory limbs (MEM_LO, MEM_HI, MEM_TOP).
-    MemoryLimb { column: usize },
+    /// The public-input binding claim on `MEM`.
+    PublicInput { column: usize },
 }
 
 /// The guest's `COORD_KIND_*` code for a coordinate (`guests/lean_ethereum.py`),
@@ -1352,11 +1300,11 @@ fn coord_kind(c: &Coord) -> usize {
 
 /// The `K` scalar a coordinate carries beside its columns: the constant itself,
 /// or the `g^k` a `GCol`/`Prod` scales by. Zero for every other kind.
-fn coord_scale(c: &Coord) -> F192 {
+fn coord_scale(c: &Coord) -> F64 {
     match c {
-        Coord::Const(v) => F192::new(v.0, 0, 0),
-        Coord::GCol(_, k) | Coord::Prod(_, _, k) => F192::new(g_pow(*k as usize).0, 0, 0),
-        _ => F192::ZERO,
+        Coord::Const(v) => *v,
+        Coord::GCol(_, k) | Coord::Prod(_, _, k) => g_pow(*k as usize),
+        _ => F64::ZERO,
     }
 }
 
@@ -1378,7 +1326,7 @@ fn push_coord_terms(c: &Coord, base: usize, terms: &mut Vec<Term>) {
     };
     terms.push(Term {
         kind: coord_kind(c),
-        constant: dsl_u128(coord_scale(c)),
+        constant: coord_scale(c).0,
         column_a,
         column_b,
     });
@@ -1386,7 +1334,7 @@ fn push_coord_terms(c: &Coord, base: usize, terms: &mut Vec<Term>) {
 
 /// Visit the claim pool in the exact order the guest indexes it: the framework
 /// bus claims (deduped by `(column, kappa)`, as `leaf.rs` pools them), then every
-/// table's committed columns, then the PI memory triple. The placeholder map's
+/// table's committed columns, then the PI memory claim. The placeholder map's
 /// claim descriptors follow this order.
 fn walk_claims(layout: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(ClaimSite)) {
     let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
@@ -1427,9 +1375,9 @@ fn walk_claims(layout: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(
             });
         }
     }
-    for &column in &[lean_vm::cpu::MEM_LO, lean_vm::cpu::MEM_HI, lean_vm::cpu::MEM_TOP] {
-        visit(ClaimSite::MemoryLimb { column });
-    }
+    visit(ClaimSite::PublicInput {
+        column: lean_vm::cpu::MEM,
+    });
 }
 
 /// Config + hints for the recursion guest (`guests/lean_ethereum.py`), built
@@ -1437,7 +1385,7 @@ fn walk_claims(layout: &lean_vm::cpu::Layout, kbc: usize, mut visit: impl FnMut(
 /// `cpu::verify` run (zero hand-mirroring drift).
 fn gen_verify(
     program: &Program,
-    public_input: [F192; 2],
+    public_input: [F64; 4],
     summary: lean_vm::cpu::VerifySummary,
 ) -> Result<(SubHints, DeferredSubproof), AggregationError> {
     let proof_stream = &summary.raw.stream;
@@ -1451,7 +1399,7 @@ fn gen_verify(
     let side_layouts = sides.map(lean_vm::leaf::layout);
     // Fixed capacities: every buffer/stride placeholder is a global cap so
     // the placeholder map is SHAPE-INDEPENDENT (the definition of generic).
-    assert!(side_layouts.iter().all(|side| side.mu <= MU_CAP) && proof_stream.len() <= STREAM_CAP);
+    assert!(side_layouts.iter().all(|side| side.mu <= MU_CAP) && 3 * proof_stream.len() <= STREAM_CAP);
     // The guest holds one opening arm per candidate committed size, so a child
     // outside that window has no arm to dispatch to. `min_log_committed` keeps
     // every aggregate above the low end, leaving only the ceiling reachable.
@@ -1521,20 +1469,19 @@ fn gen_verify(
     // polynomial at (ζ_lo, α⃗), the slot coordinates of the claim's own point being
     // the fingerprint challenges (§sec:e2e-bc).
     let bytecode_value = summary.bytecode_claim.value;
-    let bcv = vec![bytecode_value];
 
     // ---- per-sub HINT data (the placeholder map is built once, elsewhere) ----
     // Per side, the packing order read straight off `leaf::layout`'s offsets:
     // sort_order[side_base + rank] = g^{side-local index of the rank-r block}.
     // The guest only perm-checks it and derives offsets; any aligned tiling is
     // sound, so this canonical order just has to match the committed leaf.
-    let mut sort_order: Vec<F192> = Vec::new();
+    let mut sort_order: Vec<F64> = Vec::new();
     let mut gbase = 0usize;
     for (s, blocks) in sides.iter().enumerate() {
         let mut order: Vec<usize> = (0..blocks.len()).collect();
         order.sort_by_key(|&i| side_layouts[s].offsets[i]);
         for &i in &order {
-            sort_order.push(F192::new(g_pow(gbase + i).0, 0, 0)); // g^{global block index}
+            sort_order.push(g_pow(gbase + i)); // g^{global block index}
         }
         gbase += blocks.len();
     }
@@ -1554,10 +1501,7 @@ fn gen_verify(
     }
     let mut col_order = committed_globals;
     col_order.sort_by_key(|&global| layout.placements[global].offset);
-    let col_sort_order: Vec<F192> = col_order
-        .iter()
-        .map(|&global| F192::new(g_pow(compact_col[global]).0, 0, 0))
-        .collect();
+    let col_sort_order: Vec<F64> = col_order.iter().map(|&global| g_pow(compact_col[global])).collect();
 
     // ---- Phase E2 hints (the stacked WHIR opening) ----
     // Share the upper Merkle tree across queries. Unknown, unused subtrees stay
@@ -1570,12 +1514,9 @@ fn gen_verify(
         let n = 1 << cap_depth;
         let path_depth = depth - cap_depth;
         let mut nodes = vec![[0u8; 32]; 2 * n];
-        let mut active = vec![F192::ZERO; n];
+        let mut active = vec![F64::ZERO; n];
         for opening in openings.by_ref().take(queries) {
-            query_hints.push((
-                "merkle_leaf_rows",
-                opening.leaf_data.iter().map(|x| F192::from(*x)).collect(),
-            ));
+            query_hints.push(("merkle_leaf_rows", opening.leaf_data.clone()));
             let mut path_children = Vec::with_capacity(4 * path_depth);
             let bytes: Vec<_> = opening.leaf_data.iter().flat_map(|x| x.0.to_le_bytes()).collect();
             let mut node = pcs::merkle::hash_leaf(&bytes);
@@ -1584,7 +1525,7 @@ fn gen_verify(
                 if height >= path_depth {
                     nodes[index] = node;
                     nodes[index ^ 1] = *sibling;
-                    active[index >> 1] = F192::ONE;
+                    active[index >> 1] = F64::ONE;
                 }
                 let (left, right) = if index & 1 == 0 {
                     (&node, sibling)
@@ -1592,8 +1533,8 @@ fn gen_verify(
                     (sibling, &node)
                 };
                 if height < path_depth {
-                    path_children.extend(pack_hash_state(left));
-                    path_children.extend(pack_hash_state(right));
+                    path_children.extend(digest_words(left));
+                    path_children.extend(digest_words(right));
                 }
                 node = pcs::merkle::hash_pair(left, right);
                 index >>= 1;
@@ -1601,7 +1542,7 @@ fn gen_verify(
             nodes[1] = node;
             query_hints.push(("merkle_children", path_children));
         }
-        caps.extend(nodes.iter().flat_map(pack_hash_state));
+        caps.extend(nodes.iter().flat_map(digest_words));
         cap_active.extend(active);
     }
     let mut bytecode_row_point = summary.bytecode_claim.point;
@@ -1628,25 +1569,22 @@ fn gen_verify(
             // picks it up at `msg_cursor = cursor`, which sits where the flock
             // reduction stopped; the ring-switch messages are struct-observed and
             // still do not advance that cursor.
-            let mut stream = summary.raw.stream;
+            let mut stream = limbs(&summary.raw.stream);
             assert!(
                 stream.len() <= STREAM_CAP,
-                "stream {} exceeds cap {STREAM_CAP}",
+                "stream of {} words exceeds cap {STREAM_CAP}",
                 stream.len()
             );
-            stream.resize(STREAM_CAP, F192::ZERO);
+            stream.resize(STREAM_CAP, F64::ZERO);
             stream
         }),
-        ("bytecode_val", bcv),
-        ("matpart", vec![matpart]),
+        ("bytecode_val", limbs(&[bytecode_value])),
+        ("matpart", limbs(&[matpart])),
         ("merkle_caps", caps),
         ("merkle_cap_active", cap_active),
         // the table sumcheck's round count: max_t tau_t, certified in-guest as a
         // maximum (one of the taus, and dominating them all).
-        (
-            "zc_tau_max",
-            vec![F192::new(g_pow(*taus.iter().max().unwrap()).0, 0, 0)],
-        ),
+        ("zc_tau_max", vec![g_pow(*taus.iter().max().unwrap())]),
         ("col_sort_order", col_sort_order),
         ("sort_order", sort_order),
     ];
@@ -1666,14 +1604,15 @@ const _: () = assert!(MU_MIN >= lean_vm::pcs::MIN_MU);
 /// `gen_verify` admits against: one definition, so a hinted shape can never
 /// outgrow the buffer the guest was compiled with.
 const MU_CAP: usize = 40;
-const STREAM_CAP: usize = 8192;
+/// In words, three to a transcript scalar.
+const STREAM_CAP: usize = 3 * 8192;
 /// Named hint entries for a single sub-proof, ordered within each stream.
-type SubHints = Vec<(&'static str, Vec<F192>)>;
+type SubHints = Vec<(&'static str, Vec<F64>)>;
 
 /// One `hint_witness` stream: a name and its entries, in the order the guest
 /// pops them.
 #[derive(Default)]
-pub(crate) struct Hints(Vec<(String, Vec<Vec<F192>>)>);
+pub(crate) struct Hints(Vec<(String, Vec<Vec<F64>>)>);
 
 impl Hints {
     #[cfg(test)]
@@ -1681,7 +1620,7 @@ impl Hints {
         self.0.is_empty()
     }
 
-    fn push(&mut self, name: &str, entry: Vec<F192>) {
+    fn push(&mut self, name: &str, entry: Vec<F64>) {
         match self.0.iter_mut().find(|(n, _)| n == name) {
             Some((_, entries)) => entries.push(entry),
             None => self.0.push((name.to_string(), vec![entry])),
@@ -1690,7 +1629,7 @@ impl Hints {
 
     /// The entries of one stream, for the adversarial test to corrupt.
     #[cfg(test)]
-    fn entries(&mut self, name: &str) -> &mut Vec<Vec<F192>> {
+    fn entries(&mut self, name: &str) -> &mut Vec<Vec<F64>> {
         &mut self
             .0
             .iter_mut()
@@ -1950,20 +1889,15 @@ fn push_signature_hints(
     let wots = &sig.wots_signature;
     let encoding = xmss::wots_encode(message, xmss_epoch, &pk.public_param, &wots.randomness)
         .ok_or(AggregationError::MalformedRawSignature)?;
-    let mut randomness = [0u8; xmss::STATE_LEN];
-    randomness[..xmss::RANDOMNESS_LEN].copy_from_slice(&wots.randomness);
-    hints.push(
-        "rand",
-        vec![pack_16_bytes(&randomness[..16]), pack_16_bytes(&randomness[16..])],
-    );
+    hints.push("rand", words(&wots.randomness));
     for &e in &encoding {
         hints.push("digits", vec![count(e as usize)]);
     }
     for tip in &wots.chain_tips {
-        hints.push("chain_starts", vec![pack_16_bytes(tip)]);
+        hints.push("chain_starts", words(tip));
     }
     for sibling in &sig.merkle_proof {
-        hints.push("siblings", vec![pack_16_bytes(sibling)]);
+        hints.push("siblings", words(sibling));
     }
     Ok(())
 }
@@ -1982,12 +1916,12 @@ fn push_sphincs_hints(
     sig: &SphincsSignature,
 ) -> Result<(), AggregationError> {
     let pp = &pk.public_param;
-    hints.push("sp_rand", vec![pack_16_bytes(&sig.randomizer)]);
+    hints.push("sp_rand", words(&sig.randomizer));
     let (idx, u) = sphincs::message_digest(pp, &pk.root, &sig.randomizer, message);
     for kappa in 0..sphincs::NUM_FTS_TREES {
-        hints.push("sp_fts_secrets", vec![pack_16_bytes(&sig.fts.secrets[kappa])]);
+        hints.push("sp_fts_secrets", words(&sig.fts.secrets[kappa]));
         for sibling in &sig.fts.paths[kappa] {
-            hints.push("sp_fts_paths", vec![pack_16_bytes(sibling)]);
+            hints.push("sp_fts_paths", words(sibling));
         }
     }
     let mut signed = sphincs::fts_recover(pp, idx, &u, &sig.fts);
@@ -1995,14 +1929,14 @@ fn push_sphincs_hints(
         let pos = sphincs::Pos::new(lay, sphincs::tree_of(idx, lay), sphincs::leaf_of(idx, lay));
         let counter = sig.counters[lay];
         let codeword = sphincs::encode(pp, pos, &signed, counter).ok_or(AggregationError::MalformedRawSignature)?;
-        hints.push("sp_counter", vec![F192::new(u64::from(counter), 0, 0)]);
+        hints.push("sp_counter", vec![F64(u64::from(counter))]);
         for (&digit, opened) in codeword.iter().zip(&sig.ots[lay]) {
             hints.push("sp_digits", vec![count(digit as usize)]);
-            hints.push("sp_chain_starts", vec![pack_16_bytes(opened)]);
+            hints.push("sp_chain_starts", words(opened));
         }
         let path = &sig.paths[sphincs::path_range(lay)];
         for sibling in path {
-            hints.push("sp_siblings", vec![pack_16_bytes(sibling)]);
+            hints.push("sp_siblings", words(sibling));
         }
         let leaf = sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay])
             .ok_or(AggregationError::MalformedRawSignature)?;
@@ -2159,13 +2093,7 @@ pub(crate) fn aggregate_tampered(
         return Err(AggregationError::TooLarge);
     }
     let n_sphincs = cover.sphincs_signers.len();
-    let group_cells = |group: &XmssClaimGroup| {
-        [
-            F192::new(group.epoch as u64, 0, 0),
-            pack_16_bytes(&group.message[..16]),
-            pack_16_bytes(&group.message[16..]),
-        ]
-    };
+    let group_words = |group: &XmssClaimGroup| [vec![F64(group.epoch as u64)], words(&group.message)].concat();
 
     let mut hints = Hints::default();
     hints.push(
@@ -2181,14 +2109,14 @@ pub(crate) fn aggregate_tampered(
         ],
     );
     let fs_seed = lean_vm::cpu::fs_seed(guest);
-    hints.push("fs_seed", vec![fs_seed[0], fs_seed[1]]);
-    // Per group: its epoch, its two message cells, and its declared, duplicate
+    hints.push("fs_seed", fs_seed.to_vec());
+    // Per group: its epoch, its four message words, and its declared, duplicate
     // and raw-signature counts, in the guest's geometry-pass order. The keys
     // then ride two per `pubkeys` entry, so the guest can halve its loop
     // frames, the odd key out on a final one-key entry; each group's
     // duplicates follow its keys.
     for (j, group) in cover.xmss_groups.iter().enumerate() {
-        let mut entry = group_cells(group).to_vec();
+        let mut entry = group_words(group);
         entry.extend([
             count(group.keys.len()),
             count(cover.xmss_dups[j].len()),
@@ -2200,16 +2128,12 @@ pub(crate) fn aggregate_tampered(
         hints.push("pk_halves", vec![count(keys.len() / 2), count(keys.len() % 2)]);
         hints.push("signers_split", signers_split(keys.len().div_ceil(2)));
         for pair in keys.chunks(2) {
-            let mut entry = key_cells(&pair[0]).to_vec();
-            if let Some(second) = pair.get(1) {
-                entry.extend_from_slice(&key_cells(second));
-            }
-            hints.push("pubkeys", entry);
+            hints.push("pubkeys", pair.iter().flat_map(key_words).collect());
         }
     }
     for dups in &cover.xmss_dups {
         for pk in dups {
-            hints.push("dup_pubkeys", key_cells(pk).to_vec());
+            hints.push("dup_pubkeys", key_words(pk));
         }
     }
     if !cover.sphincs_signers.is_empty() {
@@ -2217,10 +2141,10 @@ pub(crate) fn aggregate_tampered(
     }
     hints.push("signers_split", signers_split(1 + 2 * cover.n_declared));
     for signer in &cover.sphincs_signers {
-        hints.push("sphincs_signers", sphincs_signer_cells(signer).to_vec());
+        hints.push("sphincs_signers", sphincs_signer_words(signer));
     }
     for signer in &cover.sphincs_dups {
-        hints.push("dup_sphincs", sphincs_signer_cells(signer).to_vec());
+        hints.push("dup_sphincs", sphincs_signer_words(signer));
     }
     // Group-major over the table, not over the epochs `raw_xmss` is sorted by: a
     // declaration puts the undeclared groups last. Each index is an offset within
@@ -2245,7 +2169,7 @@ pub(crate) fn aggregate_tampered(
             vec![count(child.xmss_signers.len()), count(child.sphincs_signers.len())],
         );
         for (group, (parent_group, offsets)) in child.xmss_signers.iter().zip(&cover.child_xmss[i]) {
-            let mut entry = group_cells(group).to_vec();
+            let mut entry = group_words(group);
             entry.push(count(group.keys.len()));
             hints.push("child_group", entry);
             hints.push("child_group_map", vec![count(*parent_group)]);
@@ -2262,7 +2186,7 @@ pub(crate) fn aggregate_tampered(
             hints.push("child_sphincs_index", vec![count(offset)]);
         }
         hints.push("signers_split", signers_split(1 + 2 * child.xmss_signers.len()));
-        hints.push("child_defer", child.defer.cells());
+        hints.push("child_defer", limbs(&child.defer.cells()));
         hints.push("child_da_count", vec![count(child.da_roots.len())]);
         let (sub_hints, defer) = gen_verify(guest, pi, summary)?;
         for (name, entry) in sub_hints {
@@ -2278,7 +2202,7 @@ pub(crate) fn aggregate_tampered(
         let leaf = DeferredClaim::leaf();
         hints.push(
             "leaf_defer",
-            vec![leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value],
+            limbs(&[leaf.bytecode_value, leaf.matrix_a_value, leaf.matrix_b_value]),
         );
         leaf
     } else {
@@ -2300,7 +2224,7 @@ pub(crate) fn aggregate_tampered(
             .as_chunks::<CELL_SYMBOLS>()
             .0
         {
-            hints.push("da_weights", block.to_vec());
+            hints.push("da_weights", limbs(block));
         }
         hints.push(
             "da_shape",
@@ -2315,7 +2239,7 @@ pub(crate) fn aggregate_tampered(
                     "da_symbols",
                     witness.codewords[i * m + j * c..i * m + (j + 1) * c]
                         .iter()
-                        .map(|&w| F192::from(F64(w)))
+                        .map(|&w| F64(w))
                         .collect(),
                 );
             }
@@ -2348,7 +2272,7 @@ pub(crate) fn aggregate_tampered(
     }
     hints.push("da_meta", vec![count(da_roots.len()), count(da_dups.len())]);
     for root in da_roots.iter().chain(&da_dups) {
-        hints.push("da_roots", da_claim_cells(root));
+        hints.push("da_roots", da_claim_words(root));
     }
 
     let public_input = statement_digest(
@@ -2377,7 +2301,7 @@ pub(crate) fn aggregate_tampered(
 }
 struct CoordinateDescriptor {
     kind: usize,
-    constant: u128,
+    constant: u64,
     fresh: usize,
     claim_slot: usize,
     terms: Range<usize>,
@@ -2385,7 +2309,7 @@ struct CoordinateDescriptor {
 
 struct Term {
     kind: usize,
-    constant: u128,
+    constant: u64,
     column_a: usize,
     column_b: usize,
 }
@@ -2421,8 +2345,8 @@ struct OpeningShape {
     vanish_offsets: Vec<usize>,
     fold_offsets: Vec<usize>,
     residual_fold_offsets: Vec<usize>,
-    vanish_values: Vec<F192>,
-    vanish_inverses: Vec<F192>,
+    vanish_values: Vec<F64>,
+    vanish_inverses: Vec<F64>,
     ood_samples: Vec<usize>,
 }
 
@@ -2431,13 +2355,8 @@ struct OpeningShape {
 fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     // Only block and coordinate structure is used here; dummy instructions and
     // table sizes let us derive it before the guest's bytecode exists.
-    let stand_in = vec![lean_vm::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
-    let layout = lean_vm::cpu::layout(
-        &stand_in,
-        20,
-        [1usize << 10; lean_vm::tables::N_TABLES],
-        [F192::ZERO, F192::ZERO],
-    );
+    let stand_in = vec![lean_vm::cpu::Op::Xor64 { a: 0, b: 0, c: 0 }; 1 << kbc];
+    let layout = lean_vm::cpu::layout(&stand_in, 20, [1usize << 10; lean_vm::tables::N_TABLES], [F64::ZERO; 4]);
     let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
     let lcrounds = flock::hash::K_LOG - 6;
 
@@ -2488,7 +2407,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                 nbcv += usize::from(matches!(c, Coord::Public(_)));
                 coordinates.push(CoordinateDescriptor {
                     kind: coord_kind(c),
-                    constant: dsl_u128(coord_scale(c)),
+                    constant: coord_scale(c).0,
                     fresh,
                     claim_slot: slot,
                     terms: start..terms.len(),
@@ -2498,7 +2417,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         sblk.push(nblocks);
     }
     let evtot: usize = lean_vm::tables::tables().iter().map(|t| t.n_committed_columns()).sum();
-    let ncl = nclaims + evtot + 3; // bus + constraint + the three PI memory-limb claims
+    let ncl = nclaims + evtot + 1; // bus + constraint + the PI memory claim
 
     // ---- claim descriptor buffer ids (structural) ----
     let valcols = blake2s_value_columns();
@@ -2539,7 +2458,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                     0
                 },
             },
-            ClaimSite::MemoryLimb { column } => ClaimDescriptor {
+            ClaimSite::PublicInput { column } => ClaimDescriptor {
                 buffer: 2,
                 column: compact_col_pm[column],
                 qflock_slot: 0,
@@ -2550,19 +2469,15 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     assert_eq!(claims.len(), ncl, "descriptor count == pool size");
 
     // ---- the placeholder map ----
-    let flds = |v: &[F192]| {
-        format!(
-            "[{}]",
-            v.iter().map(|&x| f192_literal(x)).collect::<Vec<_>>().join(", ")
-        )
-    };
+    // A field-element array, flattened to three words an element.
+    let flds = |v: &[F192]| literals(limbs(v).iter().map(|w| w.0));
     let mut rep = BTreeMap::new();
     let mut ps = |k: &str, v: String| {
         rep.insert(format!("{k}_PLACEHOLDER"), v);
     };
     ps("STREAM_CAP", STREAM_CAP.to_string());
     ps("MIN_LOG_MEM", lean_vm::cpu::MIN_LOG_MEM.to_string());
-    ps("INV_GEN", dsl_u128(F192::new(G.inv().0, 0, 0)).to_string());
+    ps("INV_GEN", G.inv().0.to_string());
     ps("MU_CAP", MU_CAP.to_string());
     ps("NO_TABLE", layout.taus.len().to_string());
     ps("GKR_ROUNDS_CAP", (MU_CAP * (MU_CAP + 1) / 2 + MU_CAP + 2).to_string());
@@ -2602,13 +2517,13 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("TERM_COL_A", literals(terms.iter().map(|t| t.column_a)));
     ps("TERM_COL_B", literals(terms.iter().map(|t| t.column_b)));
     ps("N_BUS_CLAIMS", nclaims.to_string());
-    let idxc: Vec<u128> = (0..34)
+    let idxc: Vec<u64> = (0..34)
         .map(|i| {
-            let mut g2k = F192::new(G.0, 0, 0);
+            let mut g2k = G;
             for _ in 0..i {
                 g2k = g2k * g2k;
             }
-            dsl_u128(F192::ONE + g2k)
+            (F64::ONE + g2k).0
         })
         .collect();
     ps("INDEX_MLE_FACTORS", literals(&idxc));
@@ -2641,23 +2556,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("K_SKIP", "6".to_string());
     ps("N_FIXED_CHALLENGE_ROUNDS", fixed_challenges.len().to_string());
     ps("PHI8_NODES", flds(&primitives::field::PHI_8_TABLE_192[..128]));
-    // Tower F192 = F64[Y]/(Y^3+Y+1), Y = new(0,1,0). Y_TOWER embeds Y for
-    // AIR lane reassembly; Y_INV helps derive the top PI-memory limb.
-    let y_tower = F192::new(0, 1, 0);
-    ps("Y_TOWER", dsl_u128(y_tower).to_string());
-    ps("Y_INV", f192_literal(y_tower.inv()));
-    // Coordinate basis e_i of F192 over F2 (spans the whole field): the 64
-    // binary basis vectors in each of the three tower limbs. The guest uses
-    // these vectors to reconstruct a word from its 192 coordinate bits.
-    let coord_basis: Vec<F192> = (0..192)
-        .map(|i| match i / 64 {
-            0 => F192::new(1u64 << i, 0, 0),
-            1 => F192::new(0, 1u64 << (i - 64), 0),
-            2 => F192::new(0, 0, 1u64 << (i - 128)),
-            _ => unreachable!(),
-        })
-        .collect();
-    ps("COORD_BASIS", flds(&coord_basis));
     // One constant per domain, not one per node: every barycentric denominator over an aligned φ₈
     // window is the same element (`primitives::multilinear::window_denominator`).
     ps(
@@ -2717,12 +2615,8 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         let mut c_ivk = Vec::new();
         for &cl_lv in cl.iter().take(cn) {
             for &v in &pcs::whir::eval_sk_at_vks(cl_lv) {
-                c_svk.push(F192::new(v.0, 0, 0));
-                c_ivk.push(if v == F64::ZERO {
-                    F192::ZERO
-                } else {
-                    F192::new(v.inv().0, 0, 0)
-                });
+                c_svk.push(v);
+                c_ivk.push(if v == F64::ZERO { F64::ZERO } else { v.inv() });
             }
         }
         OpeningShape {
@@ -2828,7 +2722,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             .max()
             .unwrap();
         ps("LIG_ROW_CAP", row_cap.to_string());
-        ps("LIG_PACKED_ROW_CAP", (row_cap / 2).to_string());
         ps(
             "LIG_PATH_CAP",
             cands
@@ -2837,7 +2730,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
                     c.tree_depths
                         .iter()
                         .zip(&c.cap_depths)
-                        .map(|(depth, cap)| 4 * (depth - cap))
+                        .map(|(depth, cap)| 8 * (depth - cap))
                 })
                 .max()
                 .unwrap()
@@ -2887,21 +2780,18 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
             let padded_len = svk2.len() + maxsvk;
             svk2.extend_from_slice(&candidate.vanish_values);
             ivk2.extend_from_slice(&candidate.vanish_inverses);
-            svk2.resize(padded_len, F192::ZERO);
-            ivk2.resize(padded_len, F192::ZERO);
+            svk2.resize(padded_len, F64::ZERO);
+            ivk2.resize(padded_len, F64::ZERO);
         }
-        ps("LIG_VANISH_VALS", flds(&svk2));
-        ps("LIG_VANISH_INVS", flds(&ivk2));
+        ps("LIG_VANISH_VALS", literals(svk2.iter().map(|v| v.0)));
+        ps("LIG_VANISH_INVS", literals(ivk2.iter().map(|v| v.0)));
     }
     let n_log_sizes = maxm - minm + 1;
     let n_rates = MAX_LOG_INV_RATE - MIN_LOG_INV_RATE + 1;
     ps("LIG_N_LOG_SIZES", n_log_sizes.to_string());
     ps("LIG_N_RATES", n_rates.to_string());
     ps("LIG_N_CANDIDATES", (n_log_sizes * n_rates).to_string());
-    ps(
-        "LIG_MIN_SHIFT_INV",
-        dsl_u128(F192::new(g_pow(minm).inv().0, 0, 0)).to_string(),
-    );
+    ps("LIG_MIN_SHIFT_INV", g_pow(minm).inv().0.to_string());
     ps("CLAIM_POINT_BUF", literals(claims.iter().map(|c| c.buffer)));
     ps("CLAIM_COMMITTED_COL", literals(claims.iter().map(|c| c.column)));
     let slot_stride_log = lean_vm::hash_flock::SLOT_STRIDE_LOG;
@@ -2923,28 +2813,24 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("LOG2_BYTECODE_COLS", log2_bc_cols.to_string());
     ps("DEFER_SIZE", (kbc + log2_bc_cols + 2 * lcrounds + 68).to_string());
     ps("BYTECODE_VARS", (kbc + log2_bc_cols).to_string());
-    let agg_state = pack_state(FiatShamirState::from_label(RECURSION_AGG_LABEL).state());
-    ps("AGG_SEED_0", dsl_u128(agg_state[0]).to_string());
-    ps("AGG_SEED_1", dsl_u128(agg_state[1]).to_string());
+    let agg_state = FiatShamirState::from_label(RECURSION_AGG_LABEL).state();
+    for (i, word) in agg_state.iter().enumerate() {
+        ps(&format!("AGG_SEED_{i}"), word.0.to_string());
+    }
 
     // ---- LeanDA (`doc/leanvm` §sec:leanda) ----
     let (pad_cell, pad_row) = lean_da::padding_digests();
-    let (pad_cell, pad_row) = (pack_hash_state(&pad_cell), pack_hash_state(&pad_row));
     ps("DA_LOG_K", DA_LOG_K.to_string());
     ps("DA_LOG_CELL", DA_LOG_CELL.to_string());
     ps("DA_MAX_ROWS", DA_MAX_ROWS.to_string());
     ps("DA_LOG_MAX_ROWS", DA_MAX_ROWS.ilog2().to_string());
-    ps("DA_PAD_CELL_0", f192_literal(pad_cell[0]));
-    ps("DA_PAD_CELL_1", f192_literal(pad_cell[1]));
-    ps("DA_PAD_ROW_0", f192_literal(pad_row[0]));
-    ps("DA_PAD_ROW_1", f192_literal(pad_row[1]));
+    ps("DA_PAD_CELL", literals(digest_words(&pad_cell).iter().map(|w| w.0)));
+    ps("DA_PAD_ROW", literals(digest_words(&pad_row).iter().map(|w| w.0)));
     let defer_cells = kbc + log2_bc_cols + 1 + 2 * flock::hash::K_LOG + 2;
     ps("STMT_HEADER", STATEMENT_HEADER.to_string());
-    let (off, pairs) = (STATEMENT_HEADER, defer_cells.div_ceil(2));
-    let blocks = (off + 3 * pairs).div_ceil(4);
-    ps("STMT_ODD", (defer_cells % 2).to_string());
-    ps("STMT_PAIRS", pairs.to_string());
-    ps("STMT_PAD_CELLS", (4 * blocks - off - 3 * pairs).to_string());
+    let stmt_words = STATEMENT_HEADER + 3 * defer_cells;
+    let blocks = stmt_words.div_ceil(8);
+    ps("STMT_PAD", (8 * blocks - stmt_words).to_string());
     ps("STMT_BLOCKS", blocks.to_string());
     // A list is at most MAX_KEYS blocks (one a claim is the widest it gets), so it
     // holds fewer than that many windows; a declared count is below MAX_KEYS, hence
@@ -2954,12 +2840,11 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("SIGNERS_WINDOW_LOG", SIGNERS_WINDOW.ilog2().to_string());
     ps("SIGNERS_MAX_WINDOWS", SIGNERS_MAX_WINDOWS.to_string());
     ps("SIGNERS_COUNT_BITS", SIGNERS_COUNT_BITS.to_string());
-    ps("BLAKE2S_IV_0", dsl_u128(lean_vm::hash_flock::IV_CELLS[0]).to_string());
-    ps("BLAKE2S_IV_1", dsl_u128(lean_vm::hash_flock::IV_CELLS[1]).to_string());
-    ps(
-        "MD_FINAL",
-        dsl_u128(lean_vm::hash_flock::metadata(0, lean_vm::hash_flock::FINAL_FLAG, 0)).to_string(),
-    );
+    for (i, word) in lean_vm::hash_flock::IV.iter().enumerate() {
+        ps(&format!("BLAKE2S_IV_{i}"), word.0.to_string());
+    }
+    let final_md = lean_vm::hash_flock::metadata(0, lean_vm::hash_flock::FINAL_FLAG, 0);
+    ps("MD_FINAL", final_md[1].0.to_string());
 
     // The XMSS instance, from which the guest derives every table width by
     // compile-time integer arithmetic.
@@ -2967,31 +2852,27 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("W", xmss::W.to_string());
     ps("TARGET_SUM", xmss::TARGET_SUM.to_string());
     ps("LOG_LIFETIME", xmss::LOG_LIFETIME.to_string());
-    // Every XMSS tweak the guest builds is one of these constants plus the
-    // epoch's weighed bits, so the byte layout lives in `xmss::make_tweak` and
-    // nowhere else. The chain table is indexed `CHAIN_STEPS * i + s` and the
-    // Merkle one by level, exactly as `verify_sig` walks them.
-    ps(
-        "XM_ENC_TWEAK",
-        dsl_u128(tweak_cell(xmss::TWEAK_TYPE_ENCODING, 0)).to_string(),
+    // Every XMSS tweak the guest builds is one of these first words plus a
+    // sub-position, next to the epoch's weighed bits, so the byte layout lives in
+    // `xmss::make_tweak` and nowhere else. A chain's tweaks start at sub-position
+    // `CHAIN_LENGTH * i` and a Merkle level's at `level + 1`, exactly as
+    // `verify_sig` walks them.
+    ps("XM_ENC_TWEAK", tweak_word(xmss::TWEAK_TYPE_ENCODING, 0).0.to_string());
+    ps("XM_PK_TWEAK", tweak_word(xmss::TWEAK_TYPE_WOTS_PK, 0).0.to_string());
+    ps("XM_CHAIN_TWEAK", tweak_word(xmss::TWEAK_TYPE_CHAIN, 0).0.to_string());
+    ps("XM_MERKLE_TWEAK", tweak_word(xmss::TWEAK_TYPE_MERKLE, 0).0.to_string());
+    let p_mul = tweak_word(0, 1) + tweak_word(0, 0);
+    assert!(
+        (0..(xmss::V * xmss::CHAIN_LENGTH + xmss::LOG_LIFETIME) as u32).all(|p| {
+            tweak_word(xmss::TWEAK_TYPE_CHAIN, p) == tweak_word(xmss::TWEAK_TYPE_CHAIN, 0) + F64(u64::from(p)) * p_mul
+        }),
+        "a tweak's sub-position is a whole number of units in its first word"
     );
+    ps("XM_P_MUL", p_mul.0.to_string());
     ps(
-        "XM_PK_TWEAK",
-        dsl_u128(tweak_cell(xmss::TWEAK_TYPE_WOTS_PK, 0)).to_string(),
+        "XM_INDEX_WEIGHT",
+        literals((0..xmss::LOG_LIFETIME).map(|b| tweak_index_weight(b).0)),
     );
-    let chain_tweaks: Vec<F192> = (0..xmss::V)
-        .flat_map(|i| {
-            (0..xmss::CHAIN_LENGTH - 1)
-                .map(move |s| tweak_cell(xmss::TWEAK_TYPE_CHAIN, (i * xmss::CHAIN_LENGTH + s) as u32))
-        })
-        .collect();
-    ps("XM_CHAIN_TWEAKS", flds(&chain_tweaks));
-    let merkle_tweaks: Vec<F192> = (0..xmss::LOG_LIFETIME)
-        .map(|level| tweak_cell(xmss::TWEAK_TYPE_MERKLE, (level + 1) as u32))
-        .collect();
-    ps("XM_MERKLE_TWEAKS", flds(&merkle_tweaks));
-    let index_weights: Vec<F192> = (0..xmss::LOG_LIFETIME).map(tweak_index_weight).collect();
-    ps("XM_INDEX_WEIGHT", flds(&index_weights));
     ps("MAX_KEYS", MAX_KEYS.to_string());
     ps("MAX_DA_ROOTS", MAX_DA_ROOTS.to_string());
     ps("DA_ROOT_COUNTS", (MAX_DA_ROOTS + 1).to_string());
@@ -3024,10 +2905,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
         ("SP_TW_FTS_ROOTS", sphincs::TWEAK_FTS_ROOTS),
         ("SP_TW_MSG", sphincs::TWEAK_MSG),
     ] {
-        ps(
-            name,
-            dsl_u128(pack_16_bytes(&sphincs::tweak(tag, 0, 0, 0, 0))).to_string(),
-        );
+        ps(name, words(&sphincs::tweak(tag, 0, 0, 0, 0))[0].0.to_string());
     }
     rep
 }
@@ -3287,13 +3165,13 @@ mod tests {
                     let sphincs_tweak = sphincs::tweak(sphincs_tag, 0, 0, position, index);
                     assert_eq!(&xmss_tweak[1..], &sphincs_tweak[1..]);
                     assert_ne!(xmss_tweak[0], sphincs_tweak[0]);
-                    let mut guest_tweak = tweak_cell(xmss_tag, position);
+                    let mut guest_index = F64::ZERO;
                     for bit in 0..32 {
                         if index & (1 << bit) != 0 {
-                            guest_tweak += tweak_index_weight(bit);
+                            guest_index += tweak_index_weight(bit);
                         }
                     }
-                    assert_eq!(guest_tweak, pack_16_bytes(&xmss_tweak));
+                    assert_eq!(words(&xmss_tweak), [tweak_word(xmss_tag, position), guest_index]);
                 }
             }
         }
@@ -3410,25 +3288,25 @@ mod tests {
         let source = format!(
             r#"{helpers}
 def main():
-    point = HeapBuf(MAX_STACK_LOG)
-    hint_witness(point[0:MAX_STACK_LOG], "point")
+    point = HeapBuf(3 * MAX_STACK_LOG)
+    hint_witness(point[0:3 * MAX_STACK_LOG], "point")
     offset = hint_witness("offset")
     kappa_g = hint_witness("kappa")
     weight = match(log(kappa_g), range(0, N_COLUMN_LOGS), lambda kappa: column_selector(offset, point, kappa))
     public = GEN ** 0
-    assert public[1] == weight
+    public[0:3] = weight
     return
 "#
         );
         let guest = compile(&parse_with_replacements(&source, &placeholder_map(18)).unwrap());
         let run = |point: &[F192], offset: usize, kappa: usize, expected: F192| {
             let mut hints = Hints::default();
-            hints.push("point", point.to_vec());
+            hints.push("point", limbs(point));
             hints.push("offset", vec![count(offset)]);
             hints.push("kappa", vec![count(kappa)]);
             let mut program = guest.clone();
             hints.install(&mut program);
-            program.execute([expected, F192::ZERO])
+            program.execute([F64(expected.c0), F64(expected.c1), F64(expected.c2), F64::ZERO])
         };
         let mut rng = StdRng::seed_from_u64(813);
         for mu in MU_MIN..=MU_MAX {
@@ -3470,12 +3348,11 @@ def main():
     for k in unroll(0, 3):
         bits[k] = bits[k] * bits[k]
     direction = addr(bits)
-    leaf = StackBuf(2)
-    hint_witness(leaf[0:2], "leaf")
-    a, b = verify_merkle_path(leaf[0], leaf[1], direction, 3)
+    leaf = StackBuf(4)
+    hint_witness(leaf[0:4], "leaf")
+    root = verify_merkle_path(leaf, direction, 3)
     public = GEN ** 0
-    assert public[1] == a
-    assert public[GEN] == b
+    public[0:4] = root
     return
 "#
         );
@@ -3489,18 +3366,15 @@ def main():
         }
         let run = |index: usize, leaf: [u8; 32], pairs: &[[[u8; 32]; 2]], root: [u8; 32]| {
             let mut hints = Hints::default();
-            hints.push(
-                "bits",
-                (0..3).map(|k| F192::from(F64(((index >> k) & 1) as u64))).collect(),
-            );
-            hints.push("leaf", pack_hash_state(&leaf).to_vec());
+            hints.push("bits", (0..3).map(|k| F64(((index >> k) & 1) as u64)).collect());
+            hints.push("leaf", digest_words(&leaf).to_vec());
             hints.push(
                 "merkle_children",
-                pairs.iter().flatten().flat_map(pack_hash_state).collect(),
+                pairs.iter().flatten().flat_map(digest_words).collect(),
             );
             let mut program = guest.clone();
             hints.install(&mut program);
-            program.execute(pack_hash_state(&root))
+            program.execute(digest_words(&root))
         };
         for index in 0..8 {
             let pairs: Vec<_> = (0..3)
@@ -3516,7 +3390,7 @@ def main():
             );
             for level in 0..3 {
                 for side in 0..2 {
-                    for byte in [0, 16] {
+                    for byte in [0, 8, 16, 24] {
                         let mut forged = pairs.clone();
                         forged[level][side][byte] ^= 1;
                         assert!(std::panic::catch_unwind(|| run(index, tree[8 + index], &forged, tree[1])).is_err());
@@ -3524,7 +3398,7 @@ def main():
                 }
                 // Rehash a forged running child all the way to a matching public root.
                 // Root equality alone passes; the selected child must still bind to its predecessor.
-                for byte in [0, 16] {
+                for byte in [0, 8, 16, 24] {
                     let mut forged = pairs.clone();
                     forged[level][(index >> level) & 1][byte] ^= 1;
                     let mut root = pcs::merkle::hash_pair(&forged[level][0], &forged[level][1]);
@@ -3807,7 +3681,7 @@ def main():
 
         // The first child's omitted root occupies slot 1; it cannot cover slot 0
         // (the second child's declared root) or write outside the DA region.
-        for index in [count(0), count(2), count(MAX_KEYS - 1), F192::ZERO, F192::new(0, 1, 0)] {
+        for index in [count(0), count(2), count(MAX_KEYS - 1), F64::ZERO] {
             let outcome = std::panic::catch_unwind(|| {
                 aggregate_tampered(
                     &children,
@@ -3859,7 +3733,7 @@ def main():
                     LOG_INV_RATE,
                     |h| {
                         h.entries("da_meta")[0] = vec![count(declared), count(duplicates)];
-                        h.entries("da_roots").push(da_claim_cells(&second));
+                        h.entries("da_roots").push(da_claim_words(&second));
                     },
                 )
             });
@@ -3881,9 +3755,9 @@ def main():
                         let root = h
                             .entries("da_roots")
                             .iter_mut()
-                            .find(|r| **r == da_claim_cells(&second))
+                            .find(|r| **r == da_claim_words(&second))
                             .unwrap();
-                        *root = da_claim_cells(&first);
+                        *root = da_claim_words(&first);
                     },
                 )
             });
@@ -3892,7 +3766,7 @@ def main():
                 "every child's complete DA list must be authenticated"
             );
         }
-        for limb in [2, 3] {
+        for word in 4..8 {
             let outcome = std::panic::catch_unwind(|| {
                 aggregate_tampered(
                     &children,
@@ -3908,9 +3782,9 @@ def main():
                         let omitted = h
                             .entries("da_roots")
                             .iter_mut()
-                            .find(|claim| claim[..2] == pack_hash_state(&first))
+                            .find(|claim| claim[..4] == digest_words(&first))
                             .unwrap();
-                        omitted[limb] += F192::ONE;
+                        omitted[word] += F64::ONE;
                     },
                 )
             });
@@ -3989,14 +3863,13 @@ def main():
 def main():
     n_g = hint_witness("n")
     assert log(n_g) < MAX_DA_ROOTS + 1
-    roots = HeapBuf((n_g * GEN) ** 4)
+    roots = HeapBuf((n_g * GEN) ** 8)
     for x in mul_range(1, n_g):
-        root = roots * (x ** 4)
-        hint_witness(root[0:4], "root")
-    a, b = da_list_digest(roots, n_g)
+        root = roots * (x ** 8)
+        hint_witness(root[0:8], "root")
+    digest = da_list_digest(roots, n_g)
     public = GEN ** 0
-    assert public[1] == a
-    assert public[GEN] == b
+    public[0:4] = digest
     return
 "#
         );
@@ -4008,11 +3881,11 @@ def main():
             let mut hints = Hints::default();
             hints.push("n", vec![count(n)]);
             for root in &roots {
-                hints.push("root", da_claim_cells(root));
+                hints.push("root", da_claim_words(root));
             }
             let mut program = guest.clone();
             hints.install(&mut program);
-            let public = pack_hash_state(&da_list_digest(&roots));
+            let public = digest_words(&da_list_digest(&roots));
             if n <= MAX_DA_ROOTS {
                 let execution = program.execute(public);
                 assert!(execution.unconstrained_reads.is_empty(), "{n} roots");
@@ -4031,19 +3904,18 @@ def main():
         let source = format!(
             r#"{helpers}
 def main():
-    roots = HeapBuf(12)
-    hint_witness(roots[0:12], "roots")
+    roots = HeapBuf(24)
+    hint_witness(roots[0:24], "roots")
     n_slots = hint_witness("n_slots")
     assert log(n_slots) < 3
     cover = HeapBuf(4)
     # Adjacent signature slots must stay outside the DA writer's range.
     cover[1] = 1
-    a, b, v0, v1 = cover_da_root(roots, cover * GEN, n_slots, GEN)
-    digest = StackBuf(2)
-    blake2s([a, b], [v0, v1], digest)
+    claim = cover_da_root(roots, cover * GEN, n_slots, GEN)
+    digest = StackBuf(4)
+    blake2s(claim[0:4], claim[4:8], digest)
     public = GEN ** 0
-    assert public[1] == digest[0]
-    assert public[GEN] == digest[1]
+    public[0:4] = digest
     return
 "#
         );
@@ -4051,14 +3923,14 @@ def main():
         let first = [0x13; 32];
         let second = [0x27; 32];
         let outside = [0x39; 32];
-        let run = |slots: usize, index: F192, claimed: [u8; 32]| {
+        let run = |slots: usize, index: F64, claimed: [u8; 32]| {
             let mut hints = Hints::default();
             hints.push(
                 "roots",
                 [
-                    da_claim_cells(&first),
-                    da_claim_cells(&second),
-                    da_claim_cells(&outside),
+                    da_claim_words(&first),
+                    da_claim_words(&second),
+                    da_claim_words(&outside),
                 ]
                 .concat(),
             );
@@ -4066,7 +3938,7 @@ def main():
             hints.push("da_index", vec![index]);
             let mut program = guest.clone();
             hints.install(&mut program);
-            program.execute(pack_hash_state(&da_list_digest(&[claimed])))
+            program.execute(digest_words(&da_list_digest(&[claimed])))
         };
         assert!(run(2, count(0), first).unconstrained_reads.is_empty());
         assert!(run(2, count(1), second).unconstrained_reads.is_empty());
@@ -4076,8 +3948,7 @@ def main():
             (0, count(0), first),
             (2, count(2), outside),
             (2, count(1).inv(), first),
-            (2, F192::ZERO, first),
-            (2, F192::new(0, 1, 0), first),
+            (2, F64::ZERO, first),
         ] {
             assert!(std::panic::catch_unwind(|| run(slots, index, claimed)).is_err());
         }
@@ -4089,14 +3960,14 @@ def main():
         let source = include_str!("../guests/lean_ethereum.py");
         let (helpers, _) = source.split_once("\ndef main():").unwrap();
         let source = format!(
-            "{helpers}\ndef main():\n    _, squares = exponent_tables()\n    a, b, v0, v1 = da_verify(squares)\n    digest = StackBuf(2)\n    blake2s([a, b], [v0, v1], digest)\n    public = GEN ** 0\n    assert public[1] == digest[0]\n    assert public[GEN] == digest[1]\n    return\n"
+            "{helpers}\ndef main():\n    _, squares = exponent_tables()\n    root, vector = da_verify(squares)\n    digest = StackBuf(4)\n    blake2s(root, vector, digest)\n    public = GEN ** 0\n    public[0:4] = digest\n    return\n"
         );
         let guest = compile(&parse_with_replacements(&source, &placeholder_map(20)).unwrap());
         let n_rows = 3usize;
         let codewords = lean_da::encode_rows(&da_rows(3, 101));
-        let run = |words: &[u64], tamper: &dyn Fn(&mut Hints, &mut [F192; 2])| {
-            let (commitment, _) = lean_da::commit_codewords(words.to_vec());
-            let mut public = pack_hash_state(&da_list_digest(&[commitment.root]));
+        let run = |symbols: &[u64], tamper: &dyn Fn(&mut Hints, &mut [F64; 4])| {
+            let (commitment, _) = lean_da::commit_codewords(symbols.to_vec());
+            let mut public = digest_words(&da_list_digest(&[commitment.root]));
             let mut hints = Hints::default();
             hints.push(
                 "da_shape",
@@ -4107,10 +3978,7 @@ def main():
                     let start = i * CODEWORD_SYMBOLS + j * CELL_SYMBOLS;
                     hints.push(
                         "da_symbols",
-                        words[start..start + CELL_SYMBOLS]
-                            .iter()
-                            .map(|&w| F192::from(F64(w)))
-                            .collect(),
+                        symbols[start..start + CELL_SYMBOLS].iter().map(|&w| F64(w)).collect(),
                     );
                 }
             }
@@ -4118,7 +3986,7 @@ def main():
                 .as_chunks::<CELL_SYMBOLS>()
                 .0
             {
-                hints.push("da_weights", block.to_vec());
+                hints.push("da_weights", limbs(block));
             }
             tamper(&mut hints, &mut public);
             let mut program = guest.clone();
@@ -4130,10 +3998,10 @@ def main():
 
         // Every vector is orthogonal to zero rows: only hashing can reject these changes.
         let zeros = vec![0; codewords.len()];
-        for limb in [F192::ONE, F192::new(0, 1, 0), F192::new(0, 0, 1)] {
+        for limb in 0..3 {
             assert!(
                 std::panic::catch_unwind(|| run(&zeros, &|h, _| {
-                    h.entries("da_weights")[0][0] += limb;
+                    h.entries("da_weights")[0][limb] += F64::ONE;
                 }))
                 .is_err(),
                 "every limb of L must be bound by its hash"
@@ -4142,7 +4010,7 @@ def main():
         assert!(
             std::panic::catch_unwind(|| run(&zeros, &|h, _| {
                 for block in h.entries("da_weights") {
-                    block.fill(F192::ZERO);
+                    block.fill(F64::ZERO);
                 }
             }))
             .is_err(),
@@ -4172,20 +4040,14 @@ def main():
         assert_ne!(forged_digest, da_list_digest(&[bad_root]));
         let unchecked = run(&bad, &|h, public| {
             for block in h.entries("da_weights") {
-                block.fill(F192::ZERO);
+                block.fill(F64::ZERO);
             }
-            *public = pack_hash_state(&forged_digest);
+            *public = digest_words(&forged_digest);
         });
         assert!(unchecked.unconstrained_reads.is_empty());
         assert!(
             std::panic::catch_unwind(|| run(&codewords, &|_, public| {
-                public[0] += F192::ONE;
-            }))
-            .is_err()
-        );
-        assert!(
-            std::panic::catch_unwind(|| run(&codewords, &|h, _| {
-                h.entries("da_symbols")[0][0] += F192::new(0, 1, 0);
+                public[0] += F64::ONE;
             }))
             .is_err()
         );
@@ -4197,7 +4059,7 @@ def main():
         assert!(
             std::panic::catch_unwind(|| run(&codewords, &|h, public| {
                 h.entries("da_shape")[0][1] = count(3);
-                *public = pack_hash_state(&da_list_digest(&[padded_commitment.root]));
+                *public = digest_words(&da_list_digest(&[padded_commitment.root]));
             }))
             .is_err(),
             "three rows must not use an eight-row tree, even with a matching root"
@@ -4240,7 +4102,8 @@ def main():
         counts.dedup();
         for rows in counts {
             for depth in 0..=max_depth + 1 {
-                let result = std::panic::catch_unwind(|| guest.execute([count(rows), count(depth)]));
+                let result =
+                    std::panic::catch_unwind(|| guest.execute([count(rows), count(depth), F64::ZERO, F64::ZERO]));
                 let valid = (1..=DA_MAX_ROWS).contains(&rows) && rows.next_power_of_two() == 1 << depth;
                 assert_eq!(result.is_ok(), valid, "rows={rows}, depth={depth}");
                 if let Ok(execution) = result {
@@ -4248,8 +4111,11 @@ def main():
                 }
             }
         }
-        for bad in [F192::ZERO, F192::new(0, 1, 0), count(1).inv()] {
-            for public in [[bad, count(0)], [count(1), bad]] {
+        for bad in [F64::ZERO, count(1).inv()] {
+            for public in [
+                [bad, count(0), F64::ZERO, F64::ZERO],
+                [count(1), bad, F64::ZERO, F64::ZERO],
+            ] {
                 assert!(std::panic::catch_unwind(|| guest.execute(public)).is_err());
             }
         }
@@ -4276,12 +4142,11 @@ def main():
                 let expected = value.max(1).next_power_of_two().ilog2() as usize;
                 for depth in 0..=9 {
                     let mut program = guest.clone();
-                    program.set_witness(
-                        "bits",
-                        vec![(0..8).map(|j| F192::from(F64(((value >> j) & 1) as u64))).collect()],
-                    );
+                    program.set_witness("bits", vec![(0..8).map(|j| F64(((value >> j) & 1) as u64)).collect()]);
                     program.set_witness("ceil_log", vec![vec![count(depth)]]);
-                    let result = std::panic::catch_unwind(|| program.execute([count(value), count(depth)]));
+                    let result = std::panic::catch_unwind(|| {
+                        program.execute([count(value), count(depth), F64::ZERO, F64::ZERO])
+                    });
                     assert_eq!(
                         result.is_ok(),
                         depth == expected.max(floor),
@@ -4853,13 +4718,14 @@ def main():
                 h.entries("raw_index")[0] = vec![count(SMALL_LEAF_SIZE)];
             }),
             ("group (n_xmss inflated)", &|h: &mut Hints| {
-                h.entries("group")[0][3] = count(SMALL_LEAF_SIZE + 1);
+                h.entries("group")[0][5] = count(SMALL_LEAF_SIZE + 1);
             }),
             ("group (n_raw_xmss understated)", &|h: &mut Hints| {
-                h.entries("group")[0][5] = count(SMALL_LEAF_SIZE - 1);
+                h.entries("group")[0][7] = count(SMALL_LEAF_SIZE - 1);
             }),
             ("group (a spurious duplicate slot)", &|h: &mut Hints| {
-                h.entries("group")[0][4] = count(1);
+                h.entries("group")[0][6] = count(1);
+                h.push("dup_pubkeys", vec![F64::ZERO; 4]);
             }),
             // One more group than the hint stream carries: witness generation
             // has nothing to pop for it.
@@ -4867,7 +4733,7 @@ def main():
                 h.entries("meta")[0][0] = count(2);
             }),
             ("pubkeys (a key nobody signed for)", &|h: &mut Hints| {
-                h.entries("pubkeys")[0][0] += F192::ONE;
+                h.entries("pubkeys")[0][0] += F64::ONE;
             }),
             // The window split of a list hash is advice, so both halves are pinned:
             // the product identity ties them to the block count, and the tail's own
@@ -4882,23 +4748,23 @@ def main():
                 h.entries("signers_split")[0][1] = count(SIGNERS_WINDOW);
             }),
             ("fs_seed", &|h: &mut Hints| {
-                h.entries("fs_seed")[0][0] += F192::ONE;
+                h.entries("fs_seed")[0][0] += F64::ONE;
             }),
             ("leaf_defer", &|h: &mut Hints| {
-                h.entries("leaf_defer")[0][0] += F192::ONE;
+                h.entries("leaf_defer")[0][0] += F64::ONE;
             }),
             // A leaf derives its group's tweak table from this, so a wrong
             // epoch is caught by the signatures long before the statement digest.
             ("group (another epoch's tweak table)", &|h: &mut Hints| {
-                h.entries("group")[0][0] += F192::ONE;
+                h.entries("group")[0][0] += F64::ONE;
             }),
             ("group (wider than the u32 the verifier holds)", &|h: &mut Hints| {
-                h.entries("group")[0][0] += F192::new(0, 1, 0);
+                h.entries("group")[0][0] += F64(1 << 32);
             }),
             // The group's signatures were made over another message, so the
             // encoding digests reject long before the statement digest.
             ("group (another message under the signatures)", &|h: &mut Hints| {
-                h.entries("group")[0][1] += F192::ONE;
+                h.entries("group")[0][1] += F64::ONE;
             }),
         ];
         for (description, tamper) in leaf_cases {
@@ -4926,8 +4792,8 @@ def main():
                 entries[0][0] = other;
             }),
             ("group (a group's count moved to the other)", &|h: &mut Hints| {
-                h.entries("group")[0][3] = count(1);
-                h.entries("group")[1][3] = count(2);
+                h.entries("group")[0][5] = count(1);
+                h.entries("group")[1][5] = count(2);
             }),
             // The declared count is advice: keep both table groups but hash only the
             // first, while the statement still publishes both.
@@ -4963,38 +4829,38 @@ def main():
                 entries[1] = entries[0].clone();
             }),
             ("meta (n_sphincs inflated)", &|h: &mut Hints| {
-                h.entries("meta")[0][1] = count(3);
+                h.entries("meta")[0][2] = count(3);
             }),
             ("meta (n_raw_sphincs understated)", &|h: &mut Hints| {
-                h.entries("meta")[0][3] = count(1);
+                h.entries("meta")[0][4] = count(1);
             }),
             ("sphincs_signers (a message nobody signed)", &|h: &mut Hints| {
-                h.entries("sphincs_signers")[0][2] += F192::ONE;
+                h.entries("sphincs_signers")[0][4] += F64::ONE;
             }),
             ("sphincs_signers (a key nobody signed for)", &|h: &mut Hints| {
-                h.entries("sphincs_signers")[0][0] += F192::ONE;
+                h.entries("sphincs_signers")[0][0] += F64::ONE;
             }),
             ("sp_rand (another randomizer, so another index)", &|h: &mut Hints| {
-                h.entries("sp_rand")[0][0] += F192::ONE;
+                h.entries("sp_rand")[0][0] += F64::ONE;
             }),
             ("sp_counter", &|h: &mut Hints| {
-                h.entries("sp_counter")[0][0] += F192::ONE;
+                h.entries("sp_counter")[0][0] += F64::ONE;
             }),
             ("sp_digits", &|h: &mut Hints| {
                 let entries = h.entries("sp_digits");
-                entries[0][0] *= F192::from(primitives::field::G);
+                entries[0][0] *= G;
             }),
             ("sp_chain_starts", &|h: &mut Hints| {
-                h.entries("sp_chain_starts")[0][0] += F192::ONE;
+                h.entries("sp_chain_starts")[0][0] += F64::ONE;
             }),
             ("sp_fts_secrets", &|h: &mut Hints| {
-                h.entries("sp_fts_secrets")[0][0] += F192::ONE;
+                h.entries("sp_fts_secrets")[0][0] += F64::ONE;
             }),
             ("sp_fts_paths", &|h: &mut Hints| {
-                h.entries("sp_fts_paths")[0][0] += F192::ONE;
+                h.entries("sp_fts_paths")[0][0] += F64::ONE;
             }),
             ("sp_siblings", &|h: &mut Hints| {
-                h.entries("sp_siblings")[0][0] += F192::ONE;
+                h.entries("sp_siblings")[0][0] += F64::ONE;
             }),
         ];
         for (description, tamper) in mixed_cases {
@@ -5018,75 +4884,79 @@ def main():
                 order[0] = count(order.len());
             }),
             ("merkle cap (all hashes skipped)", &|h: &mut Hints| {
-                h.entries("merkle_cap_active")[0].fill(F192::ZERO);
+                h.entries("merkle_cap_active")[0].fill(F64::ZERO);
             }),
             ("merkle cap (one ancestor skipped)", &|h: &mut Hints| {
                 let flags = &mut h.entries("merkle_cap_active")[0];
-                let active = flags.iter_mut().skip(2).find(|x| **x == F192::ONE).unwrap();
-                *active = F192::ZERO;
+                let active = flags.iter_mut().skip(2).find(|x| **x == F64::ONE).unwrap();
+                *active = F64::ZERO;
             }),
             ("merkle cap (root)", &|h: &mut Hints| {
-                h.entries("merkle_caps")[0][2] += F192::ONE;
+                h.entries("merkle_caps")[0][4] += F64::ONE;
             }),
             ("merkle cap (subtree)", &|h: &mut Hints| {
-                h.entries("merkle_caps")[0][4] += F192::ONE;
+                h.entries("merkle_caps")[0][8] += F64::ONE;
             }),
             ("merkle children (reversed)", &|h: &mut Hints| {
                 let children = &mut h.entries("merkle_children")[0];
-                children.swap(0, 2);
-                children.swap(1, 3);
+                for word in 0..4 {
+                    children.swap(word, word + 4);
+                }
             }),
             ("merkle path (below cap)", &|h: &mut Hints| {
-                h.entries("merkle_children")[0][0] += F192::ONE;
+                h.entries("merkle_children")[0][0] += F64::ONE;
             }),
             ("merkle leaf", &|h: &mut Hints| {
-                h.entries("merkle_leaf_rows")[0][0] += F192::ONE;
+                h.entries("merkle_leaf_rows")[0][0] += F64::ONE;
             }),
-            ("merkle leaf (extension limb outside K)", &|h: &mut Hints| {
-                let rows = h.entries("merkle_leaf_rows");
-                let row = rows
-                    .iter_mut()
-                    .find(|row| row.len() == 3 << pcs::whir_config::SUBSEQUENT_FOLDING_FACTOR)
-                    .unwrap();
-                row[0] += F192::new(0, 1, 0);
-            }),
+            (
+                "merkle leaf (an upper limb in a later level's row)",
+                &|h: &mut Hints| {
+                    let rows = h.entries("merkle_leaf_rows");
+                    let row = rows
+                        .iter_mut()
+                        .find(|row| row.len() == 3 << pcs::whir_config::SUBSEQUENT_FOLDING_FACTOR)
+                        .unwrap();
+                    row[1] += F64::ONE;
+                },
+            ),
             ("merkle path (last query)", &|h: &mut Hints| {
                 let paths = h.entries("merkle_children");
-                *paths.last_mut().unwrap().last_mut().unwrap() += F192::ONE;
+                *paths.last_mut().unwrap().last_mut().unwrap() += F64::ONE;
             }),
             ("child_index (duplicate slot)", &|h: &mut Hints| {
                 let entries = h.entries("child_index");
                 entries[1] = entries[0].clone();
             }),
             ("child_index (out of range)", &|h: &mut Hints| {
-                h.entries("child_index")[0] = vec![count(2 * SMALL_LEAF_SIZE)];
+                h.entries("child_index")[0][0] = count(2 * SMALL_LEAF_SIZE);
             }),
             ("child_group (count understated)", &|h: &mut Hints| {
-                h.entries("child_group")[0][3] = count(SMALL_LEAF_SIZE - 1);
+                h.entries("child_group")[0][5] = count(SMALL_LEAF_SIZE - 1);
             }),
             // A child group claimed at an epoch or under a message the child
             // never carried: the map equality or the rebuilt digest rejects.
             ("child_group (epoch)", &|h: &mut Hints| {
-                h.entries("child_group")[0][0] += F192::ONE;
+                h.entries("child_group")[0][0] += F64::ONE;
             }),
             ("child_group (message)", &|h: &mut Hints| {
-                h.entries("child_group")[0][1] += F192::ONE;
+                h.entries("child_group")[0][1] += F64::ONE;
             }),
             ("child_defer (a forged carried claim)", &|h: &mut Hints| {
-                h.entries("child_defer")[0][0] += F192::ONE;
+                h.entries("child_defer")[0][0] += F64::ONE;
             }),
             ("bc_star_hint", &|h: &mut Hints| {
-                h.entries("bc_star_hint")[0][0] += F192::ONE;
+                h.entries("bc_star_hint")[0][0] += F64::ONE;
             }),
             ("mat_stars_hint", &|h: &mut Hints| {
-                h.entries("mat_stars_hint")[0][0] += F192::ONE;
+                h.entries("mat_stars_hint")[0][0] += F64::ONE;
             }),
             // The one hint carrying flock's whole lincheck terminal. Pinned not
             // by the guest's own assert (which merely defines it) but by the
             // matrix batching, whose reduced claims the root discharges against
             // the real A_0/B_0.
             ("matpart", &|h: &mut Hints| {
-                h.entries("matpart")[0][0] += F192::ONE;
+                h.entries("matpart")[0][0] += F64::ONE;
             }),
             // A node holding no raw XMSS signature builds no tweak tables, so
             // the statement digest is all that pins its epochs. The children's
@@ -5095,7 +4965,7 @@ def main():
             (
                 "group (a node that derives nothing from the epoch)",
                 &|h: &mut Hints| {
-                    h.entries("group")[0][0] += F192::ONE;
+                    h.entries("group")[0][0] += F64::ONE;
                 },
             ),
         ];
@@ -5249,7 +5119,7 @@ def main():
         );
     }
 
-    /// Every `BLAKE2s` the guest itself runs reads a metadata cell an earlier
+    /// Every `BLAKE2s` the guest itself runs reads two metadata cells an earlier
     /// instruction of its own function wrote: a `SET` for a compile-time counter,
     /// an `XOR` for a window's base plus its offset. An unwritten cell is
     /// prover-chosen (write-once memory constrains only what something writes), so
@@ -5270,17 +5140,16 @@ def main():
         // Which frame cell an instruction writes, if any. A `DEREF` in cell mode is
         // bidirectional under write-once, so its local operand counts as a write.
         let written = |op: &Op| match *op {
-            Op::Set { o, .. } => vec![o],
-            Op::Xor { c, .. } | Op::Mul { c, .. } => vec![c],
-            Op::Deref { o3, mode, .. } => {
-                if mode == DerefMode::Cell {
-                    vec![o3]
-                } else {
-                    vec![]
-                }
-            }
-            Op::Blake2s { out, .. } => vec![out, out + 1],
-            Op::Jump { .. } => vec![],
+            Op::Set { o, .. } => o..o + 1,
+            Op::Xor64 { c, .. } | Op::Mul64 { c, .. } => c..c + 1,
+            Op::Xor192 { c, .. } | Op::Mul192 { c, .. } => c..c + 3,
+            Op::Deref {
+                o3,
+                mode: DerefMode::Cell,
+                ..
+            } => o3..o3 + 1,
+            Op::Deref { .. } | Op::Jump { .. } => 0..0,
+            Op::Blake2s { out, .. } => out..out + 4,
         };
         let program = unified_guest();
         let fill: Vec<std::ops::Range<usize>> = program
@@ -5298,8 +5167,13 @@ def main():
                 if fill.iter().any(|f| f.contains(&pc)) {
                     continue;
                 }
-                if !program.prog[range.start..pc].iter().any(|op| written(op).contains(&md)) {
-                    unwritten.push(format!("{name} pc {pc} md fp[{md}]"));
+                for cell in md..md + 2 {
+                    if !program.prog[range.start..pc]
+                        .iter()
+                        .any(|op| written(op).contains(&cell))
+                    {
+                        unwritten.push(format!("{name} pc {pc} md fp[{cell}]"));
+                    }
                 }
             }
         }

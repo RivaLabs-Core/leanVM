@@ -1,6 +1,6 @@
 //! Range checks *in the exponent*: `assert log x < log GEN ** k` (or
 //! `assert log x < k`) proves `log_g(x) < k`, i.e. `x ∈ {g^0, g^1, …, g^{k-1}}`,
-//! in 3 cycles: `DEREF x` bounds `log(x)` by the memory size, a `MUL` into the
+//! in 3 cycles: `DEREF x` bounds `log(x)` by the memory size, a `MUL64` into the
 //! write-once constant cell `g^{k-1}` back-solves and binds the complement
 //! `y = g^{k-1-log(x)}`, and `DEREF y` bounds the complement. leanVM's DEREF
 //! range-check trick, transported to g-powers; the only nondeterminism is the
@@ -8,9 +8,9 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 
-use crate::common::mix;
+use crate::common::{mix, pi};
 
 /// Both bound forms (`log GEN ** k` and a plain integer exponent) with the
 /// boundary elements (`g^{k-1}`, `1 = g^0`), end-to-end: prove + verify, and a
@@ -33,13 +33,13 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
+    let want = pi(&[g_pow(12), g_pow(5)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     // 2 DEREFs per range check (4 checks) + 2 publishing stores.
     assert_eq!(mix(src, want)[3], 10, "DEREF count");
     verify(&program, &want, &proof).expect("range-checked program verifies");
 
-    let bad = [F192::from(g_pow(12)), F192::from(g_pow(6))];
+    let bad = pi(&[g_pow(12), g_pow(6)]);
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong public input must be rejected"
@@ -61,7 +61,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(300)), F192::from(g_pow(300))];
+    let want = pi(&[g_pow(300), g_pow(300)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("deferred-fill program verifies");
 }
@@ -81,7 +81,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(5)); 2];
+    let want = pi(&[g_pow(5), g_pow(5)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("max-bound range check verifies");
 }
@@ -102,7 +102,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(7))];
+    let want = pi(&[F64(5), F64(7)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     // 6 iterations × 2 range-check DEREFs, plus call/publish plumbing.
     assert!(mix(src, want)[3] >= 12, "at least the 12 range-check DEREFs");
@@ -117,7 +117,7 @@ def main():
 fn range_check_at_bound_rejected() {
     let src = "def main():\n    x = GEN ** 8\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::ZERO, F192::ZERO]);
+    program.execute([F64::ZERO; 4]);
 }
 
 /// A value that is no small g-power at all (5 = x^2 + 1) fails at the first
@@ -127,7 +127,7 @@ fn range_check_at_bound_rejected() {
 fn range_check_non_g_power_rejected() {
     let src = "def main():\n    x = 5\n    assert log x < 8\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::ZERO, F192::ZERO]);
+    program.execute([F64::ZERO; 4]);
 }
 
 /// Bound 0 names the empty set: rejected at compile time.
@@ -177,8 +177,8 @@ def main():
     return
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("n", vec![vec![F192::from(g_pow(6))]]);
-    let want = [F192::from(g_pow(5)), F192::from(g_pow(6))];
+    program.set_witness("n", vec![vec![g_pow(6)]]);
+    let want = pi(&[g_pow(5), g_pow(6)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("runtime-bound range check verifies");
 }
@@ -198,8 +198,8 @@ def main():
     return
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("n", vec![vec![F192::from(g_pow(5))]]);
-    program.execute([F192::ZERO, F192::ZERO]);
+    program.set_witness("n", vec![vec![g_pow(5)]]);
+    program.execute([F64::ZERO; 4]);
 }
 
 /// A bound that folds at parse time but is not a power of `GEN` stays a parse

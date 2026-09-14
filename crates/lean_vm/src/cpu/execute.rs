@@ -10,7 +10,7 @@ use primitives::{
 };
 
 pub struct Execution {
-    pub mem: Vec<F192>,  // data memory after the run, write-once (size cells, power of two)
+    pub mem: Vec<F64>,   // data memory after the run, write-once (size cells, power of two)
     pub cycles: usize,   // number of instructions the run executed (trace length)
     pub mem_used: usize, // cells actually touched, before the power-of-two pad of `mem`
     /// Rows per table before the fill blocks ran: the work the program itself does, as
@@ -33,18 +33,12 @@ pub struct Execution {
     pub(crate) trace: Trace, // rows + final access-count columns, emitted in the same walk
 }
 
-/// A memory word interpreted as a K-valued address: valid only when both
-/// extension limbs are zero (every g-power is a K-element).
-fn as_addr(v: F192) -> Option<F64> {
-    (v.c1 == 0 && v.c2 == 0).then_some(F64(v.c0))
-}
-
 fn pop_witness<'a>(
-    witness: &'a HashMap<String, Vec<Vec<F192>>>,
+    witness: &'a HashMap<String, Vec<Vec<F64>>>,
     positions: &mut HashMap<&'a str, usize>,
     name: &'a str,
     len: u32,
-) -> &'a [F192] {
+) -> &'a [F64] {
     let entries = witness
         .get(name)
         .unwrap_or_else(|| panic!("no witness stream `{name}` (Program::set_witness)"));
@@ -70,9 +64,9 @@ fn pop_witness<'a>(
 impl Program {
     /// Run the program in write-once *fill* mode to produce its [`Execution`]:
     /// the final memory image and the step count. The public input seeds the
-    /// first two memory cells `m[0], m[1]` (§sec:e2e-pi). Compilation yields the
-    /// `Program`; executing it (here) and proving it are separate later phases.
-    pub fn execute(&self, public_input: [F192; 2]) -> Execution {
+    /// first four memory cells (§sec:e2e-pi). Compilation yields the `Program`;
+    /// executing it (here) and proving it are separate later phases.
+    pub fn execute(&self, public_input: [F64; 4]) -> Execution {
         self.execute_filled(public_input, super::filler::NO_FLOORS)
     }
 
@@ -87,7 +81,7 @@ impl Program {
     /// executing anything; one re-run then realises it, and the loop only exists
     /// because the fill's own closing jumps and frames feed back into the size.
     /// Runs that already clear the floor (every one of consequence) execute once.
-    pub(crate) fn execute_to_floor(&self, public_input: [F192; 2]) -> Execution {
+    pub(crate) fn execute_to_floor(&self, public_input: [F64; 4]) -> Execution {
         let mut exec = self.execute_filled(public_input, super::filler::NO_FLOORS);
         if self.min_log_committed == 0 {
             return exec;
@@ -143,7 +137,7 @@ impl Program {
     /// ([`Program::min_log_committed`]).
     pub(crate) fn execute_filled(
         &self,
-        public_input: [F192; 2],
+        public_input: [F64; 4],
         fill_floors: [usize; crate::tables::N_TABLES],
     ) -> Execution {
         // One interpretation of the program, then the fill. The blocks that bring every
@@ -161,20 +155,20 @@ impl Program {
 
         // Dense write-once data memory (read path stays a vector for speed), the
         // per-cell access count (g^{count}, default g^0 = 1), and a written mask.
-        let n0 = self.main_frame.max(2) as usize;
+        let n0 = self.main_frame.max(4) as usize;
         let mut m = Mem {
-            cells: vec![F192::ZERO; n0],
+            cells: vec![F64::ZERO; n0],
             written: vec![false; n0],
             count: vec![F64::ONE; n0],
             dbg_pc: 0,
             dbg_line: 0,
             dbg_hint: None,
         };
-        // Seed the public input into m[0], m[1] (addresses g^0, g^1, §sec:e2e-pi).
-        m.cells[0] = public_input[0];
-        m.cells[1] = public_input[1];
-        m.written[0] = true;
-        m.written[1] = true;
+        // Seed the public input into the first four cells (§sec:e2e-pi).
+        for (i, &word) in public_input.iter().enumerate() {
+            m.cells[i] = word;
+            m.written[i] = true;
+        }
 
         // Per-pc bytecode execution count (g^{count}).
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; self.prog.len()];
@@ -215,8 +209,10 @@ impl Program {
 
         // Per-opcode trace rows, accumulated during the walk and assembled into the
         // `Trace` once the run finishes (alongside the final count columns).
-        let mut xor: Vec<Xrow> = Vec::new();
-        let mut mul: Vec<Xrow> = Vec::new();
+        let mut xor64: Vec<Xrow> = Vec::new();
+        let mut mul64: Vec<Xrow> = Vec::new();
+        let mut xor192: Vec<X3row> = Vec::new();
+        let mut mul192: Vec<X3row> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
@@ -232,7 +228,7 @@ impl Program {
         // The three dense per-cell vectors, kept in lockstep. Every method is
         // `#[inline(always)]`: they sit in the interpreter's hot opcode loop.
         struct Mem {
-            cells: Vec<F192>,
+            cells: Vec<F64>,
             written: Vec<bool>,
             count: Vec<F64>,
             /// The pc of the currently executing instruction, and the name of the
@@ -253,47 +249,57 @@ impl Program {
             fn ensure(&mut self, idx: usize) {
                 if idx >= self.cells.len() {
                     let n = idx + 1;
-                    self.cells.resize(n, F192::ZERO);
+                    self.cells.resize(n, F64::ZERO);
                     self.written.resize(n, false);
                     self.count.resize(n, F64::ONE);
                 }
             }
+            #[inline(always)]
+            fn is_written(&self, cell: u32) -> bool {
+                (cell as usize) < self.written.len() && self.written[cell as usize]
+            }
             // Read a cell; an unwritten cell reads as ZERO.
             #[inline(always)]
-            fn get(&self, cell: u32) -> F192 {
-                let c = cell as usize;
-                if c < self.written.len() && self.written[c] {
-                    self.cells[c]
+            fn get(&self, cell: u32) -> F64 {
+                if self.is_written(cell) {
+                    self.cells[cell as usize]
                 } else {
-                    F192::ZERO
+                    F64::ZERO
                 }
+            }
+            // The `E` element in three consecutive cells.
+            #[inline(always)]
+            fn get3(&self, cell: u32) -> F192 {
+                F192::new(self.get(cell).0, self.get(cell + 1).0, self.get(cell + 2).0)
             }
             // Write-once store: writing a different value to an already-set cell panics.
             #[inline(always)]
-            fn put(&mut self, cell: u32, v: F192) {
+            fn put(&mut self, cell: u32, v: F64) {
                 self.ensure(cell as usize);
                 let c = cell as usize;
                 if self.written[c] {
                     assert!(
                         self.cells[c] == v,
-                        "write-once conflict at cell {cell} ({}, hint {:?}): had {:x}:{:x}:{:x}, new {:x}:{:x}:{:x}",
+                        "write-once conflict at cell {cell} ({}, hint {:?}): had {:#x}, new {:#x}",
                         if self.dbg_line == 0 {
                             format!("pc {}", self.dbg_pc)
                         } else {
                             format!("line {}, pc {}", self.dbg_line, self.dbg_pc)
                         },
                         self.dbg_hint,
-                        self.cells[c].c2,
-                        self.cells[c].c1,
-                        self.cells[c].c0,
-                        v.c2,
-                        v.c1,
-                        v.c0
+                        self.cells[c].0,
+                        v.0
                     );
                 } else {
                     self.cells[c] = v;
                     self.written[c] = true;
                 }
+            }
+            #[inline(always)]
+            fn put3(&mut self, cell: u32, v: F192) {
+                self.put(cell, F64(v.c0));
+                self.put(cell + 1, F64(v.c1));
+                self.put(cell + 2, F64(v.c2));
             }
             // Read the running access count and advance it by ×g (the free increment).
             // ×g is ×x, i.e. `mul_by_g`, a shift+fold rather than a PMULL; this runs on every
@@ -305,6 +311,14 @@ impl Program {
                 let count = self.count[cell_idx];
                 self.count[cell_idx] = mul_by_g(count);
                 count
+            }
+            #[inline(always)]
+            fn bump3(&mut self, cell: u32) -> [F64; 3] {
+                [
+                    self.bump_access_count(cell),
+                    self.bump_access_count(cell + 1),
+                    self.bump_access_count(cell + 2),
+                ]
             }
         }
         // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
@@ -337,8 +351,8 @@ impl Program {
         // The cell a heap run starts at: read the pointer back out of memory and
         // invert it. Shared by every hint that writes through one.
         fn heap_base(m: &Mem, g: &mut GPow, cell: u32, what: &str) -> u32 {
-            let p = as_addr(m.get(cell)).unwrap_or_else(|| panic!("{what} pointer is not a K-valued g-power"));
-            g.log(p).unwrap_or_else(|| panic!("{what} pointer is not a g-power"))
+            g.log(m.get(cell))
+                .unwrap_or_else(|| panic!("{what} pointer is not a g-power"))
         }
 
         // Where a computed-advice bit buffer starts: a frame run needs no lookup
@@ -367,7 +381,16 @@ impl Program {
             if switch {
                 if left.is_none() {
                     assert_eq!((pc, fp), (ending_pc, 0), "main must halt at the sentinel pc g^{{B-1}}");
-                    let counts = [xor.len(), mul.len(), set.len(), deref.len(), jump.len(), blake2s.len()];
+                    let counts = [
+                        xor64.len(),
+                        mul64.len(),
+                        set.len(),
+                        deref.len(),
+                        jump.len(),
+                        blake2s.len(),
+                        xor192.len(),
+                        mul192.len(),
+                    ];
                     base_counts = Some(counts);
                     fill_base = (1usize << crate::cpu::MIN_LOG_MEM).max(next_free as usize);
                     // A frame per cycle, from the same bump allocator that serves `Alloc`
@@ -386,9 +409,9 @@ impl Program {
                             // What the closing jump reads: back to the block's own first
                             // instruction, in this same frame. Then the pointer the `DEREF`
                             // dummy follows, memory cell `0`.
-                            m.put(frame + fr::DEST, F192::from(g.pow(block_pc as usize)));
-                            m.put(frame + fr::NEXT_FP, F192::from(g.pow(frame as usize)));
-                            m.put(frame + fr::PTR, F192::ONE);
+                            m.put(frame + fr::DEST, g.pow(block_pc as usize));
+                            m.put(frame + fr::NEXT_FP, g.pow(frame as usize));
+                            m.put(frame + fr::PTR, F64::ONE);
                             runs.push((block_pc, frame, n * (size as usize + 1)));
                             frame += fr::CELLS;
                         }
@@ -430,8 +453,8 @@ impl Program {
                         RHint::Log2Ceil { .. } => "Log2Ceil",
                         RHint::BitDecompose { .. } => "BitDecompose",
                         RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
-                        RHint::FieldLimbs { .. } => "FieldLimbs",
                         RHint::Inverse { .. } => "Inverse",
+                        RHint::Inverse192 { .. } => "Inverse192",
                         RHint::Print { .. } => "Print",
                     });
                     match h {
@@ -460,8 +483,7 @@ impl Program {
                                     end,
                                     start_inverse,
                                 } => {
-                                    let span =
-                                        as_addr(m.get(fp + end)).expect("loop bound is not in K") * start_inverse;
+                                    let span = m.get(fp + end) * start_inverse;
                                     assert!(!span.is_zero(), "loop bound is zero");
                                     let max_frames = ((1u64 << 28) - u64::from(next_free)) / u64::from(size);
                                     let max_span = max_frames.saturating_sub(1) as usize;
@@ -477,7 +499,7 @@ impl Program {
                                 // the cell holds g^k, allocate k cells (reverse
                                 // g-power lookup, growing the index if needed).
                                 RHint::AllocDyn { ptr, size } => {
-                                    let sz = as_addr(m.get(fp + size)).expect("HeapBuf size is not a K-valued g-power");
+                                    let sz = m.get(fp + size);
                                     let cells = g.log(sz).unwrap_or_else(|| {
                                         g.grow_to(1 << 20);
                                         g.log(sz)
@@ -496,7 +518,7 @@ impl Program {
                                 // The base is about to become a pointer in memory.
                                 g.note(base as usize);
                                 m.ensure(next_free as usize);
-                                m.cells[cell as usize] = F192::from(g.pow(base as usize));
+                                m.cells[cell as usize] = g.pow(base as usize);
                                 m.written[cell as usize] = true;
                             }
                         }
@@ -506,25 +528,20 @@ impl Program {
                             if m.written[c as usize] {
                                 let v = m.cells[c as usize];
                                 // Small integers and small g-powers overlap (8 = x^3
-                                // = g^3): show every reading that applies. Only a
-                                // K-valued word (extension limbs 0) can be a g-power.
-                                let k = as_addr(v).and_then(|lo| g.log(lo));
-                                let small = v.c2 == 0 && v.c1 == 0 && v.c0 < 1 << 32;
+                                // = g^3): show every reading that applies.
+                                let k = g.log(v);
+                                let small = v.0 < 1 << 32;
                                 match (k, small) {
-                                    (Some(k), true) => eprintln!(
-                                        "[print] {label} = {} (g^{})",
-                                        pretty_integer(v.c0),
-                                        pretty_integer(k)
-                                    ),
+                                    (Some(k), true) => {
+                                        eprintln!("[print] {label} = {} (g^{})", pretty_integer(v.0), pretty_integer(k))
+                                    }
                                     (Some(k), false) => {
                                         eprintln!("[print] {label} = g^{}", pretty_integer(k))
                                     }
                                     (None, true) => {
-                                        eprintln!("[print] {label} = {}", pretty_integer(v.c0))
+                                        eprintln!("[print] {label} = {}", pretty_integer(v.0))
                                     }
-                                    (None, false) => {
-                                        eprintln!("[print] {label} = {:#x}:{:#x}:{:#x}", v.c2, v.c1, v.c0)
-                                    }
+                                    (None, false) => eprintln!("[print] {label} = {:#x}", v.0),
                                 }
                             } else {
                                 eprintln!("[print] {label} = <unwritten>");
@@ -562,39 +579,31 @@ impl Program {
                                 u128::BITS - (word - 1).leading_zeros()
                             };
                             let mu = cl.max(*floor);
-                            m.put(fp + dst, F192::from(primitives::field::g_pow(mu as usize)));
+                            m.put(fp + dst, primitives::field::g_pow(mu as usize));
                         }
                         RHint::BitDecompose { value, bits, nbits } => {
-                            assert!(*nbits <= 192, "a machine word has 192 bits");
-                            let v = m.get(fp + value);
-                            let limbs = [v.c0, v.c1, v.c2];
+                            assert!(*nbits <= 64, "a machine word has 64 bits");
+                            let v = m.get(fp + value).0;
                             let bb = bits_base(&m, &mut g, fp, *bits, "decompose");
                             for j in 0..*nbits {
-                                let bit = (limbs[j as usize / 64] >> (j % 64)) & 1;
-                                m.put(bb + j, F192::new(bit, 0, 0));
+                                m.put(bb + j, F64((v >> j) & 1));
                             }
                         }
                         RHint::BitDecomposeExp { value, bits, nbits } => {
-                            let x = as_addr(m.get(fp + value))
-                                .expect("hint_decompose_bits_exponent value is not a K-valued g-power");
+                            let x = m.get(fp + value);
                             let n = bounded_dlog(&mut dlog_cache, x, *nbits);
                             let bb = bits_base(&m, &mut g, fp, *bits, "hint_decompose_bits_exponent");
                             for j in 0..*nbits {
-                                let bit = ((n >> j) & 1) as u64;
-                                m.put(bb + j, F192::new(bit, 0, 0));
-                            }
-                        }
-                        RHint::FieldLimbs { value, base, len } => {
-                            assert!((1..=3).contains(len), "an F192 value has three K limbs");
-                            let v = m.get(fp + value);
-                            let limbs = [v.c0, v.c1, v.c2];
-                            for j in 0..*len {
-                                m.put(fp + base + j, F192::new(limbs[j as usize], 0, 0));
+                                m.put(bb + j, F64(((n >> j) & 1) as u64));
                             }
                         }
                         RHint::Inverse { value, dst } => {
                             let v = m.get(fp + value);
-                            m.put(fp + dst, if v.is_zero() { F192::ZERO } else { v.inv() });
+                            m.put(fp + dst, if v.is_zero() { F64::ZERO } else { v.inv() });
+                        }
+                        RHint::Inverse192 { value, dst } => {
+                            let v = m.get3(fp + value);
+                            m.put3(fp + dst, if v.is_zero() { F192::ZERO } else { v.inv() });
                         }
                     }
                     m.dbg_hint = None;
@@ -613,12 +622,12 @@ impl Program {
                 v
             };
 
-            // Loaded once: the shared Xor/Mul arm needs the discriminant again,
+            // Loaded once: the shared arithmetic arms need the discriminant again,
             // and `Op` is wide enough that re-reading it costs a second load.
             let op = self.prog[pc as usize];
             match op {
-                Op::Xor { a, b, c } | Op::Mul { a, b, c } => {
-                    let is_xor = matches!(op, Op::Xor { .. });
+                Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => {
+                    let is_xor = matches!(op, Op::Xor64 { .. });
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     // The row is the equality `m[c] = m[a] op m[b]` over write-once
                     // memory. Normally the operands are known and the result is
@@ -633,12 +642,11 @@ impl Program {
                     // users are `MUL`), and an `XOR` into an already-written cell is
                     // how `assert a == b` is spelled, so deducing there would define
                     // the operand the assert exists to check instead of failing on it.
-                    let is_set = |w: &[bool], cell: u32| (cell as usize) < w.len() && w[cell as usize];
-                    if !is_xor && is_set(&m.written, ac) {
-                        let (ha, hb) = (is_set(&m.written, aa), is_set(&m.written, ab));
+                    if !is_xor && m.is_written(ac) {
+                        let (ha, hb) = (m.is_written(aa), m.is_written(ab));
                         if ha ^ hb {
                             let vk = m.get(if ha { aa } else { ab });
-                            assert!(!vk.is_zero(), "cannot back-solve MUL through a zero operand");
+                            assert!(!vk.is_zero(), "cannot back-solve MUL64 through a zero operand");
                             m.put(if ha { ab } else { aa }, m.get(ac) * vk.inv());
                         }
                     }
@@ -658,9 +666,41 @@ impl Program {
                         bytecode_read,
                     };
                     if is_xor {
-                        xor.push(row);
+                        xor64.push(row);
                     } else {
-                        mul.push(row);
+                        mul64.push(row);
+                    }
+                    pc += 1;
+                }
+                Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
+                    let is_xor = matches!(op, Op::Xor192 { .. });
+                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
+                    let written = |m: &Mem, cell: u32| (0..3).filter(|&i| m.is_written(cell + i)).count();
+                    // The `MUL64` back-solve, `div192`'s quotient: an operand not fully
+                    // written is solved for when the other one is, its written limbs
+                    // checked like any store.
+                    if !is_xor && written(&m, ac) == 3 {
+                        let (wa, wb) = (written(&m, aa), written(&m, ab));
+                        if (wa == 3) != (wb == 3) {
+                            let vk = m.get3(if wa == 3 { aa } else { ab });
+                            assert!(!vk.is_zero(), "cannot back-solve MUL192 through a zero operand");
+                            m.put3(if wa == 3 { ab } else { aa }, m.get3(ac) * vk.inv());
+                        }
+                    }
+                    let (va, vb) = (m.get3(aa), m.get3(ab));
+                    m.put3(ac, if is_xor { va + vb } else { va * vb });
+                    let row = X3row {
+                        pc,
+                        fp,
+                        ra: m.bump3(aa),
+                        rb: m.bump3(ab),
+                        rc: m.bump3(ac),
+                        bytecode_read,
+                    };
+                    if is_xor {
+                        xor192.push(row);
+                    } else {
+                        mul192.push(row);
                     }
                     pc += 1;
                 }
@@ -679,15 +719,7 @@ impl Program {
                 Op::Deref { o1, o2, o3, mode } => {
                     let a1 = fp + o1;
                     let p = m.get(a1);
-                    let p_addr = as_addr(p).unwrap_or_else(|| {
-                        panic!(
-                            "DEREF pointer is not a K-valued g-power at pc {pc} (in {}): {:x}:{:x}",
-                            self.site_at(pc),
-                            p.c1,
-                            p.c0
-                        )
-                    });
-                    let base = match g.log(p_addr) {
+                    let base = match g.log(p) {
                         Some(b) => b,
                         None => {
                             // Not indexed yet: grow the g-power index to the minimum
@@ -697,13 +729,13 @@ impl Program {
                             // pointer: a wild deref, or a failed range check
                             // (`assert log _ < _`) surfacing honestly.
                             g.grow_to(1 << MIN_LOG_MEM);
-                            g.log(p_addr).unwrap_or_else(|| {
+                            g.log(p).unwrap_or_else(|| {
                                 panic!(
                                     "DEREF pointer is not a small g-power at pc {pc} (in {}): a wild \
                                      pointer, or a failed range check \
                                      (value 0x{:016x})",
                                     self.site_at(pc),
-                                    p_addr.0
+                                    p.0
                                 )
                             })
                         }
@@ -715,22 +747,15 @@ impl Program {
                             // Equality m[a2] == m[a3]: fill the unset side.
                             m.ensure(a2);
                             let has2 = m.written[a2];
-                            let has3 = (a3 as usize) < m.written.len() && m.written[a3 as usize];
+                            let has3 = m.is_written(a3);
                             match (has2, has3) {
-                                (true, true) => {
-                                    assert!(
-                                        m.cells[a2] == m.get(a3),
-                                        "DEREF mismatch at pc {pc} (in {}): m[{a2}] = {:x}:{:x}:{:x} but \
-                                         m[fp+{o3}] = {:x}:{:x}:{:x}",
-                                        self.site_at(pc),
-                                        m.cells[a2].c2,
-                                        m.cells[a2].c1,
-                                        m.cells[a2].c0,
-                                        m.get(a3).c2,
-                                        m.get(a3).c1,
-                                        m.get(a3).c0,
-                                    )
-                                }
+                                (true, true) => assert!(
+                                    m.cells[a2] == m.get(a3),
+                                    "DEREF mismatch at pc {pc} (in {}): m[{a2}] = {:#x} but m[fp+{o3}] = {:#x}",
+                                    self.site_at(pc),
+                                    m.cells[a2].0,
+                                    m.get(a3).0,
+                                ),
                                 (true, false) => {
                                     let v = m.cells[a2];
                                     m.put(a3, v);
@@ -755,12 +780,12 @@ impl Program {
                             // The return target and the frame base are stored as
                             // addresses, and JUMP reads them back.
                             g.note(pc as usize + 2);
-                            let v = F192::from(g.pow(pc as usize + 2));
+                            let v = g.pow(pc as usize + 2);
                             m.put(a2 as u32, v);
                         }
                         DerefMode::Fp => {
                             g.note(fp as usize);
-                            let v = F192::from(g.pow(fp as usize));
+                            let v = g.pow(fp as usize);
                             m.put(a2 as u32, v);
                         }
                     }
@@ -779,15 +804,7 @@ impl Program {
                 }
                 Op::Jump { oc, od, of } => {
                     let (ac, ad, af) = (fp + oc, fp + od, fp + of);
-                    // All three cells are K-valued on EVERY row, taken or not: the
-                    // table commits one lane each and their memory flushes carry
-                    // literal zeros above it (§sec:tab-jump), which the bus would
-                    // otherwise not balance. A guest branches on g-powers; the one
-                    // idiom that once branched on a word, `assert a != b`, takes an
-                    // inverse hint instead (§sec:prog-div-ne).
-                    let c = as_addr(m.get(ac)).expect("JUMP condition is not a K-valued word");
-                    let d = as_addr(m.get(ad)).expect("JUMP target is not a K-valued word");
-                    let f = as_addr(m.get(af)).expect("JUMP fp is not a K-valued word");
+                    let (c, d, f) = (m.get(ac), m.get(ad), m.get(af));
                     // The is-nonzero witness `w = c⁻¹` is never used for control
                     // flow, only recorded as a witness column, so it is not
                     // computed here at all: `JumpTable::fill` batch-inverts every
@@ -795,7 +812,6 @@ impl Program {
                     let rc = m.bump_access_count(ac);
                     let rd = m.bump_access_count(ad);
                     let rf = m.bump_access_count(af);
-                    let taken = !c.is_zero();
                     jump.push(Jrow {
                         pc,
                         fp,
@@ -804,62 +820,35 @@ impl Program {
                         rf,
                         bytecode_read,
                     });
-                    if taken {
+                    if c.is_zero() {
+                        pc += 1;
+                    } else {
                         pc = g.log(d).expect("JUMP target not a g-power");
                         fp = g.log(f).expect("JUMP fp not a g-power");
-                    } else {
-                        pc += 1;
                     }
                 }
-                Op::Blake2s { ins, cv, out, md } => {
-                    // Four independently-addressed 128-bit message chunks, each a
-                    // single cell; the chaining value and the output each span two
-                    // consecutive cells; the metadata is one more cell.
-                    let (aa0, aa1, ab0, ab1) = (fp + ins[0], fp + ins[1], fp + ins[2], fp + ins[3]);
-                    let acv = fp + cv;
-                    let ac = fp + out;
-                    let amd = fp + md;
-                    let words = [aa0, aa1, ab0, ab1, acv, acv + 1, amd].map(|a| m.get(a));
-                    // Naming the operand and the line matters most for the metadata,
-                    // the one a guest builds with field arithmetic rather than reads.
-                    if let Some((i, w)) = words.iter().enumerate().find(|(_, w)| w.c2 != 0) {
-                        const CELLS: [&str; 7] = ["m0", "m1", "m2", "m3", "cv0", "cv1", "md"];
-                        panic!(
-                            "BLAKE2s {} cell is not a canonical 128-bit embedding at pc {pc} (in {}): \
-                             top limb 0x{:016x}",
-                            CELLS[i],
-                            self.site_at(pc),
-                            w.c2
-                        );
+                Op::Blake2s { .. } => {
+                    // Every cell the row touches, in value-lane order: the message
+                    // chunks, the digest, the chaining value, the metadata.
+                    let cells = crate::tables::blake2s_cells(&self.prog, pc, fp);
+                    let w = cells.map(|a| m.get(a));
+                    // Compress the 64 message bytes to the 32-byte result. No table
+                    // constraint covers the digest (the relation is proven by flock,
+                    // §hash_flock); the interpreter still computes the definite digest
+                    // so the output cells are consistent for any later read.
+                    let digest = blake2s_compress(
+                        [w[0], w[1], w[2], w[3]],
+                        [w[4], w[5], w[6], w[7]],
+                        [w[12], w[13], w[14], w[15]],
+                        [w[16], w[17]],
+                    );
+                    for (k, &word) in digest.iter().enumerate() {
+                        m.put(cells[8 + k], word);
                     }
-                    let va = [F64(words[0].c0), F64(words[0].c1), F64(words[1].c0), F64(words[1].c1)];
-                    let vb = [F64(words[2].c0), F64(words[2].c1), F64(words[3].c0), F64(words[3].c1)];
-                    let vcv = [F64(words[4].c0), F64(words[4].c1), F64(words[5].c0), F64(words[5].c1)];
-                    let metadata = words[6];
-                    // Compress the 64 message bytes to the 32-byte result, then
-                    // write it to c's two cells. No table constraint covers the
-                    // digest (the relation is proven by flock, §hash_flock); the
-                    // interpreter still computes the definite digest so the output
-                    // cells are consistent for any later read.
-                    let vc = blake2s_compress(va, vb, vcv, metadata);
-                    let outputs = [F192::new(vc[0].0, vc[1].0, 0), F192::new(vc[2].0, vc[3].0, 0)];
-                    m.put(ac, outputs[0]);
-                    m.put(ac + 1, outputs[1]);
-                    let ra = [m.bump_access_count(aa0), m.bump_access_count(aa1)];
-                    let rb = [m.bump_access_count(ab0), m.bump_access_count(ab1)];
-                    let rcv = [m.bump_access_count(acv), m.bump_access_count(acv + 1)];
-                    let rc = [m.bump_access_count(ac), m.bump_access_count(ac + 1)];
-                    // Last, matching the flush order, so an md cell aliasing another
-                    // operand still pairs each read with its own count.
-                    let rmd = m.bump_access_count(amd);
                     blake2s.push(Brow {
                         pc,
                         fp,
-                        ra,
-                        rb,
-                        rcv,
-                        rc,
-                        rmd,
+                        r: cells.map(|a| m.bump_access_count(a)),
                         bytecode_read,
                     });
                     pc += 1;
@@ -931,8 +920,8 @@ impl Program {
         } {}
         for (a2, a3) in deferred {
             // Never written: the cells are genuinely unconstrained; fix them to ZERO.
-            m.put(a2 as u32, F192::ZERO);
-            m.put(a3, F192::ZERO);
+            m.put(a2 as u32, F64::ZERO);
+            m.put(a3, F64::ZERO);
         }
 
         // Cells an instruction touched that nothing ever wrote. Read off the two
@@ -951,15 +940,17 @@ impl Program {
         let mem_used = m.cells.len();
         let cells = m.cells.len().next_power_of_two().max(1 << MIN_LOG_MEM);
         assert!(cells <= 1 << MAX_LOG_MEM, "data memory exceeds 2^{MAX_LOG_MEM} cells");
-        m.cells.resize(cells, F192::ZERO);
+        m.cells.resize(cells, F64::ZERO);
         m.count.resize(cells, F64::ONE);
         let trace = Trace {
-            xor,
-            mul,
+            xor64,
+            mul64,
             set,
             deref,
             jump,
             blake2s,
+            xor192,
+            mul192,
             mem_count: m.count,
             bytecode_count,
         };

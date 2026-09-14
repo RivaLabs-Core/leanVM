@@ -15,25 +15,25 @@ use primitives::field::{F64, F192};
 /// flock's sub-proof over a real compression.
 const HASHING: &str = "\
 def main():
-    a = StackBuf(2)
+    a = StackBuf(4)
     a[0] = 5
-    a[1] = 7
-    c = StackBuf(2)
+    a[1] = 0
+    a[2] = 7
+    a[3] = 0
+    c = StackBuf(4)
     blake2s(a, a, c)
-    p = 1
-    p[1] = c[0]
-    p[GEN] = c[1]
+    p = GEN ** 0
+    p[0:4] = c
     return
 ";
 
 /// The public input `HASHING` publishes.
-fn hashing_pi() -> [F192; 2] {
-    let h = [F64(5), F64(0), F64(7), F64(0)];
-    let d = compress(h, h);
-    [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
+fn hashing_pi() -> [F64; 4] {
+    let h = [5, 0, 7, 0].map(F64);
+    compress(h, h)
 }
 
-fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
+fn hashing_proof() -> (lean_vm::cpu::Program, [F64; 4], Proof) {
     let program = compile(&parse(HASHING).expect("parse"));
     let pi = hashing_pi();
     let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
@@ -84,13 +84,13 @@ fn a_proof_does_not_verify_against_another_program() {
     // job, and publishing nothing keeps the public input the same for both.
     let src = |k: u32| {
         format!(
-            "def main():\n    a = StackBuf(2)\n    a[0] = {k}\n    a[1] = 7\n    \
-             c = StackBuf(2)\n    blake2s(a, a, c)\n    return\n"
+            "def main():\n    a = StackBuf(4)\n    a[0] = {k}\n    a[1] = 0\n    a[2] = 7\n    a[3] = 0\n    \
+             c = StackBuf(4)\n    blake2s(a, a, c)\n    return\n"
         )
     };
     let program = compile(&parse(&src(5)).expect("parse"));
     let other = compile(&parse(&src(6)).expect("parse"));
-    let pi = [F192::ZERO, F192::ZERO];
+    let pi = [F64::ZERO; 4];
     let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("honest proof verifies");
     assert!(

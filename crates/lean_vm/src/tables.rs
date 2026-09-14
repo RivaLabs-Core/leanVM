@@ -4,14 +4,12 @@
 //! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
 //! `cpu`'s schema offsets them to global witness columns.
 //!
-//! Columns are `K`-valued (`F64`). The pc/fp, operands, counts, opcodes and
-//! separators are single `K`-columns; a **machine word** (memory value) is
-//! 192-bit (`E = F192`), committed as THREE `K`-lane columns. Nothing a row
-//! DERIVES is a column at all: an operand address `fp·o`, an `XOR`/`MUL` result,
-//! the `DEREF` store, the `JUMP` successors are each written out as the degree-2
-//! bus coordinate that carries them (§sec:m3), which leaves `JUMP`'s is-nonzero
-//! indicator as the one identity any table still has. Every identity is `K`-valued,
-//! so a relation on machine words is written out lane by lane; after the round a
+//! Every column is `K`-valued (`F64`), and so is every memory cell: an `E`-valued
+//! operand of `XOR192`/`MUL192` is three consecutive cells, one read each. Nothing
+//! a row DERIVES is a column at all: an operand address `fp·o`, an arithmetic
+//! result, the `DEREF` store, the `JUMP` successors are each written out as the
+//! degree-2 bus coordinate that carries them (§sec:m3), which leaves `JUMP`'s
+//! is-nonzero indicator as the one identity any table still has. After the round a
 //! table joins the batch its columns are `E`-valued, which is what
 //! `eval_constraint` takes.
 
@@ -25,23 +23,10 @@ use primitives::field::{F64, F192, mul_by_g};
 // Each is written ONCE, generic over the column type: `F64` in the round a table
 // joins the batch, `F192` afterwards (see [`ColVal`]). Products of two `K`
 // columns stay 64-bit and an `η`-power multiplies through `mul_e`.
-//
-// EVERY identity is `K`-valued, like the columns it reads and like the bus
-// coordinates (§sec:air). A relation between machine WORDS is therefore written out
-// lane by lane, with the tower multiplication unrolled by hand ([`TOWER_LANES`]),
-// rather than assembled into one `E` equation. A table's identity slice is then a
-// mixed dot product against its `η`-range: in the round a table joins the batch (the
-// batch's largest) that is one 64-bit product per identity plus three PMULL for its
-// `η`-power, with ONE reduction for the whole slice ([`ColVal::dot`]). One `E`-valued
-// identity would instead cost a full `E×E` product against its `η`-power, plus a
-// reduction of its own, and the lanes it bundles are the same lane polynomials
-// either way.
 
 /// The tower product `x·y` in `E = K[y]/(y³+y+1)` as three lane sums: lane `i` is
-/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-mul fold
-/// into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`; written once here because both
-/// `MUL`'s result coordinate ([`arith_result`]) and `JUMP`'s inverse identity need
-/// the same unrolling.
+/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-mul192 fold
+/// into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`.
 const TOWER_LANES: [&[(usize, usize)]; 3] = [
     &[(0, 0), (1, 2), (2, 1)],
     &[(0, 1), (1, 0), (1, 2), (2, 1), (2, 2)],
@@ -49,9 +34,8 @@ const TOWER_LANES: [&[(usize, usize)]; 3] = [
 ];
 
 /// One lane of the tower product, in the columns' own field. Only the test that
-/// checks [`TOWER_LANES`] against the field needs it: `MUL`'s result rides the bus
-/// as a coordinate ([`arith_result`]), and `JUMP`'s condition is `K`-valued, so no
-/// identity assembles a tower product any more.
+/// checks [`TOWER_LANES`] against the field needs it: `MUL192`'s result rides the
+/// bus as a coordinate ([`arith192_result`]).
 #[cfg(test)]
 fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
     TOWER_LANES[lane].iter().fold(T::ZERO, |acc, &(j, k)| acc + x[j] * y[k])
@@ -63,10 +47,6 @@ fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
 /// gives `b = 1` (and the first `w = cond⁻¹`); when `cond = 0` the first gives
 /// `b = 0`. The two selections need no identity: the state push carries each as its
 /// own degree-2 coordinate (§sec:m3).
-///
-/// The condition is `K`-valued, so both identities are single-lane. Its memory
-/// flush carries literal zeros above the low limb (`memory_k`), so a word outside
-/// `K` cannot balance the bus; the interpreter rejects one outright.
 fn jump_identity<T: ColVal>(pows: &[F192], cols: &[T], quadratic: bool) -> F192 {
     use jump::*;
     let (b, b1) = if quadratic {
@@ -95,13 +75,15 @@ pub(crate) const SEP_STATE: F64 = g_pow(0);
 pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 
-// Opcodes (coordinate 3 of a bytecode tuple).
-pub(crate) const OP_XOR: F64 = g_pow(0);
-pub(crate) const OP_MUL: F64 = g_pow(1);
+// Opcodes (coordinate 3 of a bytecode tuple): `g^t` for table `t` of [`tables`].
+pub(crate) const OP_XOR64: F64 = g_pow(0);
+pub(crate) const OP_MUL64: F64 = g_pow(1);
 pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE2S: F64 = g_pow(5);
+pub(crate) const OP_XOR192: F64 = g_pow(6);
+pub(crate) const OP_MUL192: F64 = g_pow(7);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -154,35 +136,16 @@ impl FlushBuilder {
         self.pair(push, pull);
     }
 
-    /// The shape every memory interaction shares: the word at `addr` carried as
-    /// three value coordinates, with the cell's access count advanced by ×g on the
-    /// push side. A value the row DERIVES rather than commits (an `XOR`/`MUL`
-    /// result, a `DEREF` store) is passed here as its form: the cell then holds
-    /// whatever the form says, which removes both the value columns and the
-    /// identity that used to tie them (§sec:m3).
-    pub(crate) fn memory_coords(&mut self, addr: Coord, count: usize, vals: [Coord; 3]) {
-        let mut push = vec![Const(SEP_MEM), addr.clone(), GCol(count, 1)];
-        let mut pull = vec![Const(SEP_MEM), addr, Col(count)];
-        push.extend_from_slice(&vals);
-        pull.extend_from_slice(&vals);
-        self.pair(push, pull);
-    }
-
-    /// Memory access: read the three-limb word at `addr`.
-    pub(crate) fn memory(&mut self, addr: Coord, count: usize, val0: usize, val1: usize, val2: usize) {
-        self.memory_coords(addr, count, [Col(val0), Col(val1), Col(val2)]);
-    }
-
-    /// Memory read of a K-valued word: both higher limbs are literal zero. Used where
-    /// the word is carried by a single K column (e.g. the DEREF pointer). Sound
-    /// because the bus balances only if the stored value's HI lane is likewise 0.
-    pub(crate) fn memory_k(&mut self, addr: Coord, count: usize, val: usize) {
-        self.memory_coords(addr, count, [Col(val), Const(F64::ZERO), Const(F64::ZERO)]);
-    }
-
-    /// Memory access to a canonical 128-bit word `(lo, hi, 0)`.
-    pub(crate) fn memory_128(&mut self, addr: Coord, count: usize, lo: usize, hi: usize) {
-        self.memory_coords(addr, count, [Col(lo), Col(hi), Const(F64::ZERO)]);
+    /// Memory access: the word at `addr`, with the cell's access count advanced by
+    /// ×g on the push side. A value the row DERIVES rather than commits (an
+    /// arithmetic result, a `DEREF` store) is passed as its form: the cell then holds
+    /// whatever the form says, which removes both a value column and the identity
+    /// that would tie it (§sec:m3).
+    pub(crate) fn memory(&mut self, addr: Coord, count: usize, val: Coord) {
+        self.pair(
+            vec![Const(SEP_MEM), addr.clone(), GCol(count, 1), val.clone()],
+            vec![Const(SEP_MEM), addr, Col(count), val],
+        );
     }
 }
 
@@ -192,7 +155,7 @@ impl FlushBuilder {
 /// image (for read values), and `g^0..` for O(1) address/operand lookups.
 pub struct FillCtx<'a> {
     pub(crate) trace: &'a Trace,
-    pub(crate) mem: &'a [F192],
+    pub(crate) mem: &'a [F64],
     pub(crate) gpow: &'a [F64],
     pub(crate) prog: &'a [Op],
     /// This table's height `2^tau`, the length of every window in `out`, and its row
@@ -209,7 +172,7 @@ pub struct FillCtx<'a> {
 pub type ColumnOut<'a> = &'a mut [F64];
 
 impl<'a> FillCtx<'a> {
-    pub(crate) fn new(trace: &'a Trace, mem: &'a [F192], gpow: &'a [F64], prog: &'a [Op], rows: usize) -> Self {
+    pub(crate) fn new(trace: &'a Trace, mem: &'a [F64], gpow: &'a [F64], prog: &'a [Op], rows: usize) -> Self {
         Self {
             trace,
             mem,
@@ -224,27 +187,29 @@ impl<'a> FillCtx<'a> {
         self.gpow[i as usize]
     }
 
-    /// The three frame offsets of an `XOR`/`MUL` row. A row records
-    /// only its `(pc, fp)`; the operands are the instruction's, so they are read
-    /// back from the bytecode rather than copied into every row (§the trace rows
-    /// in `cpu::trace`).
+    fn cell(&self, addr: u32) -> F64 {
+        self.mem[addr as usize]
+    }
+
+    /// The three frame offsets of an arithmetic row, read back from the bytecode
+    /// rather than copied into every row (§the trace rows in `cpu::trace`).
     fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
         match self.prog[pc as usize] {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } => (a, b, c),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
+                (a, b, c)
+            }
             op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
         }
     }
 
-    /// Write local column `at`: `f` over the trace rows, then its pad value to the
-    /// end of the window.
+    /// Write local column `at`: `f` over the trace rows.
     fn col<R: Sync>(&self, out: &mut [ColumnOut], rows: &[R], at: usize, f: impl Fn(&R) -> F64 + Sync) {
         self.cols(out, rows, at, |r| [f(r)]);
     }
 
     /// Write the `N` local columns at `at..at + N` from one closure per row.
-    /// Columns fed by the same read fill together: the three lanes of a 192-bit
-    /// memory word are one random access, and splitting them across `N` passes
-    /// pays for it `N` times.
+    /// Columns fed by the same bytecode decode fill together: splitting them
+    /// across `N` passes pays for the decode `N` times.
     fn cols<const N: usize, R: Sync>(
         &self,
         out: &mut [ColumnOut],
@@ -284,12 +249,6 @@ impl<'a> FillCtx<'a> {
             }
         });
     }
-
-    /// The three `K`-lanes of the 192-bit word in memory cell `addr`.
-    fn limbs(&self, addr: u32) -> [F64; 3] {
-        let w = self.mem[addr as usize];
-        [F64(w.c0), F64(w.c1), F64(w.c2)]
-    }
 }
 
 /// Fill one table's columns and check that every window was written. The stack is
@@ -314,7 +273,7 @@ pub trait Table: Sync {
     /// Local indices of this table's read-count columns: the `g^{count}` values
     /// recording how many times each accessed cell (and the pc) was read. The
     /// framework treats them specially: each gets its own single-column "count"
-    /// bus block, and padding rows fill them with `1` (= g^0) instead of `0`.
+    /// bus block.
     fn count_columns(&self) -> &'static [usize];
     /// How many identities [`eval_constraint`](Table::eval_constraint) folds.
     /// Sizes this table's slice of the batch's disjoint `xi`-range (§constraints).
@@ -326,7 +285,7 @@ pub trait Table: Sync {
     /// Evaluate the table's degree-2 constraint at one row, reading column values
     /// by local index from `cols` (e.g. `cols[jump::V_COND]`) and weighting identity
     /// `i` by `pows[i]`, this table's slice of the batch's `xi`-powers. The slice is
-    /// is exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
+    /// exactly [`n_constraints`](Table::n_constraints) long: an identity indexed
     /// past its end panics rather than silently reaching into the next table's
     /// range. The table sumcheck carries every committed column of a table, in
     /// local order, so `cols` is indexed directly. With `quadratic=false` it returns
@@ -347,180 +306,251 @@ pub trait Table: Sync {
     /// Declare the table's bus interactions.
     fn flushes(&self, f: &mut FlushBuilder);
     /// Fill this table's columns from the trace: `out[i]` is local column `i`'s
-    /// window, already at its padded length. Every window must be written in full;
-    /// use `FillCtx::col` / `FillCtx::cols`, which append the column's pad value
-    /// past the last trace row and record the coverage `fill_table` checks.
+    /// window, already at its final length. Every window must be written in full;
+    /// use `FillCtx::col` / `FillCtx::cols`, which record the coverage `fill_table`
+    /// checks.
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR, MUL, SET, DEREF, JUMP, BLAKE2S]`, the
-/// order of `row_counts` / `taus` throughout `cpu`.
-pub const N_TABLES: usize = 6;
+/// The tables in fixed order `[XOR64, MUL64, SET, DEREF, JUMP, BLAKE2S, XOR192,
+/// MUL192]`, the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
+/// opcode is `g^t`.
+pub const N_TABLES: usize = 8;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
-        &Arith { is_xor: true },
-        &Arith { is_xor: false },
+        &Arith64 { is_xor: true },
+        &Arith64 { is_xor: false },
         &SetTable,
         &DerefTable,
         &JumpTable,
         &Blake2sTable,
+        &Arith192 { is_xor: true },
+        &Arith192 { is_xor: false },
     ]
 }
 
 /// Index of the BLAKE2s table in [`tables`].
 pub(crate) const BLAKE2S_TABLE: usize = 5;
 
-/// The seven base addresses a `BLAKE2s` row reads: the four message cells, the
-/// chaining-value base, the output base (each of those two spans that cell and
-/// its successor) and the metadata cell. Recovered from the instruction, not
-/// stored per row.
-pub(crate) fn blake2s_addresses(prog: &[Op], r: &Brow) -> [u32; 7] {
-    match prog[r.pc as usize] {
-        Op::Blake2s { ins, cv, out, md } => [
-            r.fp + ins[0],
-            r.fp + ins[1],
-            r.fp + ins[2],
-            r.fp + ins[3],
-            r.fp + cv,
-            r.fp + out,
-            r.fp + md,
-        ],
-        op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
+/// The eighteen cells a `BLAKE2s` row reads, in value-lane order: the four message
+/// chunks' two cells each, the digest's four, the chaining value's four and the
+/// metadata's two. Recovered from the instruction, not stored per row.
+pub(crate) fn blake2s_cells(prog: &[Op], pc: u32, fp: u32) -> [u32; 18] {
+    match prog[pc as usize] {
+        Op::Blake2s { ins, cv, out, md } => {
+            let [m0, m1, m2, m3] = ins.map(|o| fp + o);
+            let (cv, out, md) = (fp + cv, fp + out, fp + md);
+            [
+                m0,
+                m0 + 1,
+                m1,
+                m1 + 1,
+                m2,
+                m2 + 1,
+                m3,
+                m3 + 1,
+                out,
+                out + 1,
+                out + 2,
+                out + 3,
+                cv,
+                cv + 1,
+                cv + 2,
+                cv + 3,
+                md,
+                md + 1,
+            ]
+        }
+        op => unreachable!("a BLAKE2s row's pc {pc} holds {op:?}"),
     }
 }
 
 /// BLAKE2s value-column LOCAL indices in canonical slot order
 /// `[a0..a3, b0..b3, c0..c3, cv0..cv3, md_lo, md_hi]` (matches
-/// `hash_flock::SLOTS`). These columns are
-/// VIRTUAL (never committed): `q_flock` already holds those words at fixed packed
-/// slots, so `cpu` routes their memory-bus evaluation claims straight to `q_flock`
-/// (`slot_claims`): the value the bus flushes IS the flock-proven word.
-pub const BLAKE2S_VALUE_COLS: [usize; 18] = [
-    blake2st::V_M0,
-    blake2st::V_M0 + 1,
-    blake2st::V_M0 + 2,
-    blake2st::V_M0 + 3,
-    blake2st::V_M2,
-    blake2st::V_M2 + 1,
-    blake2st::V_M2 + 2,
-    blake2st::V_M2 + 3,
-    blake2st::V_OUT0,
-    blake2st::V_OUT0 + 1,
-    blake2st::V_OUT0 + 2,
-    blake2st::V_OUT0 + 3,
-    blake2st::V_CV0,
-    blake2st::V_CV0 + 1,
-    blake2st::V_CV0 + 2,
-    blake2st::V_CV0 + 3,
-    blake2st::MD0,
-    blake2st::MD1,
-];
-// The eighteen value lanes are laid out contiguously (V_M0..V_M0+17), so they map
-// 1:1 onto `hash_flock::SLOTS`.
-const _: () = assert!(
-    blake2st::V_M2 == blake2st::V_M0 + 4
-        && blake2st::V_OUT0 == blake2st::V_M0 + 8
-        && blake2st::V_CV0 == blake2st::V_M0 + 12
-        && blake2st::MD0 == blake2st::V_M0 + 16
-        && blake2st::MD1 == blake2st::V_M0 + 17
-);
+/// `hash_flock::SLOTS`). These columns are VIRTUAL (never committed): `q_flock`
+/// already holds those words at fixed packed slots, so `cpu` routes their
+/// memory-bus evaluation claims straight to `q_flock` (`slot_claims`): the value the
+/// bus flushes IS the flock-proven word.
+pub const BLAKE2S_VALUE_COLS: [usize; 18] = {
+    let mut cols = [0; 18];
+    let mut i = 0;
+    while i < 18 {
+        cols[i] = blake2st::V0 + i;
+        i += 1;
+    }
+    cols
+};
 
-// ---- XOR / MUL ---------------------------------------------------------------
+// ---- XOR64 / MUL64 -----------------------------------------------------------
 
-/// `XOR` and `MUL_NATIVE` share their column layout, flushes, and fill; they
-/// differ only in the opcode tag and in how the destination cell's value rides
-/// the bus (`v_A + v_B` for `XOR`, `v_A·v_B` in `E = K[y]/(y³+y+1)` for `MUL`).
-/// Neither commits that value and neither has an identity: the destination's
-/// memory flush carries the result as a degree-≤2 coordinate over the operand
-/// lanes, so bus balance IS the assertion (§sec:m3).
-struct Arith {
+/// `XOR64` and `MUL64` share their column layout, flushes, and fill; they differ
+/// only in the opcode tag and in how the destination cell's value rides the bus
+/// (`v_A + v_B` or `v_A·v_B`). Neither commits that value and neither has an
+/// identity: bus balance IS the assertion (§sec:m3).
+struct Arith64 {
     is_xor: bool,
 }
 
-mod arith {
+mod arith64 {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const OA: usize = 2;
     pub const OB: usize = 3;
     pub const OC: usize = 4;
-    // No absolute-address columns: the memory bus carries `fp·o` as a product
-    // coordinate (§sec:m3), which is why there is no address binding below.
-    // The two read words, each three K-limbs. The third (the result) is DERIVED.
-    pub const VA_LO: usize = 5;
-    pub const VA_HI: usize = 6;
-    pub const VA_TOP: usize = 7;
-    pub const VB_LO: usize = 8;
-    pub const VB_HI: usize = 9;
-    pub const VB_TOP: usize = 10;
-    pub const RA: usize = 11;
-    pub const RB: usize = 12;
-    pub const RC: usize = 13;
-    pub const RBC: usize = 14;
-    pub const N: usize = 15;
+    pub const VA: usize = 5;
+    pub const VB: usize = 6;
+    pub const RA: usize = 7;
+    pub const RB: usize = 8;
+    pub const RC: usize = 9;
+    pub const RBC: usize = 10;
+    pub const N: usize = 11;
 }
 
-/// The result word's three K-lanes as forms over the operand lanes. For `XOR`
-/// that is the lane-wise sum; for `MUL` it is the tower product, unrolled through
-/// [`TOWER_LANES`].
-fn arith_result(is_xor: bool) -> [Coord; 3] {
-    use arith::*;
-    if is_xor {
-        return [
-            Coord::Sum(vec![Col(VA_LO), Col(VB_LO)]),
-            Coord::Sum(vec![Col(VA_HI), Col(VB_HI)]),
-            Coord::Sum(vec![Col(VA_TOP), Col(VB_TOP)]),
-        ];
-    }
-    let (a, b) = ([VA_LO, VA_HI, VA_TOP], [VB_LO, VB_HI, VB_TOP]);
-    let lane = |i: usize| Coord::Sum(TOWER_LANES[i].iter().map(|&(j, k)| Prod(a[j], b[k], 0)).collect());
-    [lane(0), lane(1), lane(2)]
-}
-
-impl Table for Arith {
+impl Table for Arith64 {
     fn n_committed_columns(&self) -> usize {
-        arith::N
+        arith64::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        use arith::*;
+        use arith64::*;
         &[RA, RB, RC, RBC]
     }
     fn flushes(&self, f: &mut FlushBuilder) {
-        use arith::*;
+        use arith64::*;
         f.state_step(PC, FP);
         f.bytecode(
             PC,
             RBC,
-            if self.is_xor { OP_XOR } else { OP_MUL },
+            if self.is_xor { OP_XOR64 } else { OP_MUL64 },
             &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory(Prod(FP, OA, 0), RA, VA_LO, VA_HI, VA_TOP);
-        f.memory(Prod(FP, OB, 0), RB, VB_LO, VB_HI, VB_TOP);
-        f.memory_coords(Prod(FP, OC, 0), RC, arith_result(self.is_xor));
+        f.memory(Prod(FP, OA, 0), RA, Col(VA));
+        f.memory(Prod(FP, OB, 0), RB, Col(VB));
+        let result = if self.is_xor {
+            Coord::Sum(vec![Col(VA), Col(VB)])
+        } else {
+            Prod(VA, VB, 0)
+        };
+        f.memory(Prod(FP, OC, 0), RC, result);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use arith::*;
-        let rows = if self.is_xor { &ctx.trace.xor } else { &ctx.trace.mul };
+        use arith64::*;
+        let rows = if self.is_xor {
+            &ctx.trace.xor64
+        } else {
+            &ctx.trace.mul64
+        };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // The offsets and both operand words come out of ONE bytecode decode: split
-        // across passes, the row's instruction is fetched once per pass.
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
-            let (va, vb) = (ctx.limbs(r.fp + a), ctx.limbs(r.fp + b));
             [
                 ctx.g_at(a),
                 ctx.g_at(b),
                 ctx.g_at(c),
-                va[0],
-                va[1],
-                va[2],
-                vb[0],
-                vb[1],
-                vb[2],
+                ctx.cell(r.fp + a),
+                ctx.cell(r.fp + b),
             ]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
+        ctx.col(out, rows, RBC, |r| r.bytecode_read);
+    }
+}
+
+// ---- XOR192 / MUL192 ---------------------------------------------------------
+
+/// `XOR192` and `MUL192`: each operand is three consecutive cells `fp·o·g^i`, the
+/// limbs of one `E` element, read one at a time. The result's three lanes ride the
+/// bus as forms over the operand lanes: the lane-wise sum, or the tower product
+/// unrolled through [`TOWER_LANES`].
+struct Arith192 {
+    is_xor: bool,
+}
+
+mod arith192 {
+    pub const PC: usize = 0;
+    pub const FP: usize = 1;
+    pub const OA: usize = 2;
+    pub const OB: usize = 3;
+    pub const OC: usize = 4;
+    pub const VA: usize = 5; // three lanes
+    pub const VB: usize = 8; // three lanes
+    pub const RA: usize = 11; // one count per limb cell
+    pub const RB: usize = 14;
+    pub const RC: usize = 17;
+    pub const RBC: usize = 20;
+    pub const N: usize = 21;
+}
+
+/// The result word's three K-lanes as forms over the operand lanes.
+fn arith192_result(is_xor: bool) -> [Coord; 3] {
+    use arith192::*;
+    std::array::from_fn(|i| {
+        if is_xor {
+            Coord::Sum(vec![Col(VA + i), Col(VB + i)])
+        } else {
+            Coord::Sum(TOWER_LANES[i].iter().map(|&(j, k)| Prod(VA + j, VB + k, 0)).collect())
+        }
+    })
+}
+
+impl Table for Arith192 {
+    fn n_committed_columns(&self) -> usize {
+        arith192::N
+    }
+    fn count_columns(&self) -> &'static [usize] {
+        use arith192::*;
+        &[RA, RA + 1, RA + 2, RB, RB + 1, RB + 2, RC, RC + 1, RC + 2, RBC]
+    }
+    fn flushes(&self, f: &mut FlushBuilder) {
+        use arith192::*;
+        f.state_step(PC, FP);
+        f.bytecode(
+            PC,
+            RBC,
+            if self.is_xor { OP_XOR192 } else { OP_MUL192 },
+            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+        // A limb's cell is a free ×g^i on the address product.
+        for i in 0..3 {
+            f.memory(Prod(FP, OA, i as u32), RA + i, Col(VA + i));
+        }
+        for i in 0..3 {
+            f.memory(Prod(FP, OB, i as u32), RB + i, Col(VB + i));
+        }
+        for (i, lane) in arith192_result(self.is_xor).into_iter().enumerate() {
+            f.memory(Prod(FP, OC, i as u32), RC + i, lane);
+        }
+    }
+    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
+        use arith192::*;
+        let rows = if self.is_xor {
+            &ctx.trace.xor192
+        } else {
+            &ctx.trace.mul192
+        };
+        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
+        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.cols(out, rows, OA, |r| {
+            let (a, b, c) = ctx.ternary_operands(r.pc);
+            let (va, vb) = (r.fp + a, r.fp + b);
+            [
+                ctx.g_at(a),
+                ctx.g_at(b),
+                ctx.g_at(c),
+                ctx.cell(va),
+                ctx.cell(va + 1),
+                ctx.cell(va + 2),
+                ctx.cell(vb),
+                ctx.cell(vb + 1),
+                ctx.cell(vb + 2),
+            ]
+        });
+        ctx.cols(out, rows, RA, |r| {
+            [
+                r.ra[0], r.ra[1], r.ra[2], r.rb[0], r.rb[1], r.rb[2], r.rc[0], r.rc[1], r.rc[2],
+            ]
+        });
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -533,13 +563,11 @@ mod set {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
     pub const O: usize = 2;
-    // The stored immediate's three K-limbs ride the bytecode's spare slots.
-    pub const K_LO: usize = 3;
-    pub const K_HI: usize = 4;
-    pub const K_TOP: usize = 5;
-    pub const R: usize = 6;
-    pub const RBC: usize = 7;
-    pub const N: usize = 8;
+    // The stored immediate rides the bytecode's second operand slot.
+    pub const K: usize = 3;
+    pub const R: usize = 4;
+    pub const RBC: usize = 5;
+    pub const N: usize = 6;
 }
 
 impl Table for SetTable {
@@ -553,31 +581,26 @@ impl Table for SetTable {
     fn flushes(&self, f: &mut FlushBuilder) {
         use set::*;
         f.state_step(PC, FP);
-        // The immediate's three limbs occupy bytecode operand slots o2..o4
-        // (matching layout::operands for SET).
         f.bytecode(
             PC,
             RBC,
             OP_SET,
-            &[Col(O), Col(K_LO), Col(K_HI), Col(K_TOP), Const(F64::ZERO)],
+            &[Col(O), Col(K), Const(F64::ZERO), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        // The stored constant K is the cell's value.
-        f.memory(Prod(FP, O, 0), R, K_LO, K_HI, K_TOP);
+        f.memory(Prod(FP, O, 0), R, Col(K));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use set::*;
         let rows = &ctx.trace.set;
-        // The offset and the stored immediate are the instruction's.
         let imm = |r: &Srow| match ctx.prog[r.pc as usize] {
             Op::Set { o, k } => (o, k),
             op => unreachable!("a SET row's pc {} holds {op:?}", r.pc),
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        ctx.col(out, rows, O, |r| ctx.g_at(imm(r).0));
-        ctx.cols(out, rows, K_LO, |r| {
-            let k = imm(r).1;
-            [F64(k.c0), F64(k.c1), F64(k.c2)]
+        ctx.cols(out, rows, O, |r| {
+            let (o, k) = imm(r);
+            [ctx.g_at(o), k]
         });
         ctx.col(out, rows, R, |r| r.r);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
@@ -596,35 +619,30 @@ mod deref {
     pub const O3: usize = 4;
     pub const FPC: usize = 5;
     pub const FFP: usize = 6;
-    // The pointer word is a SINGLE K-lane, so its extension limbs are provably
-    // zero: they are NOT committed, and the memory read carries literal zeros
-    // there. Being a column is what puts it in K, and the pointer-relative
-    // address it forms on the bus, `p·obe`, is a K product for the same reason.
+    // The pointer, which forms the pointer-relative address `p·o2` on the bus.
     pub const P: usize = 7;
-    // The local cell, a full 192-bit word. The store target is DERIVED from it,
-    // the two flags, `pc` and `fp`, so it is no column.
-    pub const V3_LO: usize = 8;
-    pub const V3_HI: usize = 9;
-    pub const V3_TOP: usize = 10;
-    pub const R1: usize = 11;
-    pub const R2: usize = 12;
-    pub const R3: usize = 13;
-    pub const RBC: usize = 14;
-    pub const N: usize = 15;
+    // The local cell. The store target is DERIVED from it, the two flags, `pc` and
+    // `fp`, so it is no column.
+    pub const V3: usize = 8;
+    pub const R1: usize = 9;
+    pub const R2: usize = 10;
+    pub const R3: usize = 11;
+    pub const RBC: usize = 12;
+    pub const N: usize = 13;
 }
 
-/// The stored word's three K-lanes as forms:
-/// `v_2 = (1+f_pc+f_fp)·v_3 + f_pc·(g²·pc) + f_fp·fp`, the flag-selected source
-/// of §sec:tab-deref. The `pc` source is the virtual return target `g²·pc`, a
-/// free `×g²` on the product coordinate. Only the low lane takes the two K-valued
-/// sources; the upper two are the gated local lanes alone.
-fn deref_store() -> [Coord; 3] {
+/// The stored word as a form: `v_2 = (1+f_pc+f_fp)·v_3 + f_pc·(g²·pc) + f_fp·fp`, the
+/// flag-selected source of §sec:tab-deref. The `pc` source is the virtual return
+/// target `g²·pc`, a free `×g²` on the product coordinate.
+fn deref_store() -> Coord {
     use deref::*;
-    let gated = |v: usize| vec![Col(v), Prod(FPC, v, 0), Prod(FFP, v, 0)];
-    let mut lo = gated(V3_LO);
-    lo.push(Prod(FPC, PC, 2));
-    lo.push(Prod(FFP, FP, 0));
-    [Coord::Sum(lo), Coord::Sum(gated(V3_HI)), Coord::Sum(gated(V3_TOP))]
+    Coord::Sum(vec![
+        Col(V3),
+        Prod(FPC, V3, 0),
+        Prod(FFP, V3, 0),
+        Prod(FPC, PC, 2),
+        Prod(FFP, FP, 0),
+    ])
 }
 
 impl Table for DerefTable {
@@ -640,45 +658,33 @@ impl Table for DerefTable {
         f.state_step(PC, FP);
         f.bytecode(PC, RBC, OP_DEREF, &[Col(O1), Col(O2), Col(O3), Col(FPC), Col(FFP)]);
         // The pointer cell and the local cell are frame-relative; the store target
-        // is pointer-relative, so its address is `p·obe`, and its value is the
+        // is pointer-relative, so its address is `p·o2`, and its value is the
         // flag-selected source rather than a column.
-        f.memory_k(Prod(FP, O1, 0), R1, P);
-        f.memory_coords(Prod(P, O2, 0), R2, deref_store());
-        f.memory(Prod(FP, O3, 0), R3, V3_LO, V3_HI, V3_TOP);
+        f.memory(Prod(FP, O1, 0), R1, Col(P));
+        f.memory(Prod(P, O2, 0), R2, deref_store());
+        f.memory(Prod(FP, O3, 0), R3, Col(V3));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use deref::*;
         let rows = &ctx.trace.deref;
-        // Offsets and store mode are the instruction's. Neither the store target's
-        // address nor its value is committed.
         let ins = |r: &Drow| match ctx.prog[r.pc as usize] {
             Op::Deref { o1, o2, o3, mode } => (o1, o2, o3, mode),
             op => unreachable!("a DEREF row's pc {} holds {op:?}", r.pc),
         };
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        debug_assert!(
-            rows.iter().all(|r| {
-                let p = ctx.mem[(r.fp + ins(r).0) as usize];
-                p.c1 == 0 && p.c2 == 0
-            }),
-            "deref pointer must be K-valued"
-        );
-        // The three offsets, the two mode flags, the pointer lane and the local
-        // word all follow from ONE bytecode decode.
+        // The three offsets, the two mode flags, the pointer and the local cell all
+        // follow from ONE bytecode decode.
         ctx.cols(out, rows, O1, |r| {
             let (o1, o2, o3, mode) = ins(r);
-            let v3 = ctx.limbs(r.fp + o3);
             [
                 ctx.g_at(o1),
                 ctx.g_at(o2),
                 ctx.g_at(o3),
                 mode.f_pc(),
                 mode.f_fp(),
-                F64(ctx.mem[(r.fp + o1) as usize].c0),
-                v3[0],
-                v3[1],
-                v3[2],
+                ctx.cell(r.fp + o1),
+                ctx.cell(r.fp + o3),
             ]
         });
         ctx.cols(out, rows, R1, |r| [r.r1, r.r2, r.r3]);
@@ -696,11 +702,6 @@ mod jump {
     pub const OC: usize = 2;
     pub const OD: usize = 3;
     pub const OF: usize = 4;
-    // The condition, destination and frame words are all K-valued, so each is a
-    // SINGLE lane read through `memory_k`: bus balance forces the stored words
-    // into K, exactly as for the DEREF pointer. A guest branches on g-powers,
-    // never on an arbitrary word: `assert a != b` takes an inverse hint instead
-    // of a branch (§sec:prog-div-ne).
     pub const V_COND: usize = 5;
     pub const V_PC: usize = 6;
     pub const V_FP: usize = 7;
@@ -709,8 +710,7 @@ mod jump {
     pub const RF: usize = 10;
     pub const RBC: usize = 11;
     // Local witness columns (committed, never flushed): the inverse hint `w = c⁻¹`
-    // and the taken indicator `b = [c ≠ 0]` it certifies (the `JUMP` table in
-    // `doc/leanvm/body/07-instruction-tables.tex`). Both are single K lanes.
+    // and the taken indicator `b = [c ≠ 0]` it certifies.
     pub const W: usize = 12;
     pub const B: usize = 13;
     pub const N: usize = 14;
@@ -750,9 +750,9 @@ impl Table for JumpTable {
             OP_JUMP,
             &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
         );
-        f.memory_k(Prod(FP, OC, 0), RC, V_COND);
-        f.memory_k(Prod(FP, OD, 0), RD, V_PC);
-        f.memory_k(Prod(FP, OF, 0), RF, V_FP);
+        f.memory(Prod(FP, OC, 0), RC, Col(V_COND));
+        f.memory(Prod(FP, OD, 0), RD, Col(V_PC));
+        f.memory(Prod(FP, OF, 0), RF, Col(V_FP));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use jump::*;
@@ -761,33 +761,29 @@ impl Table for JumpTable {
             Op::Jump { oc, od, of } => (oc, od, of),
             op => unreachable!("a JUMP row's pc {} holds {op:?}", r.pc),
         };
-        let cell = |r: &Jrow, o: u32| ctx.mem[(r.fp + o) as usize];
-        let cond = |r: &Jrow| cell(r, ins(r).0);
+        let cond = |r: &Jrow| ctx.cell(r.fp + ins(r).0);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
         // The three offsets and the three cells they name come out of ONE decode.
-        // Those cells are K-valued on every row, taken or not (`cpu::execute`
-        // rejects anything else), so each is one lane and the memory flush carries
-        // literal zeros above it.
         ctx.cols(out, rows, OC, |r| {
             let (oc, od, of) = ins(r);
             [
                 ctx.g_at(oc),
                 ctx.g_at(od),
                 ctx.g_at(of),
-                F64(cell(r, oc).c0),
-                F64(cell(r, od).c0),
-                F64(cell(r, of).c0),
+                ctx.cell(r.fp + oc),
+                ctx.cell(r.fp + od),
+                ctx.cell(r.fp + of),
             ]
         });
         // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in one
-        // batched Montgomery inversion. `prefix[i]` is the
-        // running product of the nonzero conditions before row `i`, so `acc` ends
-        // as their full product (nonzero, hence invertible). The taken indicator
-        // `b = [c ≠ 0]` falls out of the same pass, so it costs no extra decode.
+        // batched Montgomery inversion. `prefix[i]` is the running product of the
+        // nonzero conditions before row `i`, so `acc` ends as their full product
+        // (nonzero, hence invertible). The taken indicator `b = [c ≠ 0]` falls out
+        // of the same pass, so it costs no extra decode.
         let (w, b) = {
-            let mut acc = F192::ONE;
-            let mut prefix: Vec<F192> = Vec::with_capacity(rows.len());
+            let mut acc = F64::ONE;
+            let mut prefix: Vec<F64> = Vec::with_capacity(rows.len());
             let mut b = vec![F64::ZERO; rows.len()];
             for (i, r) in rows.iter().enumerate() {
                 prefix.push(acc);
@@ -798,7 +794,7 @@ impl Table for JumpTable {
                 }
             }
             let mut inv = acc.inv();
-            let mut w = vec![F192::ZERO; rows.len()];
+            let mut w = vec![F64::ZERO; rows.len()];
             for (i, r) in rows.iter().enumerate().rev() {
                 let c = cond(r);
                 if !c.is_zero() {
@@ -808,7 +804,7 @@ impl Table for JumpTable {
             }
             (w, b)
         };
-        ctx.cols_at(out, rows.len(), W, |i| [F64(w[i].c0), b[i]]);
+        ctx.cols_at(out, rows.len(), W, |i| [w[i], b[i]]);
         ctx.cols(out, rows, RC, |r| [r.rc, r.rd, r.rf]);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
@@ -816,141 +812,95 @@ impl Table for JumpTable {
 
 // ---- BLAKE2s ------------------------------------------------------------------
 
-/// `BLAKE2s` (“BLAKE2s” in `doc/leanvm/body/07-instruction-tables.tex`): one standard compression. The four 128-bit message
-/// chunks are addressed *independently* at `fp·o_i` (`o_i = g^{ins[i]}`), each a
-/// single cell, with no forced contiguity between chunks, so a caller hashing e.g.
-/// `(tweak, pp)` need not copy them into adjacent cells. The chaining value and the
-/// 32-byte output each occupy two consecutive cells, based at `fp·o_cv` and
-/// `fp·o_c`, and the metadata is one more cell at `fp·o_md`, so the row reads nine
-/// cells in all. No address is committed: each rides the bus as the product `fp·o_X`
-/// (§sec:m3). The compression relating output words to input words carries no
-/// table constraint either: it is proven by flock's R1CS validity via `q_flock`
+/// `BLAKE2s` (§sec:tab-blake2s): one standard compression. The four 128-bit message
+/// chunks are addressed *independently* at `fp·o_i`, each spanning that cell and its
+/// successor, so a caller hashing e.g. `(tweak, pp)` need not copy them into
+/// adjacent cells. The digest and the chaining value span four consecutive cells,
+/// the metadata two, so the row reads eighteen cells. No address is committed: each
+/// rides the bus as the product `fp·o·g^k` (§sec:m3). The compression relating
+/// output words to input words is proven by flock's R1CS via `q_flock`
 /// (§hash_flock), which leaves this table with no identity of its own.
 ///
-/// A 128-bit chunk is two flock 64-bit words (lo, hi lanes), so the eighteen
-/// memory-borne flock words are eighteen value LANE columns over the nine cells.
-/// They are listed in `n_committed_columns` (they need a local index for the
-/// flushes and are filled from the trace for the bus), but `cpu` treats them as
-/// VIRTUAL (not committed) and routes their bus claims to `q_flock`, which already
-/// holds those words (see [`BLAKE2S_VALUE_COLS`]).
+/// The eighteen cells are eighteen value columns. They are listed in
+/// `n_committed_columns` (they need a local index for the flushes and are filled
+/// from the trace for the bus), but `cpu` treats them as VIRTUAL (not committed) and
+/// routes their bus claims to `q_flock`, which already holds those words (see
+/// [`BLAKE2S_VALUE_COLS`]).
 struct Blake2sTable;
 
 pub(crate) mod blake2st {
     pub const PC: usize = 0;
     pub const FP: usize = 1;
-    pub const O_M0: usize = 2; // operand g-powers (offsets) of the four message cells …
-    pub const O_M1: usize = 3;
-    pub const O_M2: usize = 4;
-    pub const O_M3: usize = 5;
-    pub const O_CV: usize = 6; // … the chaining-value base …
-    pub const O_OUT: usize = 7; // … the output base …
-    pub const O_MD: usize = 8; // … and the metadata cell
-    // The eighteen flock lanes: a (lo, hi) pair for each of the nine cells,
-    // the four message cells first, then the output pair, the chaining-value
-    // pair, and last the metadata cell's counter and flag lanes.
-    pub const V_M0: usize = 9; // m0.lo, m0.hi, m1.lo, m1.hi
-    pub const V_M2: usize = 13; // m2.lo, m2.hi, m3.lo, m3.hi
-    pub const V_OUT0: usize = 17; // out0.lo, out0.hi, out1.lo, out1.hi
-    pub const V_CV0: usize = 21; // cv0.lo, cv0.hi, cv1.lo, cv1.hi
-    pub const MD0: usize = 25; // metadata: the counter lane …
-    pub const MD1: usize = 26; // … and the final ‖ last_node lane
-    pub const R_M0: usize = 27; // one read count per cell: the four message cells …
-    pub const R_M1: usize = 28;
-    pub const R_M2: usize = 29;
-    pub const R_M3: usize = 30;
-    pub const R_CV0: usize = 31; // … the two chaining-value cells …
-    pub const R_CV1: usize = 32;
-    pub const R_OUT0: usize = 33; // … the two output cells …
-    pub const R_OUT1: usize = 34;
-    pub const R_MD: usize = 35; // … and the metadata cell.
-    pub const RBC: usize = 36;
-    pub const N: usize = 37;
+    pub const O_M0: usize = 2; // operand g-powers of the four message chunks …
+    pub const O_CV: usize = 6; // … the chaining value …
+    pub const O_OUT: usize = 7; // … the digest …
+    pub const O_MD: usize = 8; // … and the metadata.
+    // The eighteen value lanes, one per cell: the message chunks' eight, then the
+    // digest's four, the chaining value's four and the metadata's counter and flags.
+    pub const V0: usize = 9;
+    // One read count per value lane, in the same order.
+    pub const R0: usize = 27;
+    pub const RBC: usize = 45;
+    pub const N: usize = 46;
 }
+
+/// The operand and the offset from it of each value lane's cell, in lane order.
+const BLAKE2S_LANE_CELLS: [(usize, u32); 18] = {
+    use blake2st::*;
+    let mut cells = [(0, 0); 18];
+    let mut i = 0;
+    while i < 18 {
+        cells[i] = match i {
+            0..8 => (O_M0 + i / 2, (i % 2) as u32),
+            8..12 => (O_OUT, (i - 8) as u32),
+            12..16 => (O_CV, (i - 12) as u32),
+            _ => (O_MD, (i - 16) as u32),
+        };
+        i += 1;
+    }
+    cells
+};
 
 impl Table for Blake2sTable {
     fn n_committed_columns(&self) -> usize {
         blake2st::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        use blake2st::*;
-        &[R_M0, R_M1, R_M2, R_M3, R_CV0, R_CV1, R_OUT0, R_OUT1, R_MD, RBC]
+        const COUNTS: [usize; 19] = {
+            let mut c = [blake2st::RBC; 19];
+            let mut i = 0;
+            while i < 18 {
+                c[i] = blake2st::R0 + i;
+                i += 1;
+            }
+            c
+        };
+        &COUNTS
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake2st::*;
         f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_BLAKE2S,
-            &[
-                Col(O_M0),
-                Col(O_M1),
-                Col(O_M2),
-                Col(O_M3),
-                Col(O_CV),
-                Col(O_OUT),
-                Col(O_MD),
-            ],
-        );
-        // Nine cell reads: four independent 128-bit message cells, the chaining
-        // value's two consecutive cells (ACV, g·ACV), the output's two
-        // consecutive cells (AC, g·AC), and the metadata cell. Each carries its
-        // chunk's two lanes with a literal-zero top limb (`memory_128`), so the
-        // canonical embedding is proof-enforced and the zero limbs are never
-        // committed. A consecutive cell is a free ×g on the product's g-power.
-        f.memory_128(Prod(FP, O_M0, 0), R_M0, V_M0, V_M0 + 1);
-        f.memory_128(Prod(FP, O_M1, 0), R_M1, V_M0 + 2, V_M0 + 3);
-        f.memory_128(Prod(FP, O_M2, 0), R_M2, V_M2, V_M2 + 1);
-        f.memory_128(Prod(FP, O_M3, 0), R_M3, V_M2 + 2, V_M2 + 3);
-        f.memory_128(Prod(FP, O_CV, 0), R_CV0, V_CV0, V_CV0 + 1);
-        f.memory_128(Prod(FP, O_CV, 1), R_CV1, V_CV0 + 2, V_CV0 + 3);
-        f.memory_128(Prod(FP, O_OUT, 0), R_OUT0, V_OUT0, V_OUT0 + 1);
-        f.memory_128(Prod(FP, O_OUT, 1), R_OUT1, V_OUT0 + 2, V_OUT0 + 3);
-        // The metadata rides the memory bus like every other operand: the read
-        // is what binds flock's counter and flag inputs, so a compile-time
-        // counter is pinned by the `SET` immediate that wrote the cell.
-        f.memory_128(Prod(FP, O_MD, 0), R_MD, MD0, MD1);
+        f.bytecode(PC, RBC, OP_BLAKE2S, &std::array::from_fn::<_, 7, _>(|i| Col(O_M0 + i)));
+        // A successor cell is a free ×g^k on the address product. The metadata rides
+        // the memory bus like every other operand: the read is what binds flock's
+        // counter and flag inputs.
+        for (lane, &(operand, k)) in BLAKE2S_LANE_CELLS.iter().enumerate() {
+            f.memory(Prod(FP, operand, k), R0 + lane, Col(V0 + lane));
+        }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use blake2st::*;
         let rows = &ctx.trace.blake2s;
-        let ad = |r: &Brow| blake2s_addresses(ctx.prog, r);
         ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
         ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // O_M0..O_MD are the seven base addresses' offsets, from the instruction decode.
-        ctx.cols(out, rows, O_M0, |r| ad(r).map(|a| ctx.g_at(a - r.fp)));
-        // The eighteen memory-borne flock words are the nine cells' lo/hi lanes:
-        // the four message cells, then the cv pair, the output pair and the
-        // metadata. A cell's two lanes are one read, so each group of four takes two.
-        let word_pair = |c0: u32, c1: u32| {
-            let (w0, w1) = (ctx.mem[c0 as usize], ctx.mem[c1 as usize]);
-            [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
-        };
-        ctx.cols(out, rows, V_M0, |r| {
-            let a = ad(r);
-            word_pair(a[0], a[1])
+        ctx.cols(out, rows, O_M0, |r: &Brow| match ctx.prog[r.pc as usize] {
+            Op::Blake2s { ins, cv, out, md } => [ins[0], ins[1], ins[2], ins[3], cv, out, md].map(|o| ctx.g_at(o)),
+            op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
         });
-        ctx.cols(out, rows, V_M2, |r| {
-            let a = ad(r);
-            word_pair(a[2], a[3])
+        ctx.cols(out, rows, V0, |r| {
+            blake2s_cells(ctx.prog, r.pc, r.fp).map(|a| ctx.cell(a))
         });
-        ctx.cols(out, rows, V_OUT0, |r| {
-            let a = ad(r);
-            word_pair(a[5], a[5] + 1)
-        });
-        ctx.cols(out, rows, V_CV0, |r| {
-            let a = ad(r);
-            word_pair(a[4], a[4] + 1)
-        });
-        ctx.cols(out, rows, MD0, |r| {
-            let md = ctx.mem[ad(r)[6] as usize];
-            [F64(md.c0), F64(md.c1)]
-        });
-        ctx.cols(out, rows, R_M0, |r| {
-            [
-                r.ra[0], r.ra[1], r.rb[0], r.rb[1], r.rcv[0], r.rcv[1], r.rc[0], r.rc[1], r.rmd,
-            ]
-        });
+        ctx.cols(out, rows, R0, |r| r.r);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -962,10 +912,9 @@ mod tests {
 
     const C: F192 = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
 
-    /// The hand-unrolled tower product IS `E`'s multiplication, lane by lane. Both
-    /// `MUL`'s result coordinate and `JUMP`'s inverse identity are written out from
-    /// [`TOWER_LANES`], and neither can be checked against the field at run time (one
-    /// is a bus coordinate, the other a `K` identity), so pin the unrolling here.
+    /// The hand-unrolled tower product IS `E`'s multiplication, lane by lane.
+    /// `MUL192`'s result coordinate is written out from [`TOWER_LANES`] and cannot
+    /// be checked against the field at run time, so pin the unrolling here.
     #[test]
     fn unrolled_tower_product_matches_field_product() {
         let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
@@ -979,15 +928,9 @@ mod tests {
     #[test]
     fn jump_identities_bind_indicator_and_inverse() {
         let pows = powers(F192::new(0x9e37_79b9_7f4a_7c15, 0x1234_5678_9abc_def0, 7), 2);
-        // The condition is K-valued (`memory_k` on its read, §sec:tab-jump), so the
-        // pair is single-lane: `w = c⁻¹` in K too.
         for cond in [F64::ZERO, F64(0x9e37_79b9_7f4a_7c15)] {
             let mut row = vec![F64::ZERO; jump::N];
-            let w = if cond.is_zero() {
-                F64::ZERO
-            } else {
-                F64(F192::from(cond).inv().c0)
-            };
+            let w = if cond.is_zero() { F64::ZERO } else { cond.inv() };
             row[jump::V_COND] = cond;
             row[jump::W] = w;
             row[jump::B] = if cond.is_zero() { F64::ZERO } else { F64::ONE };

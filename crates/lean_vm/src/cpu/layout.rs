@@ -9,12 +9,10 @@ use super::*;
 // Shared committed columns (indices `0..N_SHARED`). The program (opcode +
 // operands) is PUBLIC, not committed: it rides the bytecode seed/finalize blocks
 // as `Coord::Public`; only the witness-dependent finalize counts are committed.
-// The data-memory image, a 192-bit word per cell committed as three K-lane columns.
-pub const MEM_LO: usize = 0;
-pub const MEM_HI: usize = 1;
-pub const MEM_TOP: usize = 2;
-pub const MFCNT: usize = 3; // per-cell memory access count, g^{A[i]}
-pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
+// The data-memory image, one K word per cell.
+pub const MEM: usize = 0;
+pub const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
+pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
 // flock's packed BLAKE2s witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE2s program commits one full padding instance). It is the
@@ -22,8 +20,8 @@ pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
 // virtual and their memory-bus claims route to `q_flock` slots (§hash_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
-pub const QFLOCK: usize = 5;
-pub const N_SHARED: usize = 6;
+pub const QFLOCK: usize = 3;
+pub const N_SHARED: usize = 4;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
@@ -78,9 +76,9 @@ pub struct Layout {
     /// The stacked witness's shape: its announced `2^mu` size, plus how many lane
     /// blocks of it the prover actually commits (see [`witness::StackShape`]).
     pub shape: witness::StackShape,
-    /// Public input: the first two memory cells `m[0], m[1]` (each a 192-bit
-    /// word), bound to the committed memory at verification (§sec:e2e-pi).
-    pub pi: [F192; 2],
+    /// Public input: the first four memory cells, bound to the committed memory at
+    /// verification (§sec:e2e-pi).
+    pub pi: [F64; 4],
     pub taus: [usize; tables::N_TABLES],
 }
 
@@ -142,9 +140,7 @@ impl Witness {
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
-    k[MEM_LO] = Some((1, 0));
-    k[MEM_HI] = Some((1, 0));
-    k[MEM_TOP] = Some((1, 0));
+    k[MEM] = Some((1, 0));
     k[MFCNT] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
     // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
@@ -229,7 +225,9 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } => a.max(b).max(c),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
+                a.max(b).max(c)
+            }
             Op::Set { o, .. } => o,
             Op::Deref { o1, o2, o3, .. } => o1.max(o2).max(o3),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
@@ -241,19 +239,22 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let g_at = |i: u32| gpow[i as usize]; // operand g-power
 
     let opcode = |op: &Op| match op {
-        Op::Xor { .. } => OP_XOR,
-        Op::Mul { .. } => OP_MUL,
+        Op::Xor64 { .. } => OP_XOR64,
+        Op::Mul64 { .. } => OP_MUL64,
         Op::Set { .. } => OP_SET,
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
         Op::Blake2s { .. } => OP_BLAKE2S,
+        Op::Xor192 { .. } => OP_XOR192,
+        Op::Mul192 { .. } => OP_MUL192,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
-            Op::Xor { a, b, c } | Op::Mul { a, b, c } => (g_at(a), g_at(b), g_at(c)),
-            // The immediate's first two K-limbs ride operand slots o2/o3; c2
-            // rides the fpc slot below.
-            Op::Set { o, k } => (g_at(o), F64(k.c0), F64(k.c1)),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
+                (g_at(a), g_at(b), g_at(c))
+            }
+            // The immediate rides the second operand slot.
+            Op::Set { o, k } => (g_at(o), k, F64::ZERO),
             Op::Deref { o1, o2, o3, .. } => (g_at(o1), g_at(o2), g_at(o3)),
             Op::Jump { oc, od, of } => (g_at(oc), g_at(od), g_at(of)),
             // BLAKE2s's first three input-word offsets; the last two ride the
@@ -266,7 +267,6 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let fpc = |op: &Op| match op {
         Op::Deref { mode, .. } => mode.f_pc(),
         Op::Blake2s { ins, .. } => g_at(ins[3]),
-        Op::Set { k, .. } => F64(k.c2),
         _ => F64::ZERO,
     };
     let ffp = |op: &Op| match op {
@@ -324,7 +324,7 @@ pub fn bytecode_table(prog: &[Op]) -> Vec<F64> {
     crate::leaf::stacked_bytecode_table(std::slice::from_ref(&block))
 }
 
-pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F192; 2]) -> Layout {
+pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F64; 4]) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
 
@@ -355,30 +355,9 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
         0,
         vec![Const(SEP_STATE), Const(g_pow(final_pc as usize)), Const(one)],
     ));
-    // memory seed + finalize (every address real, no padding). The value is the
-    // full three-limb 192-bit word.
-    push.push(blk(
-        log_mem,
-        vec![
-            Const(SEP_MEM),
-            Index,
-            Const(one),
-            Col(MEM_LO),
-            Col(MEM_HI),
-            Col(MEM_TOP),
-        ],
-    ));
-    pull.push(blk(
-        log_mem,
-        vec![
-            Const(SEP_MEM),
-            Index,
-            Col(MFCNT),
-            Col(MEM_LO),
-            Col(MEM_HI),
-            Col(MEM_TOP),
-        ],
-    ));
+    // memory seed + finalize (every address real, no padding).
+    push.push(blk(log_mem, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
+    pull.push(blk(log_mem, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
     // bytecode seed + finalize (program columns are public; padding entries
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
     let bytecode_block = |count: Coord| {
@@ -467,7 +446,7 @@ impl Program {
             crate::hash_flock::n_blocks_log(row_counts[tables::BLAKE2S_TABLE]),
             "the BLAKE2s table must be filled to flock's instance floor"
         );
-        let pi = [exec.mem[0], exec.mem[1]];
+        let pi = [exec.mem[0], exec.mem[1], exec.mem[2], exec.mem[3]];
         let l = layout(&self.prog, log_mem, taus, pi);
 
         // The stacked witness is written exactly ONCE: allocate it, carve one window
@@ -508,14 +487,12 @@ impl Program {
                 let ctx = FillCtx::new(tr, &exec.mem, &gpow, &self.prog, 1 << l.taus[t]);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
-            // Shared columns. The 192-bit memory image splits into three K-limbs.
-            // These five plus `QFLOCK` below are every shared column, and each has to
-            // be written: the stack is uninitialized, so one left out would be read
-            // as indeterminate bytes rather than caught by a length mismatch.
-            const _: () = assert!(N_SHARED == 6, "a new shared column needs a fill here");
-            parallel::fill(windows[MEM_LO], |i| F64(exec.mem[i].c0));
-            parallel::fill(windows[MEM_HI], |i| F64(exec.mem[i].c1));
-            parallel::fill(windows[MEM_TOP], |i| F64(exec.mem[i].c2));
+            // Shared columns. These three plus `QFLOCK` below are every shared
+            // column, and each has to be written: the stack is uninitialized, so one
+            // left out would be read as indeterminate bytes rather than caught by a
+            // length mismatch.
+            const _: () = assert!(N_SHARED == 4, "a new shared column needs a fill here");
+            windows[MEM].copy_from_slice(&exec.mem);
             parallel::fill(windows[MFCNT], |i| tr.mem_count[i]); // counts ended at g^{A[i]}
             parallel::fill(windows[BFCNT], |i| tr.bytecode_count[i]); // … at g^{A[pc]}
         });
@@ -525,20 +502,16 @@ impl Program {
         // program with no BLAKE2s still carries a single padding instance.
         let flock_reduction = crate::stage!("Build q_flock", || {
             // The rows carry only their access counts; the compression's input
-            // words are the nine cells they read, in the finished (write-once)
-            // memory image.
+            // words are the cells they read, in the finished (write-once) memory
+            // image.
             let blocks: Vec<_> = parallel::map_collect(tr.blake2s.len(), |i| {
                 let r = &tr.blake2s[i];
-                let a = tables::blake2s_addresses(&self.prog, r);
-                let chunk = |c0: u32, c1: u32| {
-                    let (w0, w1) = (exec.mem[c0 as usize], exec.mem[c1 as usize]);
-                    [F64(w0.c0), F64(w0.c1), F64(w1.c0), F64(w1.c1)]
-                };
+                let w = tables::blake2s_cells(&self.prog, r.pc, r.fp).map(|a| exec.mem[a as usize]);
                 crate::hash_flock::compression(
-                    chunk(a[0], a[1]),
-                    chunk(a[2], a[3]),
-                    chunk(a[4], a[4] + 1),
-                    exec.mem[a[6] as usize],
+                    [w[0], w[1], w[2], w[3]],
+                    [w[4], w[5], w[6], w[7]],
+                    [w[12], w[13], w[14], w[15]],
+                    [w[16], w[17]],
                 )
             });
             crate::hash_flock::build_qflock_prepared(&blocks, windows[QFLOCK])

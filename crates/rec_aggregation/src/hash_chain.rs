@@ -5,12 +5,9 @@ use std::time::Instant;
 use lean_compiler::{compile, compile_without_filler, parse};
 use lean_vm::cpu::{prove, verify};
 use lean_vm::vmhash::compress;
-use primitives::{
-    field::{F64, F192},
-    pretty_f64, pretty_integer,
-};
+use primitives::{field::F64, pretty_f64, pretty_integer};
 
-fn instruction_counts(source: &str, public_input: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+fn instruction_counts(source: &str, public_input: [F64; 4]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
     compile_without_filler(&parse(source).expect("parse"))
         .execute(public_input)
         .base_counts
@@ -22,37 +19,32 @@ fn chain_source(steps: usize, unroll: usize) -> String {
         "N must be a positive multiple of UNROLL"
     );
     let blocks = steps / unroll;
-    let result_cell = 2 * blocks;
+    let result_cell = 4 * blocks;
 
     let mut body = String::new();
-    body.push_str("        b = i * i\n");
-    body.push_str("        h0 = StackBuf(2)\n");
-    body.push_str("        h0[0] = buff[b]\n");
-    body.push_str("        h0[1] = buff[b * GEN]\n");
+    body.push_str("        b = i ** 4\n");
+    body.push_str("        h0 = StackBuf(4)\n");
+    body.push_str("        h0[0:4] = buff[b:b + 4]\n");
     for step in 1..=unroll {
-        body.push_str(&format!("        h{step} = StackBuf(2)\n"));
+        body.push_str(&format!("        h{step} = StackBuf(4)\n"));
         body.push_str(&format!(
             "        blake2s(h{previous}, h{previous}, h{step})\n",
             previous = step - 1
         ));
     }
-    for word in 0..2 {
-        body.push_str(&format!("        buff[b * GEN ** {}] = h{unroll}[{word}]\n", 2 + word));
-    }
+    body.push_str("        nxt = b * GEN ** 4\n");
+    body.push_str(&format!("        buff[nxt:nxt + 4] = h{unroll}\n"));
 
     format!(
         "def main():\n\
         \x20   buff = HeapBuf({size})\n\
-        \x20   buff[1] = 0\n\
-        \x20   buff[GEN] = 0\n\
+        \x20   buff[0:4] = [0, 0, 0, 0]\n\
         \x20   for i in mul_range(1, GEN ** {blocks}):\n\
         {body}\
         \x20   output = 1\n\
-        \x20   output[1] = buff[GEN ** {result_cell}]\n\
-        \x20   output[GEN] = buff[GEN ** {next_cell}]\n\
+        \x20   output[0:4] = buff[{result_cell}:{result_cell} + 4]\n\
         \x20   return\n",
-        size = result_cell + 2,
-        next_cell = result_cell + 1,
+        size = result_cell + 4,
     )
 }
 
@@ -71,14 +63,10 @@ fn blake2s_hash_chain() {
         "LEANVM_HASH_N must be a multiple of LEANVM_HASH_UNROLL"
     );
 
-    let mut digest = [F64::ZERO; 4];
+    let mut public_input = [F64::ZERO; 4];
     for _ in 0..steps {
-        digest = compress(digest, digest);
+        public_input = compress(public_input, public_input);
     }
-    let public_input = [
-        F192::new(digest[0].0, digest[1].0, 0),
-        F192::new(digest[2].0, digest[3].0, 0),
-    ];
 
     let source = chain_source(steps, unroll);
     let program = compile(&parse(&source).expect("parse"));
@@ -98,16 +86,13 @@ fn blake2s_hash_chain() {
         pretty_integer(unroll)
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
-    for (name, &c) in ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"]
-        .iter()
-        .zip(&stats.counts)
-    {
+    for (name, &c) in lean_vm::cpu::Stats::TABLES.iter().zip(&stats.counts) {
         let pow = if c == 0 {
             "0".to_string()
         } else {
             format!("2^{}", pretty_f64((c as f64).log2()))
         };
-        println!("    {name:<6} instructions       : {pow}");
+        println!("    {name:<7} instructions      : {pow}");
     }
     println!(
         "  committed witness size      : 2^{:.3}",
@@ -127,6 +112,6 @@ fn blake2s_hash_chain() {
     );
 
     let mut wrong_input = public_input;
-    wrong_input[0] += F192::ONE;
+    wrong_input[0] += F64::ONE;
     assert!(verify(&program, &wrong_input, &proof).is_err());
 }

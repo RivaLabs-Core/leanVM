@@ -4,7 +4,9 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Stats, prove, verify};
-use primitives::field::{F64, F192};
+use primitives::field::{F64, g_pow};
+
+use crate::common::pi;
 
 const V: u64 = 0b1011_0110;
 
@@ -36,7 +38,7 @@ def main():
 "
         )
     };
-    let want = [F192::from(F64(V)), F192::from(F64::ONE)];
+    let want = pi(&[F64(V), F64::ONE]);
     let deref = |s: &str| crate::common::mix(s, want)[deref_index()];
     assert_eq!(
         deref(&src("HeapBuf(GEN ** 8)", "GEN ** i")) - deref(&src("StackBuf(8)", "i")),
@@ -48,8 +50,8 @@ def main():
 /// A stack bit run is addressed by CONTIGUITY, so no cell of one may be given
 /// away to a duplicate elsewhere: `hint_log2_ceil` reads `fp+base+k` whatever the
 /// lowerer decided, so a dropped store would leave it holding nothing. The
-/// duplicate `MUL` here comes FIRST, which is the order that would make the store
-/// the one dropped.
+/// duplicate `MUL64` here comes FIRST, which is the order that would make the
+/// store the one dropped.
 #[test]
 fn a_stack_bit_run_survives_cell_sharing() {
     let src = "\
@@ -71,10 +73,8 @@ def main():
     // store leaves its cell unwritten, and the advice then computed off the hole
     // collides with the published public input.
     let mut program = compile(&parse(src).expect("parse"));
-    let bits: Vec<F192> = [1u64, 1, 0, 1].iter().map(|&b| F192::from(F64(b))).collect();
-    program.set_witness("bits", vec![bits]);
-    let want = [F192::from(primitives::field::g_pow(4)), F192::from(F64::ONE)];
-    let exec = program.execute(want);
+    program.set_witness("bits", vec![[1u64, 1, 0, 1].map(F64).to_vec()]);
+    let exec = program.execute(pi(&[g_pow(4), F64::ONE]));
     assert!(
         exec.unconstrained_reads.is_empty(),
         "every cell of the run must still be written"
@@ -117,11 +117,11 @@ def probe(v):
     return total
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("v", vec![vec![F192::from(F64(V))]]);
-    let want = [F192::from(F64(V)), F192::from(F64::ONE)];
+    program.set_witness("v", vec![vec![F64(V)]]);
+    let want = pi(&[F64(V), F64::ONE]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the pointer reads the frame run");
-    let bad = [F192::from(F64(V + 1)), F192::from(F64::ONE)];
+    let bad = pi(&[F64(V + 1), F64::ONE]);
     assert!(verify(&program, &bad, &proof).is_err(), "a wrong value is rejected");
 }
 
@@ -143,7 +143,7 @@ def main():
     b[0] = GEN ** 9
     return
 ";
-    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
+    compile(&parse(src).expect("parse")).execute([F64::ZERO; 4]);
 }
 
 /// The same hazard for a run declared AFTER the escape, which the test above
@@ -168,7 +168,7 @@ def main():
     assert b[0] == GEN ** 9
     return
 ";
-    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
+    compile(&parse(src).expect("parse")).execute([F64::ZERO; 4]);
 }
 
 /// A frame pointer carries the same compile-time bound a `HeapBuf` pointer gets.
@@ -209,5 +209,5 @@ def main():
     assert b[0] == GEN ** 9
     return
 ";
-    compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
+    compile(&parse(src).expect("parse")).execute([F64::ZERO; 4]);
 }

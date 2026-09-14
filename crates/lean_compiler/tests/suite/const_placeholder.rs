@@ -78,10 +78,9 @@ def main():
 ///
 /// The scalar path tried an `f192` literal, then an integer expression, and
 /// stopped, so `GEN ** 2` was rejected as "not a compile-time integer constant
-/// expression" while `f192(4, 0, 0)` naming the same element was accepted. It
-/// now falls back to the field evaluator and renders the value as a decimal
-/// wherever it fits the low two limbs, so the constant still works in the
-/// positions that demand a literal rather than only as a value.
+/// expression". It now falls back to the field evaluator and renders the word as
+/// a decimal, so the constant still works in the positions that demand a literal
+/// rather than only as a value.
 #[test]
 fn a_global_constant_may_be_a_g_power() {
     for (decl, exp) in [("GEN ** 2", 2usize), ("GEN * GEN", 2), ("GEN ** 70", 70)] {
@@ -96,7 +95,7 @@ def main():
 "
         );
         let program = compile(&parse(&src).unwrap_or_else(|e| panic!("`{decl}`: {e}")));
-        let want = [g_pow(exp).into(), g_pow(0).into()];
+        let want = crate::common::pi(&[g_pow(exp), g_pow(0)]);
         let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).unwrap_or_else(|e| panic!("`{decl}` is not g^{exp}: {e:?}"));
     }

@@ -63,16 +63,15 @@ pub(super) fn const_int_expr(e: &Expr) -> Option<u128> {
 }
 
 /// Evaluate a compile-time constant expression (integer literals, `GEN`,
-/// `GEN ** k`, and `+`/`*` combinations of those) to its field element.
-/// Used for the `# public_input: <elt>, <elt>` annotation of `.py` test
+/// `GEN ** k`, and `+`/`*` combinations of those) to its 64-bit word.
+/// Used for the `# public_input:` and `# witness` annotations of `.py` test
 /// programs (see `tests/py_source.rs`).
-pub fn parse_const(s: &str) -> Result<F192, String> {
-    fn eval(e: &Expr) -> Result<F192, String> {
+pub fn parse_const(s: &str) -> Result<F64, String> {
+    fn eval(e: &Expr) -> Result<F64, String> {
         match e {
-            // An integer literal is the raw 128-bit bit pattern of a machine word.
-            Expr::Lit(n) => Ok(F192::new(*n as u64, (*n >> 64) as u64, 0)),
-            Expr::Gen => Ok(g_pow(1).into()),
-            Expr::GPow(k) => Ok(g_pow_u128(*k).into()),
+            Expr::Lit(n) => lit_field(*n).ok_or_else(|| format!("literal {n} does not fit in a 64-bit word")),
+            Expr::Gen => Ok(g_pow(1)),
+            Expr::GPow(k) => Ok(g_pow_u128(*k)),
             Expr::Add(a, b) => Ok(eval(a)? + eval(b)?),
             Expr::Mul(a, b) => Ok(eval(a)? * eval(b)?),
             other => Err(format!("not a constant expression: `{other:?}`")),
@@ -81,7 +80,8 @@ pub fn parse_const(s: &str) -> Result<F192, String> {
     eval(&parse_expr(s)?)
 }
 
-pub(super) fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
+/// The three limbs of an `f192(c0, c1, c2)` literal, each a compile-time integer.
+pub(super) fn parse_f192_const(s: &str) -> Option<Result<[u64; 3], String>> {
     let inner = s.trim().strip_prefix("f192(")?.strip_suffix(')')?;
     let parts = split_top(inner, ',');
     Some((|| {
@@ -93,7 +93,7 @@ pub(super) fn parse_f192_const(s: &str) -> Option<Result<F192, String>> {
             limbs[i] =
                 u64::try_from(eval_const_int(p.trim())?).map_err(|_| "an f192 limb does not fit in u64".to_string())?;
         }
-        Ok(F192::new(limbs[0], limbs[1], limbs[2]))
+        Ok(limbs)
     })())
 }
 

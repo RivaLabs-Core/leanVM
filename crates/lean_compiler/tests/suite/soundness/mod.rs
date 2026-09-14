@@ -37,35 +37,43 @@ mod cases;
 mod pairs;
 
 /// `g^k` as a machine word, the way every index, address and counter is written.
-pub fn g(k: usize) -> F192 {
-    F192::from(g_pow(k))
+pub fn g(k: usize) -> F64 {
+    g_pow(k)
 }
 
-/// A K-valued literal in the low lane.
-pub fn k(x: u64) -> F192 {
-    F192::from(F64(x))
+/// A word given by its bits.
+pub fn k(x: u64) -> F64 {
+    F64(x)
+}
+
+/// The three limb cells of a 192-bit element, low first.
+pub fn limbs(x: F192) -> [F64; 3] {
+    [F64(x.c0), F64(x.c1), F64(x.c2)]
 }
 
 /// One `hint_witness` stream: the name, then one entry per call naming it.
-pub type Stream = (&'static str, Vec<Vec<F192>>);
+pub type Stream = (&'static str, Vec<Vec<F64>>);
 
 /// Everything a run consumes: the public statement and the prover's advice.
 #[derive(Clone)]
 pub struct Trial {
-    pub pi: [F192; 2],
+    pub pi: [F64; 4],
     pub streams: Vec<Stream>,
 }
 
 impl Trial {
-    pub fn new(pi: [F192; 2]) -> Self {
+    /// A trial publishing `pi`, zero-padded to the four public words.
+    pub fn new(pi: &[F64]) -> Self {
+        let mut words = [F64::ZERO; 4];
+        words[..pi.len()].copy_from_slice(pi);
         Self {
-            pi,
+            pi: words,
             streams: Vec::new(),
         }
     }
 
     /// Add a stream whose every call takes one entry of `cells`.
-    pub fn stream(mut self, name: &'static str, entries: Vec<Vec<F192>>) -> Self {
+    pub fn stream(mut self, name: &'static str, entries: Vec<Vec<F64>>) -> Self {
         self.streams.push((name, entries));
         self
     }
@@ -91,35 +99,33 @@ impl Trial {
 /// exactly the constraint that is missing.
 #[derive(Clone, Copy)]
 pub enum Poke {
-    /// Public-input word 0 or 1.
-    Pi { slot: usize, to: F192 },
+    /// Public-input word 0 to 3.
+    Pi { slot: usize, to: F64 },
     /// Cell `cell` of entry `entry` of witness stream `name`.
     Wit {
         name: &'static str,
         entry: usize,
         cell: usize,
-        to: F192,
+        to: F64,
     },
 }
 
 impl Poke {
     fn label(&self) -> String {
         match self {
-            Poke::Pi { slot, to } => format!("pi[{slot}] := {:x}:{:x}:{:x}", to.c2, to.c1, to.c0),
-            Poke::Wit { name, entry, cell, to } => {
-                format!("{name}[{entry}][{cell}] := {:x}:{:x}:{:x}", to.c2, to.c1, to.c0)
-            }
+            Poke::Pi { slot, to } => format!("pi[{slot}] := {:#x}", to.0),
+            Poke::Wit { name, entry, cell, to } => format!("{name}[{entry}][{cell}] := {:#x}", to.0),
         }
     }
 }
 
 /// Poke a public-input word.
-pub fn pi(slot: usize, to: F192) -> Poke {
+pub fn pi(slot: usize, to: F64) -> Poke {
     Poke::Pi { slot, to }
 }
 
 /// Poke cell `cell` of the first entry of stream `name`.
-pub fn wit(name: &'static str, cell: usize, to: F192) -> Poke {
+pub fn wit(name: &'static str, cell: usize, to: F64) -> Poke {
     Poke::Wit {
         name,
         entry: 0,
@@ -129,7 +135,7 @@ pub fn wit(name: &'static str, cell: usize, to: F192) -> Poke {
 }
 
 /// Poke cell `cell` of entry `entry` of stream `name`.
-pub fn wit_at(name: &'static str, entry: usize, cell: usize, to: F192) -> Poke {
+pub fn wit_at(name: &'static str, entry: usize, cell: usize, to: F64) -> Poke {
     Poke::Wit { name, entry, cell, to }
 }
 

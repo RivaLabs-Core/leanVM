@@ -78,6 +78,7 @@ fn subst_kind(s: &StmtKind, name: &str, to: &Expr) -> (StmtKind, bool) {
             false,
         ),
         StmtKind::Store(a, i, v) => (StmtKind::Store(e(a), e(i), e(v)), false),
+        StmtKind::StoreRun(target, v) => (StmtKind::StoreRun(e(target), e(v)), false),
         StmtKind::Return(es) => (StmtKind::Return(es.iter().map(e).collect()), false),
         StmtKind::CallIfNe(a, b, f, args) => (
             StmtKind::CallIfNe(e(a), e(b), f.clone(), args.iter().map(e).collect()),

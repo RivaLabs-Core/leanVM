@@ -2,16 +2,31 @@
 #![allow(dead_code)]
 
 use lean_compiler::{compile_without_filler, parse};
-use primitives::field::F192;
+use primitives::field::F64;
 
 /// The program's own instruction mix: a build without the fill blocks, executed but not
 /// proven. Proving needs them, since a table's height has to be a power of two with no
 /// padding rows, but their dummy rows would drown out exactly what these counts are
 /// measuring.
-pub fn mix(src: &str, pi: [F192; 2]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
+pub fn mix(src: &str, pi: [F64; 4]) -> [usize; lean_vm::cpu::Stats::TABLES.len()] {
     compile_without_filler(&parse(src).expect("parse"))
         .execute(pi)
         .base_counts
+}
+
+/// A public input from up to four words, zero-padded.
+pub fn pi(words: &[F64]) -> [F64; 4] {
+    let mut pi = [F64::ZERO; 4];
+    pi[..words.len()].copy_from_slice(words);
+    pi
+}
+
+/// The panic message of a caught unwind, for asserting on a diagnostic.
+pub fn panic_message(err: &(dyn std::any::Any + Send)) -> String {
+    err.downcast_ref::<String>()
+        .cloned()
+        .or_else(|| err.downcast_ref::<&str>().map(|s| s.to_string()))
+        .unwrap_or_default()
 }
 
 /// An AST's shape with source lines stripped. Two spellings of the same program

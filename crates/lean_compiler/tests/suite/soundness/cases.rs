@@ -6,14 +6,15 @@
 //! every poke names one constraint. A poke that is accepted says which one is
 //! missing.
 //!
-//! The pokes lean on witness streams rather than the public input, because two
+//! The pokes lean on witness streams rather than the public input, because four
 //! public words is all there is and because the streams are where a real guest's
 //! untrusted data actually enters.
 
-use super::{Case, Trial, check_case, g, k, pi, wit};
-use primitives::field::F192;
+use super::{Case, Trial, check_case, g, k, limbs, pi, wit};
+use lean_vm::vmhash::compress;
+use primitives::field::{F64, F192};
 
-/// `XOR`/`MUL` relations, both assert forms, and the division back-solve. The
+/// `XOR64`/`MUL64` relations, both assert forms, and the division back-solve. The
 /// quotient cell is written by nothing but the back-solve, so this case also
 /// pins the one legitimate way a cell may be read before any instruction writes
 /// it.
@@ -34,7 +35,7 @@ def main():
     p[GEN] = v[0] + v[1]
     return
 ",
-        valid: Trial::new([g(8), g(3) + g(5)]).stream("w", vec![vec![g(3), g(5), g(8)]]),
+        valid: Trial::new(&[g(8), g(3) + g(5)]).stream("w", vec![vec![g(3), g(5), g(8)]]),
         pokes: vec![
             // Each of the three hinted cells breaks the product relation.
             wit("w", 0, g(4)),
@@ -46,6 +47,59 @@ def main():
             // Both published words.
             pi(0, g(9)),
             pi(1, g(3) + g(6)),
+        ],
+    });
+}
+
+/// The same relations over 192-bit runs: `MUL192`, both 192-bit assert forms, and
+/// the `div192` back-solve, whose quotient run is written by nothing else. A
+/// second quotient lands on a hinted run, so a claimed quotient is checked by the
+/// product rather than trusted: the pokes on `q` are a forged quotient.
+#[test]
+fn arithmetic192_and_asserts() {
+    let a = F192::new(g(3).0, 11, 13);
+    let b = F192::new(g(5).0, 11, 13);
+    let c = a * b;
+    let w: Vec<F64> = [limbs(a), limbs(b), limbs(c)].concat();
+    let sum = limbs(a + b);
+    let bump = |x: u64| F64(x) + F64::ONE;
+    check_case(&Case {
+        name: "arithmetic192_and_asserts",
+        src: "\
+def main():
+    v = StackBuf(9)
+    hint_witness(v, \"w\")
+    assert_eq192(mul192(v[0:3], v[3:6]), v[6:9])
+    assert_ne192(v[0:3], v[3:6])
+    q = div192(v[6:9], v[0:3])
+    assert_eq192(q, v[3:6])
+    claimed = StackBuf(3)
+    hint_witness(claimed, \"q\")
+    claimed[0:3] = div192(v[6:9], v[3:6])
+    p = GEN ** 0
+    p[0:3] = add192(v[0:3], v[3:6])
+    p[GEN ** 3] = v[6]
+    return
+",
+        valid: Trial::new(&[sum[0], sum[1], sum[2], F64(c.c0)])
+            .stream("w", vec![w])
+            .stream("q", vec![limbs(a).to_vec()]),
+        pokes: vec![
+            // Either factor, and the product's unpublished limbs.
+            wit("w", 1, bump(a.c1)),
+            wit("w", 5, bump(b.c2)),
+            wit("w", 7, bump(c.c1)),
+            wit("w", 8, bump(c.c2)),
+            // Equal operands, the poke `assert_ne192` exists for.
+            wit("w", 3, g(3)),
+            // A forged quotient, one limb at a time.
+            wit("q", 0, bump(a.c0)),
+            wit("q", 1, bump(a.c1)),
+            wit("q", 2, bump(a.c2)),
+            // The published sum and product limb.
+            pi(0, bump(sum[0].0)),
+            pi(2, bump(sum[2].0)),
+            pi(3, bump(c.c0)),
         ],
     });
 }
@@ -75,7 +129,7 @@ def sq(x):
     return x * x
 ",
         // Arm 3 runs: sq(3) = 3·3 in K = (x+1)^2 = x^2+1 = 5.
-        valid: Trial::new([g(3), k(5)]).stream("w", vec![vec![g(3), k(5)]]),
+        valid: Trial::new(&[g(3), k(5)]).stream("w", vec![vec![g(3), k(5)]]),
         pokes: vec![
             // Past the bound: the range check's complement DEREF must catch it.
             wit("w", 0, g(8)),
@@ -113,7 +167,7 @@ def main():
     p[GEN] = v[0]
     return
 ",
-        valid: Trial::new([g(6), g(2)]).stream("w", vec![vec![g(2), g(5)]]),
+        valid: Trial::new(&[g(6), g(2)]).stream("w", vec![vec![g(2), g(5)]]),
         pokes: vec![
             // Takes the else arm, which multiplies by g^3 instead of g.
             wit("w", 0, g(1)),
@@ -150,7 +204,7 @@ def main():
     return
 ",
         // n = g^5: five iterations, acc[j] = g^{2j}, so acc[5] = g^10.
-        valid: Trial::new([g(10), g(5)]).stream("n", vec![vec![g(5)]]),
+        valid: Trial::new(&[g(10), g(5)]).stream("n", vec![vec![g(5)]]),
         pokes: vec![
             // Fewer and more iterations: acc[n] is then g^8 and g^12.
             wit("n", 0, g(4)),
@@ -163,69 +217,42 @@ def main():
     });
 }
 
-/// `pack64x2`'s range assertion: both sources must lie in K. Its untaken JUMP
-/// puts them in the destination and frame slots, whose memory reads have
-/// literal-zero upper limbs.
-#[test]
-fn pack64x2_range_assertion() {
-    check_case(&Case {
-        name: "pack64x2_range_assertion",
-        src: "\
-@inline
-def pack64x2(a, b):
-    assert_in_k(a, b)
-    return a + f192(0, 1, 0) * b
-
-def main():
-    v = StackBuf(2)
-    hint_witness(v, \"w\")
-    c = pack64x2(v[0], v[1])
-    p = GEN ** 0
-    p[1] = c
-    p[GEN] = v[0]
-    return
-",
-        valid: Trial::new([F192::new(5, 7, 0), k(5)]).stream("w", vec![vec![k(5), k(7)]]),
-        pokes: vec![
-            // Either source outside K.
-            wit("w", 0, F192::new(5, 1, 0)),
-            wit("w", 0, F192::new(5, 0, 1)),
-            wit("w", 1, F192::new(7, 1, 0)),
-            // In K, but not the packing that was published.
-            wit("w", 0, k(6)),
-            wit("w", 1, k(8)),
-            pi(0, F192::new(5, 8, 0)),
-            pi(1, k(6)),
-        ],
-    });
-}
-
 /// The digest-as-verification idiom: a hinted preimage, hashed, and the result
-/// pinned against a hinted digest through a heap store. This is the shape a
+/// pinned against a hinted digest through a heap run store. This is the shape a
 /// signature verifier has, so it is the one that most needs a regression test.
-///
-/// The digest constant comes from [`print_blake2s_digest`], not from a hand
-/// computation: what the case tests is that a *wrong* digest is rejected, and
-/// for that the honest value only has to be honest.
 #[test]
 fn digest_pins_its_preimage() {
+    let d = digest_5_7();
     check_case(&Case {
         name: "digest_pins_its_preimage",
-        src: BLAKE2S_PIN_SRC,
-        valid: Trial::new([k(5), k(7)])
-            .stream("msg", vec![vec![k(5), k(7), F192::ZERO, F192::ZERO]])
-            .stream("dig", vec![vec![DIGEST_5_7[0], DIGEST_5_7[1]]]),
+        src: "\
+def main():
+    m = StackBuf(8)
+    hint_witness(m, \"msg\")
+    d = StackBuf(4)
+    blake2s(m[0:4], m[4:8], d)
+    e = HeapBuf(4)
+    hint_witness(e[0:4], \"dig\")
+    e[0:4] = d
+    p = GEN ** 0
+    p[1] = m[0]
+    p[GEN] = m[1]
+    return
+",
+        valid: Trial::new(&[k(5), k(7)])
+            .stream("msg", vec![vec![k(5), k(7), k(0), k(0), k(0), k(0), k(0), k(0)]])
+            .stream("dig", vec![d.to_vec()]),
         pokes: vec![
-            // A different preimage hashes to something else.
+            // A different preimage hashes to something else, published or not.
             wit("msg", 0, k(6)),
             wit("msg", 1, k(8)),
             wit("msg", 2, k(1)),
-            wit("msg", 3, k(1)),
+            wit("msg", 7, k(1)),
             // A wrong digest is what the write-once store has to catch.
-            wit("dig", 0, F192::ZERO),
-            wit("dig", 1, F192::ZERO),
-            wit("dig", 0, DIGEST_5_7[0] + F192::ONE),
-            wit("dig", 1, DIGEST_5_7[1] + F192::ONE),
+            wit("dig", 0, F64::ZERO),
+            wit("dig", 3, F64::ZERO),
+            wit("dig", 1, d[1] + F64::ONE),
+            wit("dig", 2, d[2] + F64::ONE),
             // The published preimage words.
             pi(0, k(6)),
             pi(1, k(8)),
@@ -233,47 +260,11 @@ fn digest_pins_its_preimage() {
     });
 }
 
-const BLAKE2S_PIN_SRC: &str = "\
-def main():
-    m = StackBuf(4)
-    hint_witness(m, \"msg\")
-    d = StackBuf(2)
-    blake2s(m[0:2], m[2:4], d)
-    e = HeapBuf(2)
-    hint_witness(e[0:2], \"dig\")
-    e[1] = d[0]
-    e[GEN] = d[1]
-    p = GEN ** 0
-    p[1] = m[0]
-    p[GEN] = m[1]
-    return
-";
-
-/// BLAKE2s of the 64-byte block whose four canonical cells are `(5, 7, 0, 0)`.
-pub const DIGEST_5_7: [F192; 2] = [
-    F192::new(0xbbc8_c175_8cb7_7642, 0xf299_5d40_1fad_f4ff, 0),
-    F192::new(0x83ea_6ade_289a_53c8, 0x57e6_e523_12ec_734b, 0),
-];
-
-/// Regenerate [`DIGEST_5_7`]: `cargo test --release -p lean_compiler
-/// print_blake2s_digest -- --ignored --nocapture`. Kept so the constant above is
-/// reproducible rather than folklore.
-#[test]
-#[ignore = "prints a constant; not a check"]
-fn print_blake2s_digest() {
-    let src = "\
-def main():
-    m = StackBuf(4)
-    hint_witness(m, \"msg\")
-    d = StackBuf(2)
-    blake2s(m[0:2], m[2:4], d)
-    print(d[0])
-    print(d[1])
-    return
-";
-    let mut p = super::build(src);
-    p.set_witness("msg", vec![vec![k(5), k(7), F192::ZERO, F192::ZERO]]);
-    p.execute([F192::ZERO, F192::ZERO]);
+/// BLAKE2s of the 64-byte block whose eight words are `(5, 7, 0, 0, 0, 0, 0, 0)`,
+/// from the reference compression: what a case tests is that a *wrong* digest is
+/// rejected, and for that the honest value only has to be honest.
+pub fn digest_5_7() -> [F64; 4] {
+    compress([k(5), k(7), k(0), k(0)], [k(0); 4])
 }
 
 /// The fused `match` path must reject a call that binds more names than
@@ -284,9 +275,11 @@ def main():
 ///
 /// Fusion needs every arm to be a call to the same function with identical
 /// runtime arguments, so the two programs below are the fused shape: one over
-/// mixed-arity callees, one over a single over-bound callee.
+/// mixed-arity callees, one over a single over-bound callee. The mixed arms are
+/// caught by the shared-layout check, which compares the return shapes before any
+/// count is read; the over-bound callee has one layout and reaches the count.
 #[test]
-#[should_panic(expected = "dispatched call binds")]
+#[should_panic(expected = "does not take and return the same shapes")]
 fn dispatched_call_rejects_a_mixed_arity_arm() {
     super::build(
         "\
@@ -416,37 +409,49 @@ def two(v, k: Const):
 /// words into a buffer, so hashing one way and the other must agree.
 ///
 /// Self-comparing on purpose: an equivalence pair cannot check this, because a
-/// trial that must be ACCEPTED has to name the digest and no test should carry a
-/// hash constant. Asserting the two digests equal needs no constant, and the two
-/// operands are DIFFERENT words so that reordering within a list is visible: with
-/// both operands equal the swap would cancel out.
+/// trial that must be ACCEPTED has to name the digest, and asserting the two
+/// digests equal needs no digest at all. The list spells every chunk shape the
+/// lowering distinguishes: a run element whose two words are used in place, a
+/// reversed pair that has to be copied, a constant pair, and a pair mixing a cell
+/// and a constant. The operands are DIFFERENT words so that reordering within a
+/// list is visible.
 #[test]
 fn a_blake2s_word_list_hashes_like_the_buffer_it_replaces() {
     check_case(&Case {
         name: "a_blake2s_word_list_hashes_like_the_buffer_it_replaces",
         src: "\
 def main():
-    v = StackBuf(2)
+    v = StackBuf(4)
     hint_witness(v, \"w\")
-    named = StackBuf(2)
-    blake2s([v[0], v[1]], [v[1], v[0]], named)
-    l = StackBuf(2)
+    named = StackBuf(4)
+    blake2s([v[0:2], v[3], v[2]], [5, 7, v[1], 9], named)
+    l = StackBuf(4)
     l[0] = v[0]
     l[1] = v[1]
-    r = StackBuf(2)
-    r[0] = v[1]
-    r[1] = v[0]
-    gathered = StackBuf(2)
+    l[2] = v[3]
+    l[3] = v[2]
+    r = StackBuf(4)
+    r[0] = 5
+    r[1] = 7
+    r[2] = v[1]
+    r[3] = 9
+    gathered = StackBuf(4)
     blake2s(l, r, gathered)
     assert named[0] == gathered[0]
     assert named[1] == gathered[1]
+    assert named[2] == gathered[2]
+    assert named[3] == gathered[3]
     p = GEN ** 0
-    p[1] = v[0]
-    p[GEN] = v[1]
+    p[0:4] = v
     return
 ",
-        valid: Trial::new([k(11), k(22)]).stream("w", vec![vec![k(11), k(22)]]),
-        pokes: vec![wit("w", 0, k(12)), wit("w", 1, k(23))],
+        valid: Trial::new(&[k(11), k(22), k(33), k(44)]).stream("w", vec![vec![k(11), k(22), k(33), k(44)]]),
+        pokes: vec![
+            wit("w", 0, k(12)),
+            wit("w", 1, k(23)),
+            wit("w", 2, k(34)),
+            wit("w", 3, k(45)),
+        ],
     });
 }
 

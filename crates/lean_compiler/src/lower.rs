@@ -15,6 +15,7 @@
 //!   arity, because they place the return area from their own idea of it.
 //! - [`mod@builtins`] is the precompile and the hints: the two places a value
 //!   arrives without an instruction computing it.
+//! - [`mod@run`] is values spanning several cells: 192-bit elements and digests.
 //!
 //! [`Scope`] is what a name means HERE, and it reverts at a branch join, so a
 //! cell whose `SET` sits inside a branch is never trusted outside it.
@@ -27,6 +28,7 @@ mod builtins;
 mod call;
 mod eval;
 mod mem;
+mod run;
 use call::ret_binding;
 use eval::field_pow;
 
@@ -84,12 +86,14 @@ impl Abi {
 /// that folds an exponent into `β` measures it against this.
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
-/// The two pure operations worth interning. Both are commutative, so operands
-/// are stored sorted.
+/// The pure operations worth interning. All are commutative, so operands are
+/// stored sorted. A 192-bit one names runs by their first cell.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum PureOp {
     Xor,
     Mul,
+    Xor192,
+    Mul192,
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -111,7 +115,9 @@ enum Binding {
     Scalar(Off),
     Stack(Off, u32),
     Gaddr(GAddr),
-    FConst(F192),
+    FConst(F64),
+    /// A 192-bit constant, materialized as a pooled run only where a use needs cells.
+    Const192(F192),
 }
 
 /// What one name means: its value binding, plus an OPTIONAL compile-time integer
@@ -150,16 +156,16 @@ struct Scope {
     /// Dominating memory equalities. Reads reuse the frame cell; stores still
     /// emit their equality checks. Branch joins restore this with the scope.
     load_cells: HashMap<(Off, u32), Off>,
-    /// Every lazily-`SET` constant cell: field value (as bits) → the frame cell
-    /// holding it. Cells are write-once and read-many, so one `SET` serves every
-    /// use in scope. A `SET` first emitted inside a branch must not be named from
-    /// outside it, where the other path leaves the cell unwritten and therefore
-    /// prover-chosen, which is why this reverts at a join with the bindings.
-    const_cells: HashMap<[u64; 3], Off>,
-    /// Two consecutive frame cells holding the standard BLAKE2s IV, emitted
-    /// lazily at the first dominating default-IV compression in this
-    /// control-flow scope.
-    blake2s_iv: Option<Off>,
+    /// The same for a heap run read into the frame: `(ptr, offset, len)` → its run.
+    run_loads: HashMap<(Off, u32, u32), Off>,
+    /// Every lazily-`SET` constant cell: its word → the frame cell holding it.
+    /// Cells are write-once and read-many, so one `SET` serves every use in scope.
+    /// A `SET` first emitted inside a branch must not be named from outside it,
+    /// where the other path leaves the cell unwritten and therefore prover-chosen,
+    /// which is why this reverts at a join with the bindings.
+    const_cells: HashMap<u64, Off>,
+    /// The same for constant runs ([`FnLower::const_run`]): the words → the run.
+    const_runs: HashMap<Vec<u64>, Off>,
 }
 
 impl Scope {
@@ -232,7 +238,7 @@ struct FnLower<'a> {
     defs: &'a HashMap<&'a str, &'a Func>,
     /// Top-level constant arrays, resolved at compile time: `NAME[i]` yields the
     /// element (a field value or an index), `len(NAME)` its length.
-    const_arrays: &'a HashMap<&'a str, &'a [F192]>,
+    const_arrays: &'a HashMap<&'a str, &'a [F64]>,
 }
 
 impl FnLower<'_> {
@@ -278,7 +284,7 @@ impl FnLower<'_> {
         self.emit(LOp::Set { o, k });
     }
 
-    fn set_const(&mut self, o: Off, v: F192) {
+    fn set_const(&mut self, o: Off, v: F64) {
         self.set(o, KVal::Const(v));
     }
 
@@ -302,7 +308,7 @@ impl FnLower<'_> {
     /// branch join, or on a path this hint does not belong to).
     fn anchor(&mut self) {
         let o = self.fresh();
-        self.set_const(o, F192::ZERO);
+        self.set_const(o, F64::ZERO);
     }
 
     /// A top-level constant name is reserved (`zkDSL.md` §Global constants). A
@@ -354,11 +360,16 @@ impl FnLower<'_> {
         if let Some(&o) = self.scope.pure_cells.get(&key) {
             return o;
         }
-        let o = self.fresh();
-        match op {
-            PureOp::Xor => self.emit(LOp::Xor { a, b, c: o }),
-            PureOp::Mul => self.emit(LOp::Mul { a, b, c: o }),
-        }
+        let o = match op {
+            PureOp::Xor | PureOp::Mul => self.fresh(),
+            PureOp::Xor192 | PureOp::Mul192 => self.alloc_stack(3),
+        };
+        self.emit(match op {
+            PureOp::Xor => LOp::Xor64 { a, b, c: o },
+            PureOp::Mul => LOp::Mul64 { a, b, c: o },
+            PureOp::Xor192 => LOp::Xor192 { a, b, c: o },
+            PureOp::Mul192 => LOp::Mul192 { a, b, c: o },
+        });
         self.scope.pure_cells.insert(key, o);
         o
     }
@@ -380,7 +391,7 @@ impl FnLower<'_> {
 
     /// A frame cell holding `1` (always-taken `JUMP` condition).
     fn one(&mut self) -> Off {
-        self.const_cell(F192::ONE)
+        self.const_cell(F64::ONE)
     }
 
     /// A frame cell holding `v`, shared by every dominated use in the current
@@ -394,22 +405,20 @@ impl FnLower<'_> {
     /// the cell unwritten and so prover-chosen. Several call sites hoist
     /// [`Self::one`] above a branch on purpose; the revert is what makes that an
     /// optimization rather than the thing holding the invariant up.
-    fn const_cell(&mut self, v: F192) -> Off {
-        let key = [v.c0, v.c1, v.c2];
-        if let Some(&o) = self.scope.const_cells.get(&key) {
+    fn const_cell(&mut self, v: F64) -> Off {
+        if let Some(&o) = self.scope.const_cells.get(&v.0) {
             return o;
         }
         let o = self.fresh();
         self.set_const(o, v);
-        self.scope.const_cells.insert(key, o);
+        self.scope.const_cells.insert(v.0, o);
         o
     }
 
-    /// A frame cell holding `0`, set lazily once: the source for forwarded zero
-    /// words (a `BLAKE2s` padding half), and the destination every `assert a == b`
-    /// in this scope XORs into.
+    /// A frame cell holding `0`, set lazily once: the destination every
+    /// `assert a == b` in this scope XORs into.
     fn zero(&mut self) -> Off {
-        self.const_cell(F192::ZERO)
+        self.const_cell(F64::ZERO)
     }
 
     /// Terminate `main`: jump to the halt sentinel `g^{B-1}` with `fp = g^0`.
@@ -459,20 +468,31 @@ impl FnLower<'_> {
                     table,
                 });
                 for _ in 0..size {
+                    let scratch = (fr::SCRATCH, fr::SCRATCH, fr::SCRATCH);
                     self.emit(match op {
-                        FillerOp::Xor => LOp::Xor {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
+                        FillerOp::Xor64 => LOp::Xor64 {
+                            a: scratch.0,
+                            b: scratch.1,
+                            c: scratch.2,
                         },
-                        FillerOp::Mul => LOp::Mul {
-                            a: fr::SCRATCH,
-                            b: fr::SCRATCH,
-                            c: fr::SCRATCH,
+                        FillerOp::Mul64 => LOp::Mul64 {
+                            a: scratch.0,
+                            b: scratch.1,
+                            c: scratch.2,
+                        },
+                        FillerOp::Xor192 => LOp::Xor192 {
+                            a: scratch.0,
+                            b: scratch.1,
+                            c: scratch.2,
+                        },
+                        FillerOp::Mul192 => LOp::Mul192 {
+                            a: scratch.0,
+                            b: scratch.1,
+                            c: scratch.2,
                         },
                         FillerOp::Set => LOp::Set {
                             o: fr::SCRATCH,
-                            k: KVal::Const(F192::ZERO),
+                            k: KVal::Const(F64::ZERO),
                         },
                         FillerOp::Deref => LOp::Deref {
                             o1: fr::PTR,
@@ -493,7 +513,7 @@ impl FnLower<'_> {
                         // prover choosing otherwise only picks which compression the
                         // dummy proves, which nothing reads (`lean_vm::cpu::filler`).
                         FillerOp::Blake2s => LOp::Blake2s {
-                            ins: [fr::DIGEST + 2, fr::DIGEST + 3, fr::DIGEST + 4, fr::DIGEST + 5],
+                            ins: [fr::DIGEST + 4, fr::DIGEST + 6, fr::DIGEST + 8, fr::DIGEST + 10],
                             cv: fr::SCRATCH,
                             c: fr::DIGEST,
                             md: fr::ZERO,
@@ -516,7 +536,7 @@ impl FnLower<'_> {
     /// `dst = src` (no MOV: multiply by `1`).
     fn copy(&mut self, src: Off, dst: Off) {
         let one = self.one();
-        self.emit(LOp::Mul { a: src, b: one, c: dst });
+        self.emit(LOp::Mul64 { a: src, b: one, c: dst });
     }
 
     /// A frame cell holding this function's own `fp` (the g-power element),
@@ -613,16 +633,6 @@ impl FnLower<'_> {
     /// `i = j` into cells every arm shares. Write-once makes that sound, exactly
     /// one arm running, and [`Self::ret_targets`] says which cells those are.
     fn lower_match(&mut self, targets: &[Expr], x: &Expr, arms: &[Expr]) {
-        for arm in arms {
-            if let Expr::Call(f, _) = arm
-                && self
-                    .defs
-                    .get(f.as_str())
-                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, Shape::StackBuf(_))))
-            {
-                self.fail("a normal function's StackBuf return cannot cross a match join; bind it with `let`");
-            }
-        }
         // Calls with identical runtime args share one callee frame and a
         // two-instruction trampoline per arm. Const args select specializations;
         // see `lower_dispatched_call` for the shared argument/return layout checks.
@@ -642,6 +652,19 @@ impl FnLower<'_> {
             }
             // Not uniform: fall through (the specializations queued above are
             // re-requested idempotently by `call_into`).
+        }
+        for arm in arms {
+            if let Expr::Call(f, _) = arm
+                && self
+                    .defs
+                    .get(f.as_str())
+                    .is_some_and(|d| !d.inline && d.return_shapes.iter().any(|s| matches!(s, Shape::StackBuf(_))))
+            {
+                self.fail(
+                    "a normal function's StackBuf return crosses a match join only when every arm calls it \
+                     with the same runtime arguments; bind it with `let` otherwise",
+                );
+            }
         }
         let xo = self.expr(x);
         let (rcells, binds) = self.ret_targets(targets);
@@ -696,7 +719,7 @@ impl FnLower<'_> {
         self.set(kcell, KVal::Local(0)); // patched: table base T
         let x2 = self.pure(PureOp::Mul, xo, xo);
         let d = self.fresh();
-        self.emit(LOp::Mul { a: kcell, b: x2, c: d });
+        self.emit(LOp::Mul64 { a: kcell, b: x2, c: d });
         self.emit(LOp::Jump { oc: one, od: d, of });
         kset
     }
@@ -770,10 +793,10 @@ impl FnLower<'_> {
                     if let Some((n, f)) = known.diverging_readings() {
                         self.fail(format!(
                             "`{e:?}` reads as the integer {n} where a condition folds, and as the field \
-                             element {:#x}:{:#x} where a value is wanted, so this branch would be decided \
+                             element {:#x} where a value is wanted, so this branch would be decided \
                              by one reading and its body run under the other. Write `if const(...)` to \
                              decide it with integer arithmetic, or spell the operand so the two agree.",
-                            f.c1, f.c0
+                            f.0
                         ))
                     }
                 }
@@ -858,8 +881,8 @@ impl FnLower<'_> {
         let inv = self.fresh();
         self.pending.push(Hint::Resolved(RHint::Inverse { value: x, dst: inv }));
         let p = self.fresh();
-        self.emit(LOp::Mul { a: x, b: inv, c: p });
-        self.set_const(p, F192::ONE);
+        self.emit(LOp::Mul64 { a: x, b: inv, c: p });
+        self.set_const(p, F64::ONE);
     }
 
     /// The frame cell holding `g^{k-1}`, the range-check product target, shared
@@ -871,7 +894,7 @@ impl FnLower<'_> {
     /// the `SET` precedes every use and each later write is the write-once
     /// equality, but a second WRITER on any of those paths would land on all.
     fn bound_cell(&mut self, k: u64) -> Off {
-        self.const_cell(g_pow_u128((k - 1) as u128).into())
+        self.const_cell(g_pow_u128((k - 1) as u128))
     }
 
     /// `assert log x < log GEN ** k`: the 3-cycle range check in the exponent
@@ -920,9 +943,9 @@ impl FnLower<'_> {
                     ))
                 };
                 let bcell = self.expr(b);
-                let inv = self.const_cell(F192::new(primitives::field::G.inv().0, 0, 0));
+                let inv = self.const_cell(primitives::field::G.inv());
                 let c = self.fresh();
-                self.emit(LOp::Mul { a: bcell, b: inv, c });
+                self.emit(LOp::Mul64 { a: bcell, b: inv, c });
                 c
             }
         };
@@ -931,7 +954,7 @@ impl FnLower<'_> {
         let t1 = self.fresh(); // DEREF targets: unconstrained touch cells
         let t2 = self.fresh();
         self.deref(x, 0, t1, DerefMode::Cell);
-        self.emit(LOp::Mul { a: x, b: y, c: kcell });
+        self.emit(LOp::Mul64 { a: x, b: y, c: kcell });
         self.deref(y, 0, t2, DerefMode::Cell);
     }
 
@@ -942,18 +965,20 @@ impl FnLower<'_> {
             return self.const_cell(v);
         }
         match e {
-            Expr::Lit(_) | Expr::Gen | Expr::GPow(_) => unreachable!("a literal folds above"),
+            Expr::Lit(n) => self.fail(format!("the literal {n} does not fit in a 64-bit word")),
+            Expr::Gen | Expr::GPow(_) => unreachable!("a g-power folds above"),
             // Not folded above, so its exponent is not a compile-time integer,
             // which `gpow_exp` reports.
             Expr::GenPow(e) => {
                 let k = self.gpow_exp(e);
-                self.const_cell(g_pow_u128(k).into())
+                self.const_cell(g_pow_u128(k))
             }
             Expr::Pow(b, e) => self.pow_expr(b, e),
             Expr::Var(v) => match self.scope.bound(v).map(|b| b.val) {
                 Some(Binding::Stack(..)) => {
                     self.fail(format!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s"));
                 }
+                Some(Binding::Const192(_)) => self.fail(format!("the 192-bit constant `{v}` used as a scalar")),
                 Some(Binding::Gaddr(ga)) => self.materialize(ga),
                 Some(Binding::Scalar(o)) => o,
                 _ => {
@@ -997,11 +1022,13 @@ impl FnLower<'_> {
                 // `a` must already be written, which `self.expr(a)` guarantees.
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let q = self.fresh();
-                self.emit(LOp::Mul { a: q, b: lb, c: la });
+                self.emit(LOp::Mul64 { a: q, b: lb, c: la });
                 q
             }
-            // A well-formed one folds above, so this is a malformed call.
-            Expr::Call(f, _) if f == "f192" => self.fail("f192 needs three literal u64 limbs"),
+            Expr::Call(f, _) if parser::RUN192_BUILTINS.contains(&f.as_str()) => self.fail(format!(
+                "`{f}(...)` is a 192-bit value, a run of three cells, not a scalar: bind it or pass it \
+                 where a 192-bit value is expected"
+            )),
             // Folded above when it is what it claims to be, so reaching here means
             // it is not: name that, rather than reporting an unknown function.
             Expr::Call(f, args) if f == "const" => {
@@ -1083,7 +1110,7 @@ impl FnLower<'_> {
                     "`-`, `//`, `%` are compile-time only (field subtraction is `+`); use them in an index, a bound, or a `Const` argument, got `{e:?}`"
                 ))
             }
-            Expr::Slice(..) => self.fail("a slice is not a scalar; it is only a blake2s operand"),
+            Expr::Slice(..) => self.fail("a slice is a run of cells, not a scalar"),
             Expr::ListLit(..) => self.fail("a list literal must be bound to a name: `x = [a, b]`"),
         }
     }
@@ -1100,7 +1127,7 @@ impl FnLower<'_> {
         }
         if k == 0 {
             let o = self.fresh();
-            self.set_const(o, F192::ONE);
+            self.set_const(o, F64::ONE);
             return o;
         }
         // Runtime base: square-and-multiply over the compile-time exponent bits.
@@ -1149,7 +1176,7 @@ impl FnLower<'_> {
                     // Not `pure`: `dst` is the caller's, so it may be written
                     // again and the second write be the assertion. See its doc.
                     let (la, lb) = (self.expr(a), self.expr(b));
-                    self.emit(LOp::Xor { a: la, b: lb, c: dst });
+                    self.emit(LOp::Xor64 { a: la, b: lb, c: dst });
                 }
             }
             Expr::Mul(a, b) => {
@@ -1157,7 +1184,7 @@ impl FnLower<'_> {
                     self.expr_into(x, dst);
                 } else {
                     let (la, lb) = (self.expr(a), self.expr(b));
-                    self.emit(LOp::Mul { a: la, b: lb, c: dst });
+                    self.emit(LOp::Mul64 { a: la, b: lb, c: dst });
                 }
             }
             // A call writes its single return value straight into `dst` (an
@@ -1189,16 +1216,32 @@ impl FnLower<'_> {
                     let base = self.alloc_stack(*n as u32);
                     self.rebind(name, Binding::Stack(base, *n as u32));
                 }
+                // `x = f192(..)`, or a 192-bit builtin over constants: folded, no cells.
+                _ if !matches!(e, Expr::ListLit(_)) && self.const192(e).is_some() => {
+                    let c = self.const192(e).expect("guarded above");
+                    self.rebind(name, Binding::Const192(c));
+                }
                 // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
-                // write each element in place, through the ordinary stack-store
-                // path. Elements are lowered before `name` rebinds, so they may
-                // read its old binding (`fs = [fs[1], fs[0]]`).
-                Expr::ListLit(es) => {
-                    let base = self.alloc_stack(es.len() as u32);
-                    for (k, el) in es.iter().enumerate() {
-                        self.expr_into(el, base + k as u32);
-                    }
-                    self.rebind(name, Binding::Stack(base, es.len() as u32));
+                // write each element in place, a run element over its cells.
+                // Elements are lowered before `name` rebinds, so they may read its
+                // old binding (`fs = [fs[1], fs[0]]`). Fresh cells even for constant
+                // elements, so a later store into `x` stores rather than asserts.
+                _ if matches!(e, Expr::ListLit(_)) => {
+                    let len = self.run_len(e).expect("a run");
+                    let base = self.alloc_stack(len);
+                    self.run_into(e, base, len);
+                    self.rebind(name, Binding::Stack(base, len));
+                }
+                // `x = add192(a, b)` and the other 192-bit builtins, and `x = buf[lo:hi]`:
+                // the value's run, a heap slice copied onto the stack.
+                _ if matches!(e, Expr::Slice(..))
+                    || matches!(e, Expr::Call(f, _) if parser::RUN192_BUILTINS.contains(&f.as_str())) =>
+                {
+                    let len = self
+                        .run_len(e)
+                        .unwrap_or_else(|| self.fail(format!("a slice binding needs a known length, got `{e:?}`")));
+                    let base = self.run(e, len);
+                    self.rebind(name, Binding::Stack(base, len));
                 }
                 // `p = addr(sb)` binds the address itself, so the offset folds
                 // into every later access; in any other position `expr` has to
@@ -1232,9 +1275,12 @@ impl FnLower<'_> {
                         self.rebind(name, Binding::FConst(c));
                     } else if let Some(k) = known.int {
                         // Integer-only fold (`//`, `-`, `%` of constants): a
-                        // compile-time value too, and as a scalar it is the field
-                        // element with those 128 bits, materialized on demand.
-                        self.rebind(name, Binding::FConst(lit_field(k)));
+                        // compile-time value too, and as a scalar it is the word
+                        // with those bits, materialized on demand.
+                        let word = lit_field(k).unwrap_or_else(|| {
+                            self.fail(format!("the compile-time integer {k} does not fit in a 64-bit word"))
+                        });
+                        self.rebind(name, Binding::FConst(word));
                     } else if let Expr::Call(cf, cargs) = e
                         && self.defs.contains_key(cf.as_str())
                     {
@@ -1279,7 +1325,7 @@ impl FnLower<'_> {
             StmtKind::AssertEq(a, b) => {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 let z = self.zero();
-                self.emit(LOp::Xor { a: la, b: lb, c: z });
+                self.emit(LOp::Xor64 { a: la, b: lb, c: z });
             }
             StmtKind::AssertNe(a, b) => self.lower_assert_ne(a, b),
             StmtKind::AssertLt(e, bound) => self.lower_assert_lt(e, bound),
@@ -1335,6 +1381,7 @@ impl FnLower<'_> {
                     self.deref(ptr, o2, v, DerefMode::Cell);
                 }
             }
+            StmtKind::StoreRun(target, val) => self.lower_store_run(target, val),
             StmtKind::Return(es) => self.lower_return(es),
             StmtKind::CallIfNe(lhs, rhs, callee, args) => {
                 // A conditional call: the frame setup runs either way, and the
@@ -1575,7 +1622,7 @@ pub(crate) fn lower_func(
     queue: &mut Vec<Func>,
     loop_ctr: &mut usize,
     defs: &HashMap<&str, &Func>,
-    const_arrays: &HashMap<&str, &[F192]>,
+    const_arrays: &HashMap<&str, &[F64]>,
     with_filler: bool,
     loop_bounds: &mut HashMap<String, (u64, Option<u64>)>,
 ) -> Lowered {
@@ -1611,7 +1658,13 @@ pub(crate) fn lower_func(
             names,
             ..Default::default()
         },
-        next: abi_end + u32::from(loop_frame),
+        // `main`'s frame is memory from cell 0, whose first four cells hold the
+        // public input.
+        next: if f.name == "main" {
+            abi_end.max(4)
+        } else {
+            abi_end + u32::from(loop_frame)
+        },
         arg_cells,
         return_shapes: &f.return_shapes,
         is_main: f.name == "main",

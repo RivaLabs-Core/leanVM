@@ -5,7 +5,7 @@ use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
 use primitives::{
     bench::Plan,
-    field::{F64, F192, g_pow},
+    field::{F64, g_pow},
     pretty_f64, pretty_integer,
 };
 
@@ -55,8 +55,8 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
 /// Build the demo program: Fibonacci in the exponent over `fib_n` steps (an
 /// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
 /// published into cell `m[0]`. Returns the zkDSL source and the public input
-/// `[g^{F(N)}, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
+/// `[g^{F(N)}, 0, 0, 0]`.
+fn fibonacci_program(fib_n: usize) -> (String, [F64; 4]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
@@ -70,7 +70,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F192; 2]) {
         previous = current;
         current = next;
     }
-    let public_input = [F192::from(previous), F192::ZERO];
+    let public_input = [previous, F64::ZERO, F64::ZERO, F64::ZERO];
 
     // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
     // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per

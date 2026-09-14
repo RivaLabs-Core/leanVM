@@ -6,7 +6,9 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
+
+use crate::common::pi;
 
 /// A returned value that repeats a constant computed earlier in the same
 /// function. The return slot lives in the callee frame and is read by the
@@ -30,7 +32,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(3)) * F192::from(F64(7)), F192::from(F64(7))];
+    let want = pi(&[g_pow(3) * F64(7), F64(7)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("returned duplicate constant is preserved");
 }
@@ -55,7 +57,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // (k + k) + (k + k) == 0 in characteristic two.
-    let want = [F192::ZERO, F192::ZERO];
+    let want = [F64::ZERO; 4];
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("duplicated call arguments are preserved");
 }
@@ -86,7 +88,7 @@ def main():
     p[GEN] = x
     return
 ";
-    let run = |pi: [F192; 2]| -> bool {
+    let run = |pi: [F64; 4]| -> bool {
         let program = compile(&parse(src).expect("parse"));
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
@@ -95,27 +97,27 @@ def main():
         .unwrap_or(false)
     };
     assert!(
-        run([F192::from(g_pow(4)), F192::from(g_pow(3))]),
+        run(pi(&[g_pow(4), g_pow(3)])),
         "the arm that runs keeps its own constant"
     );
     // The wrong value is the half that bites: a cell only the untaken arm writes
     // is the prover's to choose, and the honest claim would verify anyway.
     assert!(
-        !run([F192::from(g_pow(7)), F192::from(g_pow(3))]),
+        !run(pi(&[g_pow(7), g_pow(3)])),
         "the stored constant is pinned by the arm that ran"
     );
 }
 
-/// The assert idiom is `XOR fp[t] = a ^ b` into the pooled zero cell, whose
+/// The assert idiom is `XOR64 fp[t] = a ^ b` into the pooled zero cell, whose
 /// second write IS the assertion, so that cell must never be shared and the
-/// `XOR` must never be skipped in favour of one computed earlier.
+/// `XOR64` must never be skipped in favour of one computed earlier.
 ///
 /// The operands are HEAP READS on purpose. Written `a = GEN ** 9`, both sides
-/// fold and `diff = a + b` emits no `XOR` at all, so the duplicate the test
+/// fold and `diff = a + b` emits no `XOR64` at all, so the duplicate the test
 /// names does not exist and the test cannot fail: skipping the assert on a cache
 /// hit then passed the whole suite. Read from a `HeapBuf` the two values are
-/// runtime cells, `diff` really does emit `XOR fp[t] = a ^ b`, and the assert's
-/// own `XOR` has a genuine duplicate to be folded into.
+/// runtime cells, `diff` really does emit `XOR64 fp[t] = a ^ b`, and the assert's
+/// own `XOR64` has a genuine duplicate to be folded into.
 fn duplicated_comparison(second: u32) -> String {
     format!(
         "\
@@ -139,7 +141,7 @@ def main():
 #[test]
 fn assert_survives_a_duplicated_comparison() {
     let program = compile(&parse(&duplicated_comparison(9)).expect("parse"));
-    let want = [F192::ZERO, F192::from(g_pow(9))];
+    let want = pi(&[F64::ZERO, g_pow(9)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("passing assert still verifies");
 }
@@ -150,7 +152,7 @@ fn assert_survives_a_duplicated_comparison() {
 #[should_panic(expected = "write-once conflict")]
 fn failing_assert_still_conflicts() {
     let program = compile(&parse(&duplicated_comparison(10)).expect("parse"));
-    let want = [F192::ZERO, F192::from(g_pow(9))];
+    let want = pi(&[F64::ZERO, g_pow(9)]);
     let _ = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
 }
 
@@ -174,26 +176,26 @@ def main():
     return
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("flag", vec![vec![F192::ZERO]]);
-    let want = [F192::ZERO, F192::ZERO];
+    program.set_witness("flag", vec![vec![F64::ZERO]]);
+    let want = [F64::ZERO; 4];
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("untaken branch must not consume its witness");
 }
 
-/// A BLAKE2s chaining value names a CONSECUTIVE PAIR, so neither half may be
+/// A BLAKE2s chaining value names FOUR CONSECUTIVE cells, so none of them may be
 /// folded into a canonical elsewhere and the base may not be rewritten: a
 /// substitution speaks for one cell, and redirecting the base silently redirects
-/// the second word too. `rewrite_reads` used to map `cv` like any single-cell
-/// read, so when the first of the two assembling copies duplicated an earlier
-/// copy of the same source, the compression absorbed the OTHER pair's second
-/// word. Silent, and a soundness break in a transcript.
+/// the other words too. `rewrite_reads` used to map `cv` like any single-cell
+/// read, so when the first of the assembling copies duplicated an earlier copy of
+/// the same source, the compression absorbed the OTHER run's later words. Silent,
+/// and a soundness break in a transcript.
 ///
 /// The two compressions here differ in nothing but their chaining value, and
-/// their two `cv` pairs share a first word, which is what made the first copy a
-/// duplicate. If either pair is rewritten or dropped, the digests coincide and
-/// the inequality fails at witness generation.
+/// their two `cv` runs share their first three words, which is what made those
+/// copies duplicates. If either run is rewritten or dropped, the digests coincide
+/// and the inequality fails at witness generation.
 #[test]
-fn a_chaining_value_pair_is_neither_rewritten_nor_dropped() {
+fn a_chaining_value_run_is_neither_rewritten_nor_dropped() {
     let src = "\
 def main():
     hb = HeapBuf(4)
@@ -210,16 +212,20 @@ def main():
     msg[1] = y
     msg[2] = y
     msg[3] = y
-    t = StackBuf(2)
+    t = StackBuf(4)
     t[0] = x
-    t[1] = z
-    o1 = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], o1, cv=t, counter=64, final=1)
-    s = StackBuf(2)
+    t[1] = x
+    t[2] = x
+    t[3] = z
+    o1 = StackBuf(4)
+    blake2s(msg, msg, o1, cv=t, counter=64, final=1)
+    s = StackBuf(4)
     s[0] = x
-    s[1] = w
-    o2 = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], o2, cv=s, counter=64, final=1)
+    s[1] = x
+    s[2] = x
+    s[3] = w
+    o2 = StackBuf(4)
+    blake2s(msg, msg, o2, cv=s, counter=64, final=1)
     assert o1[0] != o2[0]
     p = 1
     p[1] = x
@@ -227,7 +233,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(11)), F192::from(g_pow(22))];
+    let want = pi(&[g_pow(11), g_pow(22)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("each compression absorbs its own chaining value");
 }
@@ -248,12 +254,12 @@ def main():
     h[1] = public[GEN]
     return
 "#;
-    let value = F192::new(17, 31, 43);
+    let value = F64(0x2b_1f_11);
     let mut program = compile(&parse(source).unwrap());
-    program.set_witness("values", vec![vec![value, F192::ONE, value]]);
-    for branch in [F192::ZERO, F192::ONE] {
-        assert!(program.execute([branch, value]).unconstrained_reads.is_empty());
-        assert!(std::panic::catch_unwind(|| program.execute([branch, value + F192::ONE])).is_err());
+    program.set_witness("values", vec![vec![value, F64::ONE, value]]);
+    for branch in [F64::ZERO, F64::ONE] {
+        assert!(program.execute(pi(&[branch, value])).unconstrained_reads.is_empty());
+        assert!(std::panic::catch_unwind(|| program.execute(pi(&[branch, value + F64::ONE]))).is_err());
     }
 }
 
@@ -278,8 +284,8 @@ def main():
     assert public[GEN] == out[1]
     return
 "#;
-    let value = F192::from(F64(7));
-    let public = [value * value, value];
+    let value = F64(7);
+    let public = pi(&[value * value, value]);
     for touch in ["assert log(h) < 1024", "early = StackBuf(1)\n    early[0] = h[1]"] {
         for fill in ["hint_witness(h[0:1], \"value\")", "fill(h)"] {
             let source = source.replace("TOUCH", touch).replace("FILL", fill);
@@ -288,7 +294,7 @@ def main():
             assert!(program.execute(public).unconstrained_reads.is_empty());
             let (proof, _) = prove(&program, public, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &public, &proof).unwrap();
-            assert!(std::panic::catch_unwind(|| program.execute([public[0] + F192::ONE, value])).is_err());
+            assert!(std::panic::catch_unwind(|| program.execute(pi(&[public[0] + F64::ONE, value]))).is_err());
         }
     }
 }
@@ -313,8 +319,8 @@ def main():
     assert public[1] == result
     return
 "#;
-    let value = F192::from(F64(7));
-    let public = [value * value, F192::ZERO];
+    let value = F64(7);
+    let public = pi(&[value * value]);
     for (dest, fill) in [
         ("early", "early[0] = value"),
         ("other", "other[0] = value"),

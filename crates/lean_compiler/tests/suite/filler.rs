@@ -15,23 +15,25 @@
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::filler;
 use lean_vm::cpu::{prove, verify};
-use primitives::field::F192;
+use primitives::field::F64;
 
-const PROGRAMS: [&str; 5] = [
+const PROGRAMS: [&str; 6] = [
     // Folds to nothing, so the fill is all there is.
     "def main():\n    x = GEN ** 5\n    y = x * x\n    return\n",
     "def main():\n    b = HeapBuf(4)\n    b[1] = GEN\n    y = b[1] * b[1]\n    return\n",
     "def main():\n    for i in mul_range(1, GEN ** 20):\n        z = i * i\n    return\n",
     // A compression, so BLAKE2s is non-empty too.
-    "def main():\n    a = StackBuf(2)\n    a[0] = 5\n    a[1] = 7\n    c = StackBuf(2)\n    blake2s(a, a, c)\n    return\n",
+    "def main():\n    a = [5, 0, 7, 0]\n    c = StackBuf(4)\n    blake2s(a, a, c)\n    return\n",
     "def main():\n    for i in mul_range(1, GEN ** 300):\n        z = i + GEN\n    return\n",
+    // The 192-bit tables, so their fill ops run too.
+    "def main():\n    a = f192(3, 5, 7)\n    b = mul192(a, a)\n    assert_eq192(add192(b, a), add192(a, b))\n    return\n",
 ];
 
 #[test]
 fn every_table_lands_on_a_power_of_two() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
-        let pi = [F192::ZERO, F192::ZERO];
+        let pi = [F64::ZERO; 4];
         let (proof, stats) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
         assert!(filler::is_filled(stats.counts), "{:?} for {src:?}", stats.counts);
         verify(&program, &pi, &proof).expect("a filled program verifies");
@@ -45,7 +47,7 @@ fn every_table_lands_on_a_power_of_two() {
 fn the_cost_model_is_exact() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
-        let stats = prove(&program, [F192::ZERO, F192::ZERO], lean_vm::pcs::TEST_LOG_INV_RATE).1;
+        let stats = prove(&program, [F64::ZERO; 4], lean_vm::pcs::TEST_LOG_INV_RATE).1;
         let plan = filler::solve(stats.base_counts, filler::NO_FLOORS).expect("solvable");
         assert_eq!(
             filler::filled(stats.base_counts, &plan),

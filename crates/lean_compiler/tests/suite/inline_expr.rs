@@ -8,7 +8,9 @@
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192};
+use primitives::field::F64;
+
+use crate::common::pi;
 
 #[test]
 fn inline_call_in_expression_positions() {
@@ -48,13 +50,13 @@ def main():
     let y = f7 * (f3 * (one + f5));
     // heap-store RHS: idx 3 -> 3·5
     let o = f3 * f5;
-    let want = [F192::from(x), F192::from(y + o)];
+    let want = pi(&[x, y + o]);
 
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("expression-position inline calls compute correctly");
 
     let mut bad = want;
-    bad[0] += F192::ONE;
+    bad[0] += F64::ONE;
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong published value must be rejected"

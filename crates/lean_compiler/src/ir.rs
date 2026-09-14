@@ -10,9 +10,8 @@ pub(crate) type Off = u32;
 pub(crate) enum KVal {
     /// The stride to the next frame in a reserved loop run.
     FrameSize,
-    /// A 192-bit machine-word constant. Source literals fill only c0/c1, while
-    /// compiler-generated constants may use the full field.
-    Const(F192),
+    /// A 64-bit machine-word constant.
+    Const(F64),
     Entry(String),
     /// The halt sentinel pc `g^{B-1}` (last bytecode slot), fixed once the
     /// padded bytecode size `B` is known. `main` jumps here to terminate.
@@ -47,12 +46,23 @@ pub(crate) enum LOp {
         o: Off,
         k: KVal,
     },
-    Xor {
+    Xor64 {
         a: Off,
         b: Off,
         c: Off,
     },
-    Mul {
+    Mul64 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    /// Operands and result are the first cells of three-cell runs.
+    Xor192 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    Mul192 {
         a: Off,
         b: Off,
         c: Off,
@@ -68,10 +78,9 @@ pub(crate) enum LOp {
         od: Off,
         of: Off,
     },
-    /// `BLAKE2s`: the four 128-bit input chunks `ins` are addressed independently,
-    /// one frame cell each. The 32-byte output occupies the two consecutive
-    /// 128-bit cells `c, c+1`; `md` is the cell holding the byte counter and the
-    /// two flags.
+    /// `BLAKE2s`: the four 16-byte input chunks `ins` are addressed independently,
+    /// two frame cells each. The chaining value `cv` and the digest `c` span four
+    /// consecutive cells, the metadata `md` two.
     Blake2s {
         ins: [Off; 4],
         cv: Off,
@@ -117,8 +126,8 @@ pub(crate) struct Lowered {
 
 /// A resolved run of consecutive cells ([`crate::lower::FnLower::cell_run`]): a
 /// frame (stack) run, used in place, or a heap slice (the buffer pointer's cell
-/// plus the first g-power offset), which a `blake2s` operand must bridge through
-/// the stack since `BLAKE2s` addresses only frame cells.
+/// plus the first g-power offset), which an instruction operand must bridge
+/// through the stack since operands address only frame cells.
 pub(crate) enum CellRun {
     Stack { base: Off, len: u32 },
     Heap { ptr: Off, lo: u32, len: u32 },

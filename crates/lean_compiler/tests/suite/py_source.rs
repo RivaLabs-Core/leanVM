@@ -4,42 +4,43 @@
 //!
 //! The harness is generic: every `tests/programs/*.py` is parsed, compiled,
 //! proven, and verified. A program declares the public input it expects with a
-//! top-of-file annotation of two constant field elements,
+//! top-of-file annotation of up to four constant words, zero-padded,
 //!
 //! ```text
-//! # public_input: GEN ** 89, 101229015297003380629709256178361811305
+//! # public_input: GEN ** 89, 101229015297003380
 //! ```
 //!
-//! or omits it to run with the empty public input (two zeros).
+//! or omits it to run with the empty public input (four zeros).
 
 use std::fs;
 
 use lean_compiler::{compile, parse, parse_const};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::F192;
+use primitives::field::F64;
 
-/// The `# public_input: <elt>, <elt>` annotation, or `[0, 0]` if absent.
-fn public_input(src: &str) -> [F192; 2] {
+/// The `# public_input: <word>, …` annotation, zero-padded to four words.
+fn public_input(src: &str) -> [F64; 4] {
+    let mut words = [F64::ZERO; 4];
     for line in src.lines() {
         if let Some(rest) = line.trim().strip_prefix("# public_input:") {
             let parts: Vec<&str> = rest.split(',').collect();
-            assert_eq!(
-                parts.len(),
-                2,
-                "`# public_input:` needs two field elements, got `{rest}`"
+            assert!(
+                parts.len() <= 4,
+                "`# public_input:` holds at most four words, got `{rest}`"
             );
-            let elt = |s: &str| parse_const(s).unwrap_or_else(|e| panic!("bad public_input: {e}"));
-            return [elt(parts[0]), elt(parts[1])];
+            for (word, s) in words.iter_mut().zip(parts) {
+                *word = parse_const(s).unwrap_or_else(|e| panic!("bad public_input: {e}"));
+            }
         }
     }
-    [F192::ZERO; 2]
+    words
 }
 
-/// The `# witness <name>: <elt>, …` annotations: one line per *entry*
+/// The `# witness <name>: <word>, …` annotations: one line per *entry*
 /// (repeated lines with the same name are the stream's successive entries,
 /// popped by successive `hint_witness` calls).
-fn witness(src: &str) -> std::collections::HashMap<String, Vec<Vec<F192>>> {
-    let mut streams: std::collections::HashMap<String, Vec<Vec<F192>>> = Default::default();
+fn witness(src: &str) -> std::collections::HashMap<String, Vec<Vec<F64>>> {
+    let mut streams: std::collections::HashMap<String, Vec<Vec<F64>>> = Default::default();
     for rest in src.lines().filter_map(|l| l.trim().strip_prefix("# witness ")) {
         let (name, vals) = rest.split_once(':').expect("`# witness` needs `name: values`");
         let entry = vals

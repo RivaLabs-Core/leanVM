@@ -1,12 +1,13 @@
 //! The surface AST produced by the parser: expressions, statements, functions.
 
-use primitives::field::F192;
+use primitives::field::F64;
 
-/// An expression. Arithmetic is the field's own: `+` is `XOR`, `*` is `MUL`.
+/// An expression. Arithmetic is the 64-bit field's own: `+` is `XOR64`, `*` is
+/// `MUL64`; the 192-bit operations are the `add192`/`mul192`/`div192` builtins.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
-    /// Integer / field literal: the source syntax provides a raw 128-bit value,
-    /// embedded into the low two limbs of the 192-bit tower element (`c2 = 0`).
+    /// Integer literal. Compile-time integer arithmetic reads all of it; as a
+    /// value it is a 64-bit word, so it must fit in one.
     Lit(u128),
     /// The generator `g`, written `GEN`. A logical index `i` rides the exponent
     /// as `gⁱ`, so `GEN` is the unit step.
@@ -57,8 +58,7 @@ pub enum Expr {
     HeapBufDyn(Box<Expr>),
     /// `StackBuf(n)`: allocate `n` *consecutive* frame (stack) cells, bound as a
     /// stack value. Its cells `sa[0..n]` are written/read directly (no heap deref),
-    /// and a size-2 `StackBuf` is a valid `blake2s` operand (the four 64-bit hash
-    /// words live as two lanes in each of two consecutive 128-bit cells).
+    /// and a size-4 `StackBuf` is a valid `blake2s` operand (four 64-bit words).
     StackBuf(u64),
     /// `arr[idx]`: read a cell. For a heap `arr` (a pointer), `m[arr·idx]` (idx a
     /// g-power). For a [`Expr::StackBuf`]: the frame cell `base + idx` (idx a
@@ -67,8 +67,8 @@ pub enum Expr {
     /// `buf[lo:hi]`: a run of cells of a [`Expr::StackBuf`] (frame cells
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
-    /// exclusive). Only meaningful as a `blake2s` operand, where it must span
-    /// exactly 2 cells (one 256-bit value).
+    /// exclusive), or a runtime heap start `buf[i:i + k]`. A run value: an
+    /// operand of `blake2s` or of a 192-bit builtin, a run binding or a run store.
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[a, b, …]`: an initialized [`Expr::StackBuf`], so `x = [a, b]` allocates
     /// a StackBuf of the element count and writes each element in place, sugar
@@ -161,6 +161,9 @@ pub enum StmtKind {
     },
     /// `arr[idx] = value`: store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
+    /// `buf[lo:hi] = value`: store a run value (a 192-bit element, a digest) into
+    /// the slice's cells, one write each.
+    StoreRun(Expr, Expr),
     /// `for i in mul_range(GEN ** lo, stop)`: the counter rides the exponent as
     /// `gⁱ`, advancing by `×g` from `g^lo` until it reaches `stop`, which is not
     /// itself executed. There is no step knob, the bounds being field elements
@@ -290,7 +293,7 @@ pub struct Ast {
     /// Indexed `NAME[i]` and measured `len(NAME)` at compile time only, `i` being
     /// a literal, a constant or an `unroll` variable. Unlike a scalar constant
     /// these are not textually substituted, but resolved at lowering.
-    pub const_arrays: Vec<(String, Vec<F192>)>,
+    pub const_arrays: Vec<(String, Vec<F64>)>,
 }
 
 // Free-variable analysis: pure AST, no lowering state. Its one consumer is the
@@ -441,6 +444,10 @@ pub(crate) fn free_vars_stmt<'a>(s: &'a Stmt, refs: &mut Vec<&'a str>, bound: &m
         StmtKind::Store(arr, idx, val) => {
             free_vars_expr(arr, refs);
             free_vars_expr(idx, refs);
+            free_vars_expr(val, refs);
+        }
+        StmtKind::StoreRun(target, val) => {
+            free_vars_expr(target, refs);
             free_vars_expr(val, refs);
         }
         StmtKind::Return(es) => es.iter().for_each(|e| free_vars_expr(e, refs)),

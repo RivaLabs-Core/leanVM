@@ -25,14 +25,14 @@
 
 /// What a table's dummy instruction is: the cheapest instruction of that opcode that can
 /// be executed any number of times in one frame, given write-once memory. All but
-/// `Blake2s` name a single scratch cell as every operand, so the value they write there is
+/// `Blake2s` name one scratch run as every operand, so the value they write there is
 /// the value already there (`FnLower::lower_filler_blocks` fixes the frame offsets).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FillerOp {
-    /// `XOR s, s -> s`: pins the scratch cell to `m[s] + m[s] = 0`.
-    Xor,
-    /// `MUL s, s -> s`: pins it to `m[s]^2`, so to `0` given the above.
-    Mul,
+    /// `XOR64 s, s -> s`: pins the scratch cell to `m[s] + m[s] = 0`.
+    Xor64,
+    /// `MUL64 s, s -> s`: pins it to `m[s]^2`, so to `0` given the above.
+    Mul64,
     /// `SET s = 0`.
     Set,
     /// `DEREF` through the frame's pointer cell, which the interpreter sets to `g^0`, so
@@ -44,15 +44,21 @@ pub enum FillerOp {
     /// One compression of message and chaining-value cells nothing ever writes, its
     /// digest placed clear of them, so every traversal compresses the same input.
     Blake2s,
+    /// `XOR192` over the three-cell scratch run, pinning it to zero.
+    Xor192,
+    /// `MUL192` over the same run.
+    Mul192,
 }
 
 /// The tables, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver indexes
 /// them.
-pub const TABLES: [(u8, FillerOp); 6] = [
-    (0, FillerOp::Xor),
-    (1, FillerOp::Mul),
+pub const TABLES: [(u8, FillerOp); 8] = [
+    (0, FillerOp::Xor64),
+    (1, FillerOp::Mul64),
     (2, FillerOp::Set),
     (3, FillerOp::Deref),
     (4, FillerOp::Jump),
     (5, FillerOp::Blake2s),
+    (6, FillerOp::Xor192),
+    (7, FillerOp::Mul192),
 ];

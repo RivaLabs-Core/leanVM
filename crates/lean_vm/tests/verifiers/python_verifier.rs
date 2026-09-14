@@ -6,7 +6,7 @@
 use fiat_shamir::transcript::RawProof;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -18,14 +18,14 @@ from snark_lib import *
 LOOP_STEPS = LOOP_STEPS_PLACEHOLDER
 
 def mix(value, tag):
-    # A JUMP condition is K-valued (a g-power here), never an arbitrary word.
+    # The tag is a g-power, so the JUMP is always taken.
     if tag == 0:
         return value
     return value * GEN + value
 
 def main():
-    seed = [5, 7]
-    digest = StackBuf(2)
+    seed = [5, 0, 7, 0]
+    digest = StackBuf(4)
     blake2s(seed, seed, digest)
 
     chain = HeapBuf(LOOP_STEPS + 1)
@@ -36,6 +36,8 @@ def main():
     public = GEN ** 0
     public[1] = chain[GEN ** LOOP_STEPS]
     public[GEN] = mix(digest[1], GEN ** 0)
+    public[GEN ** 2] = digest[2]
+    public[GEN ** 3] = digest[3]
     return
 "#;
 
@@ -76,30 +78,20 @@ fn python_verify(directory: &Path, bytecode: &Path, public_input: &Path, raw: &R
         .expect("run native Python verifier")
 }
 
-fn public_input() -> [F192; 2] {
+fn public_input() -> [F64; 4] {
     use lean_vm::hash_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
 
     let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
-    let metadata = metadata(PINNED_T, FINAL_FLAG, 0);
-    let digest = digest(&compression(seed, seed, IV, metadata));
-    let digest = [
-        F192::new(digest[0].0, digest[1].0, 0),
-        F192::new(digest[2].0, digest[3].0, 0),
-    ];
+    let digest = digest(&compression(seed, seed, IV, metadata(PINNED_T, FINAL_FLAG, 0)));
+    let generator = g_pow(1);
+    let mix = |value: F64| value * generator + value;
     let mut value = digest[0];
-    let mut index = F192::ONE;
-    let generator = F192::from(g_pow(1));
+    let mut index = F64::ONE;
     for _ in 0..LOOP_STEPS {
-        let candidate = value + index;
-        let product = candidate * generator;
-        value = (if product == F192::ZERO {
-            candidate
-        } else {
-            product + candidate
-        }) + index;
+        value = mix(value + index) + index;
         index *= generator;
     }
-    [value, digest[1] * generator + digest[1]]
+    [value, mix(digest[1]), digest[2], digest[3]]
 }
 
 #[test]
@@ -121,17 +113,14 @@ fn test_python_verifier() {
     let bytecode_path = directory.join("bytecode.bin");
     let public_input_path = directory.join("public_input.bin");
     let encoded = bincode::serialize(&proof).expect("serialize proof");
-    // The statement the verifier takes is the bytecode multilinear plus 256 bits
-    // of public input, not a structured program.
+    // The statement the verifier takes is the bytecode multilinear plus four
+    // public words, not a structured program.
     let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(&program.prog)
         .iter()
         .flat_map(|w| w.0.to_le_bytes())
         .collect();
     std::fs::write(&bytecode_path, &table).expect("write bytecode");
-    let pi: Vec<u8> = public_input
-        .iter()
-        .flat_map(|v| [v.c0.to_le_bytes(), v.c1.to_le_bytes()].concat())
-        .collect();
+    let pi: Vec<u8> = public_input.iter().flat_map(|w| w.0.to_le_bytes()).collect();
     std::fs::write(&public_input_path, &pi).expect("write public input");
 
     let verification_started = Instant::now();

@@ -11,12 +11,12 @@
 //! Every pair here is a promise `zkDSL.md` makes. When one fails, quote the
 //! promise in the bug report; the `why` field is there to be quoted.
 
-use super::{Pair, Trial, check_pair, g, k};
-use primitives::field::F192;
+use super::{Pair, Trial, check_pair, g, k, limbs};
+use primitives::field::{F64, F192};
 
 /// One hinted pair of cells, published so the trial's public input pins them.
-fn two(a: F192, b: F192) -> Trial {
-    Trial::new([a, b]).stream("w", vec![vec![a, b]])
+fn two(a: F64, b: F64) -> Trial {
+    Trial::new(&[a, b]).stream("w", vec![vec![a, b]])
 }
 
 /// `@inline` is documented as a pure call-site expansion: "the body is inlined at
@@ -49,6 +49,45 @@ def shift(x):
             two(g(3), g(5)), // rejected by both
             two(g(0), g(1)),
             two(g(7), g(7)),
+        ],
+    });
+}
+
+/// The same promise for a function taking and returning a 192-bit run: the plain
+/// call passes the run through its argument cells and copies the result back out
+/// of its return slots, while the inlined one binds both in place.
+#[test]
+fn inline_and_plain_run_calls_agree() {
+    let body = "\
+def main():
+    v = StackBuf(6)
+    hint_witness(v, \"w\")
+    assert_eq192(square(v[0:3]), v[3:6])
+    p = GEN ** 0
+    p[0:3] = v[0:3]
+    p[GEN ** 3] = v[3]
+    return
+
+
+@INLINE
+def square(x: StackBuf(3)):
+    return mul192(x, x)
+";
+    let x = F192::new(g(3).0, 5, 7);
+    let trial = |x: F192, y: F192| {
+        let [x0, x1, x2] = limbs(x);
+        Trial::new(&[x0, x1, x2, F64(y.c0)]).stream("w", vec![[limbs(x), limbs(y)].concat()])
+    };
+    check_pair(&Pair {
+        name: "inline_and_plain_run_calls_agree",
+        why: "zkDSL.md §`@inline`: inlining is a call-site expansion, not a change of meaning.",
+        a: &body.replace("@INLINE\n", "@inline\n"),
+        b: &body.replace("@INLINE\n", ""),
+        trials: vec![
+            trial(x, x * x),
+            trial(x, x * x + F192::Y),
+            trial(F192::ZERO, F192::ZERO),
+            trial(x, x),
         ],
     });
 }
@@ -87,8 +126,8 @@ def main():
         trials: vec![
             two(g(3), g(3)),
             two(g(3), g(4)),
-            two(F192::ZERO, F192::ZERO),
-            two(F192::ZERO, k(1)),
+            two(F64::ZERO, F64::ZERO),
+            two(F64::ZERO, k(1)),
         ],
     });
 }
@@ -133,8 +172,54 @@ def main():
     });
 }
 
-fn three(a: F192, b: F192, c: F192) -> Trial {
-    Trial::new([a, c]).stream("w", vec![vec![a, b, c]])
+fn three(a: F64, b: F64, c: F64) -> Trial {
+    Trial::new(&[a, c]).stream("w", vec![vec![a, b, c]])
+}
+
+/// `div192` is the same promise over 192-bit runs: the quotient run is left
+/// unset and `MUL192` checks `quotient · b == a`. So dividing and comparing must
+/// accept exactly what comparing the product accepts, for a nonzero divisor.
+#[test]
+fn division192_and_checked_product_agree() {
+    let trial = |divisor: F192, dividend: F192, claimed: F192| {
+        let [d0, d1, d2] = limbs(divisor);
+        Trial::new(&[d0, d1, d2, F64(claimed.c0)])
+            .stream("w", vec![[limbs(divisor), limbs(dividend), limbs(claimed)].concat()])
+    };
+    let x = F192::new(g(3).0, 5, 7);
+    let y = F192::new(11, g(9).0, 13);
+    check_pair(&Pair {
+        name: "division192_and_checked_product_agree",
+        why: "`div192(a, b)` emits exactly the relation `quotient · b == a`.",
+        a: "\
+def main():
+    v = StackBuf(9)
+    hint_witness(v, \"w\")
+    q = div192(v[3:6], v[0:3])
+    assert_eq192(q, v[6:9])
+    p = GEN ** 0
+    p[0:3] = v[0:3]
+    p[GEN ** 3] = v[6]
+    return
+",
+        b: "\
+def main():
+    v = StackBuf(9)
+    hint_witness(v, \"w\")
+    assert_eq192(mul192(v[6:9], v[0:3]), v[3:6])
+    p = GEN ** 0
+    p[0:3] = v[0:3]
+    p[GEN ** 3] = v[6]
+    return
+",
+        trials: vec![
+            trial(x, x * y, y),
+            trial(x, x * y, y + F192::Y),
+            trial(F192::ONE, y, y),
+            trial(x, x, F192::ONE),
+            trial(x, x * y, x),
+        ],
+    });
 }
 
 /// `unroll` is documented as compile-time unrolling, so a loop and its expansion
@@ -183,8 +268,8 @@ def main():
 }
 
 /// A published pair whose first word is the claim and whose second is the hint.
-fn one(published: F192, hint: F192) -> Trial {
-    Trial::new([published, hint]).stream("w", vec![vec![hint]])
+fn one(published: F64, hint: F64) -> Trial {
+    Trial::new(&[published, hint]).stream("w", vec![vec![hint]])
 }
 
 /// An `@inline` function returning a one-cell `StackBuf`, used in expression
@@ -271,7 +356,7 @@ def main():
         trials: vec![
             pinned(g(3), g(9)), // the hint agrees with the pin
             pinned(g(4), g(9)), // it does not: both must reject
-            pinned(F192::ZERO, g(1)),
+            pinned(F64::ZERO, g(1)),
             pinned(g(2), g(3)),
         ],
     });
@@ -282,8 +367,68 @@ def main():
 /// forwards through the very alias that dropped it and both spellings agree by
 /// accident. Publishing the pin makes a dropped pin visible as a program that
 /// accepts every hint.
-fn pinned(hint0: F192, hint1: F192) -> Trial {
-    Trial::new([g(3), hint1]).stream("w", vec![vec![hint0, hint1]])
+fn pinned(hint0: F64, hint1: F64) -> Trial {
+    Trial::new(&[g(3), hint1]).stream("w", vec![vec![hint0, hint1]])
+}
+
+/// The run form of the pinning promise: a 192-bit value stored into a hinted run
+/// asserts equality exactly as `assert_eq192` does, whether the value lands in
+/// place (`s[0:3] = value`), through a bound copy (`t = value`, then
+/// `s[0:3] = t`), or through a heap run already holding the hint. A constant
+/// value and a computed one lower differently (limb `SET`s against an instruction
+/// writing its result), so both are compared.
+///
+/// As for [`pinned`], the trials publish the pin's input `x`, never the hint.
+#[test]
+fn a_run_store_pins_a_hint_like_assert_eq192() {
+    let body = "\
+def main():
+    s = StackBuf(3)
+    hint_witness(s, \"s\")
+    x = StackBuf(3)
+    hint_witness(x, \"x\")
+    STORE
+    p = GEN ** 0
+    p[0:3] = x
+    return
+";
+    let trial = |s: F192, x: F192| {
+        Trial::new(&limbs(x))
+            .stream("s", vec![limbs(s).to_vec()])
+            .stream("x", vec![limbs(x).to_vec()])
+    };
+    let c = F192::new(3, 5, 7);
+    let x = F192::new(g(4).0, 9, 1);
+    let computed = vec![
+        trial(x * c, x),
+        trial(x * c + F192::ONE, x),
+        trial(F192::ZERO, F192::ZERO),
+        trial(x, x),
+    ];
+    let constant = vec![
+        trial(c, x),
+        trial(c + F192::Y, x),
+        trial(c, F192::ZERO),
+        trial(F192::ZERO, x),
+    ];
+    for (value, trials) in [("mul192(x, f192(3, 5, 7))", computed), ("f192(3, 5, 7)", constant)] {
+        let spell = |store: &str| body.replace("STORE", &store.replace("VALUE", value));
+        let asserted = spell("assert_eq192(s, VALUE)");
+        for store in [
+            "s[0:3] = VALUE",
+            "t = VALUE\n    s[0:3] = t",
+            "h = HeapBuf(3)\n    h[0:3] = s\n    h[0:3] = VALUE",
+        ] {
+            check_pair(&Pair {
+                name: "a_run_store_pins_a_hint_like_assert_eq192",
+                why: "zkDSL.md §Memory: a store into already-written cells IS an equality assertion, \
+                      for a run as for one cell.",
+                a: &asserted,
+                b: &spell(store),
+                trials: trials.clone(),
+            });
+        }
+    }
 }
 
 /// `zkDSL.md` §BLAKE2s: "If `out` was already written, the statement *asserts*
@@ -298,52 +443,48 @@ fn pinned(hint0: F192, hint1: F192) -> Trial {
 /// prover could put any message under the hash.
 #[test]
 fn prewritten_blake2s_out_asserts_the_digest() {
+    let four = |w: [F64; 4]| Trial::new(&w).stream("w", vec![w.to_vec()]);
+    let d = super::cases::digest_5_7();
     check_pair(&Pair {
         name: "prewritten_blake2s_out_asserts_the_digest",
         why: "zkDSL.md §BLAKE2s: a pre-written `out` turns the hash into a verification.",
         a: "\
 def main():
-    v = StackBuf(2)
+    v = StackBuf(4)
     hint_witness(v, \"w\")
-    m = StackBuf(4)
-    m[0] = 5
-    m[1] = 7
-    m[2] = 0
-    m[3] = 0
-    d = StackBuf(2)
+    m = [5, 7, 0, 0, 0, 0, 0, 0]
+    d = StackBuf(4)
     d[0] = v[0]
     d[1] = v[1]
-    blake2s(m[0:2], m[2:4], d)
+    d[2] = v[2]
+    d[3] = v[3]
+    blake2s(m[0:4], m[4:8], d)
     p = GEN ** 0
-    p[1] = v[0]
-    p[GEN] = v[1]
+    p[0:4] = v
     return
 ",
         b: "\
 def main():
-    v = StackBuf(2)
+    v = StackBuf(4)
     hint_witness(v, \"w\")
-    m = StackBuf(4)
-    m[0] = 5
-    m[1] = 7
-    m[2] = 0
-    m[3] = 0
-    d = HeapBuf(2)
+    m = [5, 7, 0, 0, 0, 0, 0, 0]
+    d = HeapBuf(4)
     d[1] = v[0]
     d[GEN] = v[1]
-    blake2s(m[0:2], m[2:4], d[0:2])
+    d[GEN ** 2] = v[2]
+    d[GEN ** 3] = v[3]
+    blake2s(m[0:4], m[4:8], d[0:4])
     p = GEN ** 0
-    p[1] = v[0]
-    p[GEN] = v[1]
+    p[0:4] = v
     return
 ",
         trials: vec![
-            // The real digest of the block whose cells are (5, 7, 0, 0).
-            two(super::cases::DIGEST_5_7[0], super::cases::DIGEST_5_7[1]),
+            // The real digest of the block whose words are (5, 7, 0, ..., 0).
+            four(d),
             // Anything else must be rejected by both spellings.
-            two(F192::ZERO, F192::ZERO),
-            two(super::cases::DIGEST_5_7[0], F192::ZERO),
-            two(g(3), g(5)),
+            four([F64::ZERO; 4]),
+            four([d[0], d[1], d[2], F64::ZERO]),
+            four([g(3), g(5), g(7), g(9)]),
         ],
     });
 }
@@ -446,8 +587,8 @@ def main():
 
 /// A trial for the branch pair: publishes `s[0]` and `v[0]`, which the assertion
 /// makes equal on every accepting path.
-fn branch3(a: F192, b: F192, c: F192) -> Trial {
-    Trial::new([a, a]).stream("w", vec![vec![a, b, c]])
+fn branch3(a: F64, b: F64, c: F64) -> Trial {
+    Trial::new(&[a, a]).stream("w", vec![vec![a, b, c]])
 }
 
 /// A multi-value target may be a `StackBuf` element, and `zkDSL.md` §match
@@ -486,10 +627,10 @@ def main():
             "t, e = match(log(v[0]), range(0, 2), lambda i: pick(v[1], i))\n    sb[0] = t",
         ),
         trials: vec![
-            Trial::new([g(4), g(0)]).stream("w", vec![vec![g(0), g(4)]]),
-            Trial::new([g(5), g(1)]).stream("w", vec![vec![g(1), g(4)]]),
-            Trial::new([g(4), g(1)]).stream("w", vec![vec![g(1), g(4)]]),
-            Trial::new([g(9), g(0)]).stream("w", vec![vec![g(0), g(4)]]),
+            Trial::new(&[g(4), g(0)]).stream("w", vec![vec![g(0), g(4)]]),
+            Trial::new(&[g(5), g(1)]).stream("w", vec![vec![g(1), g(4)]]),
+            Trial::new(&[g(4), g(1)]).stream("w", vec![vec![g(1), g(4)]]),
+            Trial::new(&[g(9), g(0)]).stream("w", vec![vec![g(0), g(4)]]),
         ],
     });
 }

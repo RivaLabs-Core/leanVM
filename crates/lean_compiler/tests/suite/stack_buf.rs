@@ -1,60 +1,59 @@
 //! `StackBuf`: a run of consecutive frame (stack) cells in the zkDSL. Indexed
-//! reads/writes go straight to `base+k` (no heap deref), and a size-2 `StackBuf`
-//! is a `blake2s` operand: its two canonical 128-bit cells hold the 256-bit value, so
+//! reads/writes go straight to `base+k` (no heap deref), and a size-4 `StackBuf`
+//! is a `blake2s` operand: its four 64-bit cells hold the 256-bit value, so
 //! `blake2s(a, b, out)` reads them in place with no copies (a self-hash
-//! `blake2s(h, h, out)` aliases one pair into both input operands) and writes
-//! the digest into the pre-allocated pair `out`.
-//!
-//! Since these DSL scalars are K-embedded F192 cells, a `StackBuf(2)` written
-//! cell-by-cell holds the flock words `[v0, 0, v1, 0]`
-//!: the reference `compress` is fed that lane layout.
+//! `blake2s(h, h, out)` aliases one run into both input operands) and writes
+//! the digest into the pre-allocated run `out`.
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Op, prove, verify};
 use lean_vm::hash_flock::{compression, digest, metadata, unpack_metadata};
 use lean_vm::vmhash::compress;
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 
-use crate::common::mix;
+use crate::common::{mix, panic_message, pi};
 
-/// The two 128-bit digest cells of `compress(a, b)` as `F192`s (lo = word 0/2,
-/// hi = word 1/3): what a `blake2s(...)` output `StackBuf(2)` holds cell-by-cell.
-fn digest_cells(a: [F64; 4], b: [F64; 4]) -> [F192; 2] {
-    let d = compress(a, b);
-    [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)]
-}
-
-/// A size-2 `StackBuf` fed to `blake2s` as a self-hash `blake2s(h, h)`, then the
-/// digest's two 128-bit cells published to `m[0], m[1]`. Proves and verifies, and
-/// a wrong published digest is rejected: so the whole path (StackBuf load →
-/// aliased blake2s → stack read → publish) is exercised end-to-end.
+/// A size-4 `StackBuf` fed to `blake2s` as a self-hash `blake2s(h, h)`, then the
+/// digest's four words published to `m[0..4]`. Proves and verifies, and a wrong
+/// published digest is rejected: so the whole path (StackBuf load → aliased
+/// blake2s → heap run store → publish) is exercised end-to-end.
 #[test]
 fn stack_buf_blake2s_self_hash() {
     let src = "\
 def main():
-    a = StackBuf(2)
+    a = StackBuf(4)
     a[0] = 5
-    a[1] = 7
-    c = StackBuf(2)
+    a[1] = 0
+    a[2] = 7
+    a[3] = 0
+    c = StackBuf(4)
     blake2s(a, a, c)
-    p = 1
-    p[1] = c[0]
-    p[GEN] = c[1]
+    p = GEN ** 0
+    p[0:4] = c
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-
-    // Each cell holds one scalar in its low lane, so the hashed words are [5,0,7,0].
-    let h = [F64(5), F64(0), F64(7), F64(0)];
-    let want = digest_cells(h, h);
+    let h = [5, 0, 7, 0].map(F64);
+    let want = compress(h, h);
 
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
     verify(&program, &want, &proof).expect("StackBuf self-hash verifies");
 
     let mut bad = want;
-    bad[0] += F192::ONE;
+    bad[0] += F64::ONE;
     assert!(verify(&program, &bad, &proof).is_err(), "wrong digest must be rejected");
+}
+
+/// The standard BLAKE2s of the 80 bytes that the words `1, 0, 2, 0, 3, 0, 4, 0, 5, 0`
+/// spell little-endian.
+fn standard_80_byte_digest() -> [F64; 4] {
+    let input: Vec<u8> = [1u64, 0, 2, 0, 3, 0, 4, 0, 5, 0]
+        .iter()
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
+    let d = primitives::hash::hash(&input);
+    std::array::from_fn(|i| F64(u64::from_le_bytes(d[8 * i..8 * i + 8].try_into().unwrap())))
 }
 
 /// Optional BLAKE2s metadata and a memory-supplied chaining value reproduce a
@@ -63,26 +62,18 @@ def main():
 fn blake2s_keywords_standard_multiblock() {
     let src = "\
 def main():
-    block0 = [1, 2, 3, 4]
-    tail = [5, 0, 0, 0]
-    cv = StackBuf(2)
-    blake2s(block0[0:2], block0[2:4], cv, counter=64, final=0)
-    out = StackBuf(2)
-    blake2s(tail[0:2], tail[2:4], out, cv=cv, counter=80, final=1)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    block0 = [1, 0, 2, 0, 3, 0, 4, 0]
+    tail = [5, 0, 0, 0, 0, 0, 0, 0]
+    cv = StackBuf(4)
+    blake2s(block0[0:4], block0[4:8], cv, counter=64, final=0)
+    out = StackBuf(4)
+    blake2s(tail[0:4], tail[4:8], out, cv=cv, counter=80, final=1)
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let mut input = Vec::new();
-    for value in 1u64..=5 {
-        input.extend_from_slice(&value.to_le_bytes());
-        input.extend_from_slice(&0u64.to_le_bytes());
-    }
-    let d = primitives::hash::hash(&input);
-    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
+    let want = standard_80_byte_digest();
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2);
     verify(&program, &want, &proof).expect("standard two-block BLAKE2s verifies");
@@ -91,53 +82,45 @@ def main():
 /// The same 80-byte hash with its second block's metadata computed at run time,
 /// the shape a hash of runtime length needs: the counter's high part is a word
 /// the program produced and its low part a compile-time constant, and their set
-/// bits are disjoint, so one `XOR` is their integer sum (doc
+/// bits are disjoint, so one `XOR64` is their integer sum (doc
 /// §sec:prog-byte-counter). The hint stands in for the high part a real absorb
 /// loop derives from its own counter.
 #[test]
 fn blake2s_runtime_metadata_matches_the_standard_hash() {
     let src = "\
 def main():
-    block0 = [1, 2, 3, 4]
-    tail = [5, 0, 0, 0]
-    cv = StackBuf(2)
-    blake2s(block0[0:2], block0[2:4], cv, counter=64, final=0)
+    block0 = [1, 0, 2, 0, 3, 0, 4, 0]
+    tail = [5, 0, 0, 0, 0, 0, 0, 0]
+    cv = StackBuf(4)
+    blake2s(block0[0:4], block0[4:8], cv, counter=64, final=0)
     high = hint_witness(\"high\")
     assert high == 64
-    out = StackBuf(2)
-    blake2s(tail[0:2], tail[2:4], out, cv=cv, md=high + f192(16, 4294967295, 0))
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    out = StackBuf(4)
+    blake2s(tail[0:4], tail[4:8], out, cv=cv, md=[high + 16, 4294967295])
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
     let mut program = compile(&parse(src).expect("parse"));
-    program.set_witness("high", vec![vec![F192::new(64, 0, 0)]]);
-    let mut input = Vec::new();
-    for value in 1u64..=5 {
-        input.extend_from_slice(&value.to_le_bytes());
-        input.extend_from_slice(&0u64.to_le_bytes());
-    }
-    let d = primitives::hash::hash(&input);
-    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    let want = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
+    program.set_witness("high", vec![vec![F64(64)]]);
+    let want = standard_80_byte_digest();
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
-    verify(&program, &want, &proof).expect("a runtime metadata word hashes to the standard digest");
+    verify(&program, &want, &proof).expect("a runtime metadata hashes to the standard digest");
 }
 
 #[test]
 fn blake2s_counter_accepts_full_u64_range() {
     let src = "\
 def main():
-    block = [1, 2, 3, 4]
-    out = StackBuf(2)
+    block = [1, 0, 2, 0, 3, 0, 4, 0]
+    out = StackBuf(4)
     counter = 18446744073709551615 // 1
-    blake2s(block[0:2], block[2:4], out, counter=counter, final=1)
+    blake2s(block[0:4], block[4:8], out, counter=counter, final=1)
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     // The metadata is a memory operand, so what carries the counter is the `SET`
-    // immediate that wrote the cell the instruction reads.
+    // immediates that wrote the two cells the instruction reads.
     let md = program
         .prog
         .iter()
@@ -146,15 +129,17 @@ def main():
             _ => None,
         })
         .expect("BLAKE2s instruction");
-    let metadata = program
-        .prog
-        .iter()
-        .find_map(|op| match op {
-            Op::Set { o, k } if *o == md => Some(*k),
-            _ => None,
-        })
-        .expect("the metadata cell's SET");
-    assert_eq!(unpack_metadata(metadata), (u64::MAX, u32::MAX, 0));
+    let set_of = |cell: u32| {
+        program
+            .prog
+            .iter()
+            .find_map(|op| match op {
+                Op::Set { o, k } if *o == cell => Some(*k),
+                _ => None,
+            })
+            .expect("the metadata cell's SET")
+    };
+    assert_eq!(unpack_metadata([set_of(md), set_of(md + 1)]), (u64::MAX, u32::MAX, 0));
 }
 
 #[test]
@@ -162,9 +147,9 @@ def main():
 fn blake2s_counter_rejects_values_above_u64() {
     let src = "\
 def main():
-    block = [1, 2, 3, 4]
-    out = StackBuf(2)
-    blake2s(block[0:2], block[2:4], out, counter=18446744073709551616, final=1)
+    block = [1, 0, 2, 0, 3, 0, 4, 0]
+    out = StackBuf(4)
+    blake2s(block[0:4], block[4:8], out, counter=18446744073709551616, final=1)
     return
 ";
     compile(&parse(src).expect("parse"));
@@ -179,21 +164,20 @@ fn blake2s_default_iv_after_runtime_branch() {
 def main():
     flag = StackBuf(1)
     hint_witness(flag, \"flag\")
-    a = [1, 2, 3, 4]
+    a = [1, 0, 2, 0, 3, 0, 4, 0]
     if flag[0] == 1:
-        ignored = StackBuf(2)
-        blake2s(a[0:2], a[2:4], ignored)
-    out = StackBuf(2)
-    blake2s(a[0:2], a[2:4], out)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+        ignored = StackBuf(4)
+        blake2s(a[0:4], a[4:8], ignored)
+    out = StackBuf(4)
+    blake2s(a[0:4], a[4:8], out)
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
-    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
+    let want = compress([1, 0, 2, 0].map(F64), [3, 0, 4, 0].map(F64));
     for flag in [0, 1] {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
+        program.set_witness("flag", vec![vec![F64(flag)]]);
         let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).expect("post-join default IV is initialized on both paths");
     }
@@ -207,73 +191,70 @@ fn blake2s_default_iv_in_both_runtime_branches() {
 def main():
     flag = StackBuf(1)
     hint_witness(flag, \"flag\")
-    a = [1, 2, 3, 4]
-    out = StackBuf(2)
+    a = [1, 0, 2, 0, 3, 0, 4, 0]
+    out = StackBuf(4)
     if flag[0] == 1:
-        blake2s(a[0:2], a[2:4], out)
+        blake2s(a[0:4], a[4:8], out)
     else:
-        blake2s(a[0:2], a[2:4], out)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+        blake2s(a[0:4], a[4:8], out)
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
-    let want = digest_cells([F64(1), F64(0), F64(2), F64(0)], [F64(3), F64(0), F64(4), F64(0)]);
+    let want = compress([1, 0, 2, 0].map(F64), [3, 0, 4, 0].map(F64));
     for flag in [0, 1] {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("flag", vec![vec![F192::new(flag, 0, 0)]]);
+        program.set_witness("flag", vec![vec![F64(flag)]]);
         let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
         verify(&program, &want, &proof).expect("each branch initializes its default IV");
     }
 }
 
 /// Deferred aliases may expose non-adjacent source words for a syntactically
-/// consecutive CV StackBuf. The compiler must materialize that pair because
+/// consecutive CV StackBuf. The compiler must materialize that run because
 /// the BLAKE2s opcode carries only one CV base offset.
 #[test]
-fn blake2s_materializes_aliased_cv_pair() {
+fn blake2s_materializes_aliased_cv_run() {
     let src = "\
 def main():
-    msg = [1, 2, 3, 4]
-    sources = [5, 99, 6]
-    cv = [sources[0], sources[2]]
-    out = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], out, cv=cv, counter=128)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    msg = [1, 0, 2, 0, 3, 0, 4, 0]
+    sources = [5, 99, 6, 99, 7, 99, 8]
+    cv = [sources[0], sources[2], sources[4], sources[6]]
+    out = StackBuf(4)
+    blake2s(msg[0:4], msg[4:8], out, cv=cv, counter=128)
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
     let program = compile(&parse(src).expect("parse"));
     let block = compression(
-        [F64(1), F64(0), F64(2), F64(0)],
-        [F64(3), F64(0), F64(4), F64(0)],
-        [F64(5), F64(0), F64(6), F64(0)],
+        [1, 0, 2, 0].map(F64),
+        [3, 0, 4, 0].map(F64),
+        [5, 6, 7, 8].map(F64),
         metadata(128, 0, 0),
     );
-    let d = digest(&block);
-    let want = [F192::new(d[0].0, d[1].0, 0), F192::new(d[2].0, d[3].0, 0)];
+    let want = digest(&block);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("materialized custom CV verifies");
 }
 
-/// A custom CV with the default one-block metadata is not a chained block.
 /// A metadata cell inside the digest destination would be read before the digest
 /// is stored and re-read from the finished image by the witness, so the two would
 /// disagree and the proof would fail its opening with nothing to point at. Every
-/// other overlap is a write-once conflict, which does say where it happened.
+/// other overlap is a write-once conflict, which does say where it happened. A
+/// partial overlap is enough.
 #[test]
 #[should_panic(expected = "md= must not name a cell of the digest destination")]
 fn blake2s_metadata_inside_the_destination_is_rejected() {
     let src = "\
 def main():
-    msg = [1, 2, 3, 4]
-    out = StackBuf(2)
-    out[0] = 7
-    blake2s(msg[0:2], msg[2:4], out, md=out[0])
+    msg = [1, 0, 2, 0, 3, 0, 4, 0]
+    out = StackBuf(4)
+    out[1] = 7
+    blake2s(msg[0:4], msg[4:8], out, md=out[1:3])
     return
 ";
-    let _ = compile(&parse(src).expect("parse"));
+    compile(&parse(src).expect("parse"));
 }
 
 /// Require the caller to state the byte counter explicitly.
@@ -282,13 +263,13 @@ def main():
 fn blake2s_cv_alone_is_rejected() {
     let src = "\
 def main():
-    msg = [1, 2, 3, 4]
-    cv = [5, 6]
-    out = StackBuf(2)
-    blake2s(msg[0:2], msg[2:4], out, cv=cv)
+    msg = [1, 0, 2, 0, 3, 0, 4, 0]
+    cv = [5, 6, 7, 8]
+    out = StackBuf(4)
+    blake2s(msg[0:4], msg[4:8], out, cv=cv)
     return
 ";
-    let _ = compile(&parse(src).expect("parse"));
+    compile(&parse(src).expect("parse"));
 }
 
 /// A general (non-blake2s) `StackBuf(3)`: indexed writes, an indexed read feeding
@@ -309,7 +290,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     // `+` is XOR: 3 ^ 4 = 7. Published: (sa[2], sa[1]) = (7, 4).
-    let want = [F192::from(F64(7)), F192::from(F64(4))];
+    let want = pi(&[F64(7), F64(4)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 0, "no BLAKE2s here");
     verify(&program, &want, &proof).expect("StackBuf indexing verifies");
@@ -341,7 +322,7 @@ def make(v):
 ";
     let program = compile(&parse(src).expect("parse"));
     // Field addition is XOR: 5 ^ (5 ^ 3) == 3.
-    program.execute([F192::from(F64(3)), F192::from(F64(11))]);
+    program.execute(pi(&[F64(3), F64(11)]));
 }
 
 /// Tuple returns retain their source-level arity even though a StackBuf member
@@ -361,7 +342,7 @@ def make(v):
     return out, v + 1
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(15)), F192::from(F64(8))]);
+    program.execute(pi(&[F64(15), F64(8)]));
 }
 
 /// HeapBuf already crosses a normal call as its one-cell pointer. Allocation
@@ -384,7 +365,7 @@ def make():
     return out
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::from(F64(17)), F192::from(F64(23))]);
+    program.execute(pi(&[F64(17), F64(23)]));
 }
 
 /// A StackBuf index literal that does not fit `u32` is rejected at compile time,
@@ -403,7 +384,7 @@ fn stack_buf_index_overflow_rejected() {
 fn stack_buf_rebind_to_scalar() {
     let src = "def main():\n    x = StackBuf(2)\n    x = 5\n    p = 1\n    p[1] = x\n    p[GEN] = x\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(5))];
+    let want = pi(&[F64(5), F64(5)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("rebound-scalar program verifies");
 }
@@ -427,40 +408,41 @@ fn stack_buf_loop_capture_rejected() {
 fn inline_returns_stackbuf_and_scalar() {
     let src = "\
 def main():
-    s = StackBuf(2)
+    s = StackBuf(4)
     s[0] = 5
-    s[1] = 7
+    s[1] = 0
+    s[2] = 7
+    s[3] = 0
     s, x = step(s, 9)
     s, y = step(s, x)
-    p = 1
-    p[1] = s[0]
-    p[GEN] = s[1]
+    p = GEN ** 0
+    p[0:4] = s
     return
 
 @inline
 def step(state, v):
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = v
-    tg[1] = 3
-    nb = StackBuf(2)
+    tg[1] = 0
+    tg[2] = 3
+    tg[3] = 0
+    nb = StackBuf(4)
     blake2s(state, tg, nb)
     return nb, v
 ";
     let program = compile(&parse(src).expect("parse"));
 
-    // Each cell = one scalar in its low lane, so a StackBuf(2) hashes words
-    // [c0, 0, c1, 0]. x == v == 9 (the scalar return), so both steps use tag 9.
-    let tag = [F64(9), F64(0), F64(3), F64(0)];
-    let s1 = compress([F64(5), F64(0), F64(7), F64(0)], tag);
-    let s2 = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
-    let want = [F192::new(s2[0].0, s2[1].0, 0), F192::new(s2[2].0, s2[3].0, 0)];
+    // x == v == 9 (the scalar return), so both steps use tag 9.
+    let tag = [9, 0, 3, 0].map(F64);
+    let s1 = compress([5, 0, 7, 0].map(F64), tag);
+    let want = compress(s1, tag); // the returned StackBuf (holding s1's words) fed back in
 
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 2, "two BLAKE2s instructions (one per inlined step)");
     verify(&program, &want, &proof).expect("inline StackBuf+scalar tuple return verifies");
 
     let mut bad = want;
-    bad[1] += F192::ONE;
+    bad[1] += F64::ONE;
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong published state must be rejected"
@@ -503,7 +485,7 @@ def select_pair(flag, a, b):
     return first, second
 ";
     let program = compile(&parse(src).expect("parse"));
-    program.execute([F192::ONE, F192::ZERO]);
+    program.execute(pi(&[F64::ONE]));
 }
 
 /// An `@inline` may also alias-return a folded **g-address** among its values:
@@ -519,9 +501,11 @@ def main():
     hb[1] = 10
     hb[GEN] = 20
     hb[GEN ** 2] = 30
-    fs = StackBuf(2)
+    fs = StackBuf(4)
     fs[0] = 1
-    fs[1] = 2
+    fs[1] = 0
+    fs[2] = 2
+    fs[3] = 0
     cur = hb
     fs, a, cur = step(fs, cur)
     fs, b, cur = step(fs, cur)
@@ -534,17 +518,19 @@ def main():
 @inline
 def step(state, cursor):
     x = cursor[GEN ** 0]
-    tg = StackBuf(2)
+    tg = StackBuf(4)
     tg[0] = x
-    tg[1] = 3
-    nb = StackBuf(2)
+    tg[1] = 0
+    tg[2] = 3
+    tg[3] = 0
+    nb = StackBuf(4)
     blake2s(state, tg, nb)
     return nb, x, cursor * GEN
 ";
     let program = compile(&parse(src).expect("parse"));
     // a = hb[0] = 10, b = hb[1] = 20, v = hb[2] = 30 read through the cursor
     // returned twice-advanced. a + b is XOR: 10 ^ 20 = 30.
-    let want = [F192::from(F64(30)), F192::from(F64(30))];
+    let want = pi(&[F64(30), F64(30)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inline advanced-cursor return verifies");
 }
@@ -558,19 +544,18 @@ def step(state, cursor):
 fn stack_buf_list_literal() {
     let src = "\
 def main():
-    s = [5, 7]
-    s = [s[1], s[0]]
-    t = [s[0] + s[1], 3]
-    out = StackBuf(2)
+    s = [5, 7, 0, 0]
+    s = [s[1], s[0], s[2], s[3]]
+    t = [s[0] + s[1], 3, 0, 0]
+    out = StackBuf(4)
     blake2s(s, t, out)
-    p = 1
-    p[1] = out[0]
-    p[GEN] = out[1]
+    p = GEN ** 0
+    p[0:4] = out
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    // s = [7, 5] after the swap → words [7,0,5,0]; t = [7 ^ 5, 3] = [2, 3] → [2,0,3,0].
-    let want = digest_cells([F64(7), F64(0), F64(5), F64(0)], [F64(2), F64(0), F64(3), F64(0)]);
+    // s = [7, 5, 0, 0] after the swap; t = [7 ^ 5, 3, 0, 0] = [2, 3, 0, 0].
+    let want = compress([7, 5, 0, 0].map(F64), [2, 3, 0, 0].map(F64));
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     assert_eq!(mix(src, want)[5], 1, "one BLAKE2s instruction");
     verify(&program, &want, &proof).expect("list-literal StackBuf verifies");
@@ -612,12 +597,12 @@ fn heap_hint_slice_oob_rejected() {
 }
 
 /// A blake2s heap slice straddling the buffer end is rejected. The 256-bit
-/// operand `hb[7:9]` is two 128-bit cells, so the bound check trips at
-/// `7 + 2 = 9 > 8`.
+/// operand `hb[6:10]` is four 64-bit cells, so the bound check trips at
+/// `6 + 4 = 10 > 8`.
 #[test]
-#[should_panic(expected = "heap slice 7:9 out of bounds for `hb` (HeapBuf size 8)")]
+#[should_panic(expected = "heap slice 6:10 out of bounds for `hb` (HeapBuf size 8)")]
 fn heap_blake2s_slice_oob_rejected() {
-    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(2)\n    blake2s(hb[7:9], hb[7:9], out)\n    return\n";
+    let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    out = StackBuf(4)\n    blake2s(hb[6:10], hb[6:10], out)\n    return\n";
     let _ = compile(&parse(src).expect("parse"));
 }
 
@@ -647,7 +632,7 @@ def main():
 fn heap_index_boundary_ok() {
     let src = "def main():\n    hb = HeapBuf(8)\n    hb[GEN ** 7] = 5\n    row = hb * GEN ** 4\n    y = row[GEN ** 3]\n    assert y == 5\n    return\n";
     let program = compile(&parse(src).expect("parse"));
-    let pi = [F192::from(F64(3)), F192::from(F64(4))];
+    let pi = pi(&[F64(3), F64(4)]);
     let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &pi, &proof).expect("boundary access verifies");
 }
@@ -679,15 +664,15 @@ def main():
     let ast = parse(pin).expect("parse");
     // The honest prover hints what the callee asserts, and it verifies.
     let mut program = compile(&ast);
-    program.set_witness("adv", vec![vec![g_pow(5).into(), g_pow(6).into()]]);
-    let want = [g_pow(5).into(), g_pow(6).into()];
+    program.set_witness("adv", vec![vec![g_pow(5), g_pow(6)]]);
+    let want = pi(&[g_pow(5), g_pow(6)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the honest hint matches the pin");
 
     // A prover hinting anything else must be rejected: that is what the pin is.
     let mut bad = compile(&ast);
-    bad.set_witness("adv", vec![vec![g_pow(13).into(), g_pow(14).into()]]);
-    let dishonest = [g_pow(13).into(), g_pow(14).into()];
+    bad.set_witness("adv", vec![vec![g_pow(13), g_pow(14)]]);
+    let dishonest = pi(&[g_pow(13), g_pow(14)]);
     assert!(
         std::panic::catch_unwind(|| bad.execute(dishonest)).is_err(),
         "the pin must reject a hint it does not match"
@@ -710,7 +695,7 @@ def main():
     return
 ";
     let program = compile(&parse(two).expect("parse"));
-    let want = [g_pow(3).into(), g_pow(0).into()];
+    let want = pi(&[g_pow(3), g_pow(0)]);
     assert!(
         std::panic::catch_unwind(|| program.execute(want)).is_err(),
         "`s[0] = s[1]` asserts that they are equal"
@@ -720,7 +705,7 @@ def main():
 /// A multi-cell value can cross a call in BOTH directions.
 ///
 /// It could always be returned as a run of cells and never passed as one, so a
-/// two-cell digest went in through a pointer or an `@inline` expansion while
+/// multi-cell digest went in through a pointer or an `@inline` expansion while
 /// coming back out whole. A `s: StackBuf(n)` parameter takes the same n
 /// consecutive cells a `StackBuf(n)` return value occupies, placed by the same
 /// `Abi`, which is why the argument area is now a WIDTH rather than a count.
@@ -744,7 +729,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [g_pow(2).into(), g_pow(1).into()];
+    let want = pi(&[g_pow(2), g_pow(1)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("the run went in and the swapped run came back");
 
@@ -752,9 +737,9 @@ def main():
     for (arg, want) in [
         (
             "b = StackBuf(3)\n    b[0] = GEN ** 1\n    r = f(b)",
-            "got a StackBuf(3)",
+            "got a 3-cell value",
         ),
-        ("r = f(GEN ** 1)", "pass one"),
+        ("r = f(GEN ** 1)", "pass a 2-cell value"),
     ] {
         let src = format!(
             "def f(s: StackBuf(2)):\n    return s[0]\n\ndef main():\n    {arg}\n    p = GEN ** 0\n    p[1] = r\n    p[GEN] = GEN ** 0\n    return\n"
@@ -763,7 +748,7 @@ def main():
         let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
             panic!("accepted: {arg}");
         };
-        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        let msg = panic_message(&*err);
         assert!(msg.contains(want), "got `{msg}`");
     }
 }
@@ -785,7 +770,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(5)); 2];
+    let want = pi(&[g_pow(5), g_pow(5)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("three spellings of cell 2 agree");
 }

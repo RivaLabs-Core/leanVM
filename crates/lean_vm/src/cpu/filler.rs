@@ -40,7 +40,7 @@ pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 /// Least rows a table can be proven over. Only `BLAKE2s` has one above `1`: flock sizes
 /// its argument to at least eight instances, so filling that table below the floor
 /// would leave it padded up to it, which is the padding this exists to avoid.
-pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8];
+pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8, 1, 1];
 
 /// The `JUMP` table's index in [`crate::cpu::Stats::TABLES`]. Every traversal of every
 /// block lands its closing jump here, so this table is solved last, absorbing the cost
@@ -64,11 +64,12 @@ pub struct Block {
 /// follows. No instruction writes them, which is why a traversal costs its own rows and
 /// nothing more.
 ///
-/// The rest is what the dummies use: a cell that is never written, so the `JUMP` table's
-/// dummy reads a zero condition and falls through instead of leaving the block; the
-/// scratch cell a dummy writes, which doubles as the `BLAKE2s` dummy's chaining value and
-/// so spans `SCRATCH..SCRATCH+2`; and the digest, placed clear of it so that a digest
-/// never becomes the next traversal's chaining value. `DIGEST+2..DIGEST+6` are the
+/// The rest is what the dummies use: two cells that are never written, so the `JUMP`
+/// table's dummy reads a zero condition and falls through instead of leaving the block,
+/// and the `BLAKE2s` dummy reads a zero metadata pair; the scratch run a dummy writes
+/// (three cells for a 192-bit one), which doubles as the `BLAKE2s` dummy's chaining value
+/// and so spans `SCRATCH..SCRATCH+4`; and the digest, placed clear of it so that a digest
+/// never becomes the next traversal's chaining value. `DIGEST+4..DIGEST+12` are the
 /// message cells, never written, so every traversal compresses the same input.
 pub mod frame {
     /// Where the closing jump goes, and in which frame.
@@ -76,14 +77,14 @@ pub mod frame {
     pub const NEXT_FP: u32 = 1;
     /// The pointer a `DEREF` dummy follows: `g^0`, memory cell `0`.
     pub const PTR: u32 = 2;
-    /// Never written, so it reads as zero.
+    /// Never written, so it and its successor read as zero.
     pub const ZERO: u32 = 3;
     /// What a dummy writes.
-    pub const SCRATCH: u32 = 4;
-    /// The `BLAKE2s` dummy's output pair.
-    pub const DIGEST: u32 = 6;
+    pub const SCRATCH: u32 = 5;
+    /// The `BLAKE2s` dummy's digest.
+    pub const DIGEST: u32 = 9;
     /// Cells a block's frame occupies.
-    pub const CELLS: u32 = 12;
+    pub const CELLS: u32 = 21;
 }
 
 /// Traversals per block: `plan[t][k]` is how many times the size-`SIZES[k]` block of
@@ -226,15 +227,14 @@ mod tests {
     #[test]
     fn solve_reaches_power_of_two_floors() {
         let cases: [[usize; N_TABLES]; 6] = [
-            [0, 0, 0, 0, 0, 0],
-            [1, 1, 1, 1, 1, 1],
-            // Roughly the XMSS run's mix.
-            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000],
+            [0; N_TABLES],
+            [1; N_TABLES],
+            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 90_000, 70_000],
             // Tables already exactly on a power of two, the awkward case: the closing
             // jumps of every other table's traversals still have to fit somewhere.
-            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8],
-            [1, 2, 3, 4, 5, 6],
-            [0, 0, 0, 0, 1 << 20, 0],
+            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8, 1 << 10, 1 << 11],
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            [0, 0, 0, 0, 1 << 20, 0, 0, 0],
         ];
         for base in cases {
             let plan = solve(base, NO_FLOORS).unwrap_or_else(|| panic!("no plan for {base:?}"));
@@ -250,7 +250,7 @@ mod tests {
     /// still lands on one: what a run too small for its consumer buys with.
     #[test]
     fn floor_grows_target_table() {
-        let base = [1_000, 2_000, 3_000, 4_000, 500, 8];
+        let base = [1_000, 2_000, 3_000, 4_000, 500, 8, 300, 200];
         let mut floors = NO_FLOORS;
         floors[PAD_TABLE] = 1 << 16;
         let plan = solve(base, floors).expect("solvable");
@@ -264,7 +264,7 @@ mod tests {
     /// remainders.
     #[test]
     fn fill_uses_bulk_blocks() {
-        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000];
+        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 90_000, 70_000];
         let plan = solve(base, NO_FLOORS).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(

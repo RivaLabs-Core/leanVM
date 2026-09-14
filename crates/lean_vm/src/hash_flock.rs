@@ -12,10 +12,10 @@
 //! ## The mapping
 //!
 //! The VM's `BLAKE2s(a, b, cv, metadata) -> c` is one standard BLAKE2s
-//! compression. `metadata` packs `counter:u64 | f0:u32 | f1:u32` in
-//! little-endian order. All inputs are witness values in `q_flock`, and the
-//! memory interaction binds every one of them: `a`, `b`, `cv` and `metadata`
-//! are cells the instruction reads.
+//! compression. `metadata` is two cells, the byte counter and `f0 | f1 << 32`.
+//! All inputs are witness values in `q_flock`, and the memory interaction binds
+//! every one of them: `a`, `b`, `cv` and `metadata` are cells the instruction
+//! reads.
 //!
 //! ## The layout (aligned re-layout, `MSG_BASE = 640`, 64-bit words)
 //!
@@ -37,7 +37,7 @@ use flock::hash::{
     Blake2sSetup, Compression, K_LOG, ReductionReplay, blake2s_compress, generate_witness_with_ab_packed_and_lincheck,
 };
 use flock::verifier::VerifyError;
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 use primitives::stream::Stream;
 use zk_alloc::ArenaVec;
 
@@ -125,24 +125,21 @@ fn pack_words(w: [u32; 2]) -> F64 {
     F64((w[0] as u64) | ((w[1] as u64) << 32))
 }
 
-/// Pack BLAKE2s's compression metadata as one little-endian 128-bit value in
-/// the two low K-lanes of a 192-bit word (top lane zero).
-pub const fn metadata(counter: u64, f0: u32, f1: u32) -> F192 {
-    F192::new(counter, (f0 as u64) | ((f1 as u64) << 32), 0)
+/// BLAKE2s's compression metadata as its two memory cells: the byte counter, then
+/// `f0 | f1 << 32`.
+pub const fn metadata(counter: u64, f0: u32, f1: u32) -> [F64; 2] {
+    [F64(counter), F64((f0 as u64) | ((f1 as u64) << 32))]
 }
 
-/// Unpack `counter:u64 | f0:u32 | f1:u32` from a 192-bit word (the top lane
-/// must be zero).
-pub const fn unpack_metadata(x: F192) -> (u64, u32, u32) {
-    assert!(x.c2 == 0, "BLAKE2s metadata must have a zero top lane");
-    (x.c0, x.c1 as u32, (x.c1 >> 32) as u32)
+/// Unpack `counter:u64 | f0:u32 | f1:u32` from the two metadata cells.
+pub const fn unpack_metadata(x: [F64; 2]) -> (u64, u32, u32) {
+    (x[0].0, x[1].0 as u32, (x[1].0 >> 32) as u32)
 }
 
-/// BLAKE2s-256's initial chaining value as four flock words (the two
-/// chaining-value cells' low lanes, in canonical lane order). This is the IV
-/// with the parameter block (digest length 32, unkeyed, fanout and depth 1)
-/// folded into word 0, which is what makes a 64-byte compression equal
-/// `blake2s` of those 64 bytes.
+/// BLAKE2s-256's initial chaining value as the four cells a chaining value
+/// occupies. This is the IV with the parameter block (digest length 32, unkeyed,
+/// fanout and depth 1) folded into word 0, which is what makes a 64-byte
+/// compression equal `blake2s` of those 64 bytes.
 ///
 /// Derived from [`flock::hash::param_iv`] rather than written out: the
 /// parameter block touches three bytes of word 0, and a hand-copied constant
@@ -155,12 +152,8 @@ pub const IV: [F64; 4] = {
     [w(h[0], h[1]), w(h[2], h[3]), w(h[4], h[5]), w(h[6], h[7])]
 };
 
-/// The initial chaining value as the two 192-bit VM memory cells a chaining
-/// value occupies (canonical 128-bit chunks, top limbs zero).
-pub const IV_CELLS: [F192; 2] = [F192::new(IV[0].0, IV[1].0, 0), F192::new(IV[2].0, IV[3].0, 0)];
-
 /// The flock [`Compression`] for one VM instruction.
-pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: F192) -> Compression {
+pub fn compression(a: [F64; 4], b: [F64; 4], cv: [F64; 4], meta: [F64; 2]) -> Compression {
     let mut m = [0u32; 16];
     for (i, &w) in a.iter().enumerate() {
         m[2 * i..2 * i + 2].copy_from_slice(&words_of(w));
@@ -259,6 +252,7 @@ pub fn verify_reduction(n_blocks: usize, vs: &mut VerifierState) -> Result<Reduc
 #[cfg(test)]
 mod tests {
     use super::*;
+    use primitives::field::F192;
 
     fn f(x: u64) -> F64 {
         F64(x)

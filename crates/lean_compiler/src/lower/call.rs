@@ -43,6 +43,7 @@ fn stmt_inline_safe(s: &Stmt) -> bool {
     match &s.kind {
         StmtKind::Let(..)
         | StmtKind::Store(..)
+        | StmtKind::StoreRun(..)
         | StmtKind::HintWitness { .. }
         | StmtKind::LetHintWitness { .. }
         | StmtKind::Print { .. }
@@ -74,12 +75,12 @@ impl FnLower<'_> {
             }
             // Nothing by that name is going to be lowered, so the entry pc it
             // needs will not exist. Caught here, where there is a line: a typo, a
-            // statement-only builtin used as a value (`x = assert_in_k(a, b)`),
+            // statement-only builtin used as a value (`x = assert_eq192(a, b)`),
             // or an `@inline` callee reached where inlining did not happen, all
             // used to die later in `resolve` as a bare `no entry found for key`.
             None => self.fail(format!(
                 "no function named `{callee}`. A builtin that writes into a destination \
-                 (`blake2s`, `assert_in_k`, a `hint_*`) is a statement and returns nothing, so it \
+                 (`blake2s`, `assert_eq192`, a `hint_*`) is a statement and returns nothing, so it \
                  cannot be called for a value"
             )),
             _ => {}
@@ -98,16 +99,16 @@ impl FnLower<'_> {
             let base = Abi::arg(shapes.iter().copied(), i);
             match shapes.get(i).copied().unwrap_or(Shape::Scalar) {
                 Shape::StackBuf(n) => {
-                    let (src, len) = self.stack_of(a).unwrap_or_else(|| {
-                        self.fail(format!(
-                            "`{callee}` parameter {i} is a StackBuf({n}); pass one, got `{a:?}`"
-                        ))
-                    });
-                    if len != n {
-                        self.fail(format!(
-                            "`{callee}` parameter {i} is a StackBuf({n}), got a StackBuf({len})"
-                        ))
+                    match self.run_len(a) {
+                        Some(len) if len == n => {}
+                        Some(len) => self.fail(format!(
+                            "`{callee}` parameter {i} is a StackBuf({n}), got a {len}-cell value"
+                        )),
+                        None => self.fail(format!(
+                            "`{callee}` parameter {i} is a StackBuf({n}); pass a {n}-cell value, got `{a:?}`"
+                        )),
                     }
+                    let src = self.run(a, n);
                     for k in 0..n {
                         let cell = src + k;
                         arg_offs.push((base + k, cell));
@@ -209,31 +210,27 @@ impl FnLower<'_> {
     /// Each taken arm is then just the trampoline's `SET entry; JUMP`: no
     /// per-arm frame setup, call, or return jump.
     pub(super) fn lower_dispatched_call(&mut self, targets: &[Expr], x: &Expr, callees: &[String], rt_args: &[&Expr]) {
-        // The arms share ONE frame, so they must share one argument layout too:
-        // a `StackBuf` parameter in one callee and a scalar in another at the
-        // same position would put the return area in two places. The arity check
-        // below is the count; this is the widths.
+        // The arms share ONE frame, so they must share one argument and return layout
+        // too: a `StackBuf` in one callee and a scalar in another at the same position
+        // would put the return area, or the value read back, in two places. The arity
+        // checks below are the counts; this is the widths.
+        let mut param_shapes = vec![Shape::Scalar; rt_args.len()];
+        let mut ret_shapes = vec![Shape::Scalar; targets.len()];
         if let Some(shared) = callees.iter().find_map(|c| self.callee_def(c)) {
             for c in callees {
                 if let Some(def) = self.callee_def(c)
-                    && !def.param_shapes().eq(shared.param_shapes())
+                    && (!def.param_shapes().eq(shared.param_shapes()) || def.return_shapes != shared.return_shapes)
                 {
                     self.fail(format!(
-                        "`{c}` does not take the same parameter shapes as the other arms of this dispatch"
+                        "`{c}` does not take and return the same shapes as the other arms of this dispatch"
                     ))
                 }
             }
-            // Fused dispatch writes one cell per argument; only scalar parameters fit.
-            if let Some(i) = shared.param_shapes().position(|s| s != Shape::Scalar) {
-                self.fail(format!(
-                    "a `match` arm cannot pass a `StackBuf` parameter (parameter {i} of `{}`): the \
-                     fused dispatch writes one cell per argument. Give the arms `Const` arguments so each \
-                     specializes into its own call instead of fusing",
-                    callees.first().map(String::as_str).unwrap_or("?")
-                ))
+            if shared.params.len() == rt_args.len() && shared.return_shapes.len() == targets.len() {
+                param_shapes = shared.param_shapes().collect();
+                ret_shapes = shared.return_shapes.clone();
             }
         }
-        let n_args = rt_args.len() as u32;
         // The join below reads one return cell per bound name, so every callee has
         // to declare exactly that many. Unchecked, a name past a callee's arity
         // `DEREF`s a frame offset nothing on that path writes, and since the shared
@@ -277,17 +274,39 @@ impl FnLower<'_> {
                     targets.len()
                 ))
             };
-            if shapes.iter().any(|s| *s != Shape::Scalar) {
-                self.fail(format!(
-                    "`{callee}`: a multi-cell StackBuf return cannot cross a dispatched join"
-                ))
-            };
         }
-        let (rcells, binds) = self.ret_targets(targets);
+        // A run return binds a name to fresh cells; a scalar one may also land in a
+        // frame element.
+        let mut rcells = Vec::with_capacity(targets.len());
+        let mut binds = Vec::new();
+        for (t, &shape) in targets.iter().zip(&ret_shapes) {
+            match (t, shape) {
+                (Expr::Var(n), Shape::StackBuf(w)) => {
+                    let base = self.alloc_stack(w);
+                    rcells.push(base);
+                    binds.push((n.as_str(), Binding::Stack(base, w)));
+                }
+                (_, Shape::Scalar) => {
+                    let (cells, names) = self.ret_targets(std::slice::from_ref(t));
+                    rcells.push(cells[0]);
+                    binds.extend(names.into_iter().map(|(n, c)| (n, Binding::Scalar(c))));
+                }
+                _ => self.fail(format!(
+                    "a StackBuf return of a dispatched call binds a name, got `{t:?}`"
+                )),
+            }
+        }
 
         // Shared callee frame: args, retfp, and retpc = the join (so the callee
         // returns straight past the dispatch). Evaluated once.
-        let arg_offs: Vec<Off> = rt_args.iter().map(|a| self.expr(a)).collect();
+        let arg_vals: Vec<(Off, u32)> = rt_args
+            .iter()
+            .zip(&param_shapes)
+            .map(|(a, &shape)| match shape {
+                Shape::Scalar => (self.expr(a), 1),
+                Shape::StackBuf(n) => (self.run(a, n), n),
+            })
+            .collect();
         let xo = self.expr(x);
         let one = self.one();
         let sfp = self.self_fp();
@@ -297,13 +316,11 @@ impl FnLower<'_> {
             ptr: nfp,
             callees: callees.to_vec(),
         });
-        for (i, &ao) in arg_offs.iter().enumerate() {
-            self.deref(
-                nfp,
-                Abi::arg(std::iter::repeat_n(Shape::Scalar, rt_args.len()), i),
-                ao,
-                DerefMode::Cell,
-            );
+        for (i, &(src, width)) in arg_vals.iter().enumerate() {
+            let base = Abi::arg(param_shapes.iter().copied(), i);
+            for k in 0..width {
+                self.deref(nfp, base + k, src + k, DerefMode::Cell);
+            }
         }
         self.deref(nfp, Abi::RET_FP, 0, DerefMode::Fp);
         let join_cell = self.fresh();
@@ -320,11 +337,17 @@ impl FnLower<'_> {
 
         // Join: read the return values (written by whichever callee ran).
         self.patch_local(join_set, self.code.len());
-        for (i, &r) in rcells.iter().enumerate() {
-            self.deref(nfp, Abi::ret(n_args, i as u32), r, DerefMode::Cell);
+        let arg_cells = Abi::arg_cells(param_shapes.iter().copied());
+        let mut offset = 0;
+        for (&r, shape) in rcells.iter().zip(&ret_shapes) {
+            for k in 0..shape.cells() {
+                self.deref(nfp, Abi::ret(arg_cells, offset + k), r + k, DerefMode::Cell);
+            }
+            offset += shape.cells();
         }
-
-        self.bind_targets(&binds);
+        for (name, binding) in binds {
+            self.rebind(name, binding);
+        }
     }
 
     /// Inline an `@inline` `callee(args)` into the current frame, binding its
@@ -367,8 +390,8 @@ impl FnLower<'_> {
             if p.kind == ParamKind::Const {
                 continue;
             }
-            let b = if let Some((base, size)) = self.stack_of(a) {
-                Binding::Stack(base, size)
+            let b = if let Some(len) = self.run_len(a) {
+                Binding::Stack(self.run(a, len), len)
             } else if let Some(ga) = self.gaddr_of(a) {
                 Binding::Gaddr(ga)
             } else {
@@ -416,8 +439,8 @@ impl FnLower<'_> {
             // advanced cursor together.
             let mut binds = Vec::with_capacity(dsts.len());
             for (e, &d) in exprs.iter().zip(&dsts) {
-                binds.push(if let Some((base, size)) = self.stack_of(e) {
-                    RetBind::Stack(base, size)
+                binds.push(if let Some(len) = self.run_len(e) {
+                    RetBind::Stack(self.run(e, len), len)
                 } else if let Some(ga) = self.gaddr_of(e) {
                     RetBind::Gaddr(ga)
                 } else {
@@ -446,18 +469,11 @@ impl FnLower<'_> {
         for (e, &shape) in exprs.iter().zip(self.return_shapes) {
             match shape {
                 Shape::Scalar => self.expr_into(e, ret),
-                Shape::StackBuf(size) => {
-                    let (base, actual) = self
-                        .stack_of(e)
-                        .unwrap_or_else(|| self.fail(format!("expected a StackBuf({size}) return, got `{e:?}`")));
-                    if actual != size {
-                        self.fail(format!("returned StackBuf has size {actual}, expected {size}"))
-                    };
-                    for k in 0..size {
-                        let src = base + k;
-                        self.copy(src, ret + k);
-                    }
-                }
+                Shape::StackBuf(size) => match self.run_len(e) {
+                    Some(actual) if actual == size => self.run_into(e, ret, size),
+                    Some(actual) => self.fail(format!("returned value has {actual} cells, expected {size}")),
+                    None => self.fail(format!("expected a StackBuf({size}) return, got `{e:?}`")),
+                },
             }
             ret += shape.cells();
         }
@@ -508,7 +524,7 @@ impl FnLower<'_> {
     /// describes those logical bindings to the surrounding let/tuple lowering.
     pub(super) fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
         if callee == "blake2s" {
-            self.fail("blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 2-cell stack run `out`")
+            self.fail("blake2s is a statement: `blake2s(a, b, out)` writes the digest into the 4-cell run `out`")
         };
         self.inline_stack_ret = None;
         if self.defs.get(callee).is_some_and(|d| d.inline) {
@@ -597,7 +613,7 @@ impl FnLower<'_> {
     }
 
     /// Original definitions take precedence over generated functions in the queue.
-    fn callee_def(&self, callee: &str) -> Option<&Func> {
+    pub(super) fn callee_def(&self, callee: &str) -> Option<&Func> {
         self.defs
             .get(callee)
             .copied()

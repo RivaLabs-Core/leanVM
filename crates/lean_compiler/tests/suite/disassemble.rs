@@ -1,4 +1,4 @@
-//! `disassemble` must render every one of the six opcodes without panicking,
+//! `disassemble` must render every one of the eight opcodes without panicking,
 //! so it stays usable for the `DBG_DISASM` workflow (a failed guest `assert`
 //! surfaces as a write-once conflict, and the pc is all you get).
 
@@ -8,25 +8,18 @@ use primitives::pretty_integer;
 #[test]
 fn disassemble_covers_every_opcode() {
     let src = "\
-@inline
-def pack64x2(a, b):
-    assert_in_k(a, b)
-    return a + f192(0, 1, 0) * b
-
 def main():
     buff = HeapBuf(6)
     buff[1] = 1
     buff[GEN] = GEN
     for i in mul_range(1, GEN ** 4):
         buff[i * GEN ** 2] = buff[i] * buff[i * GEN]
-    h = StackBuf(2)
-    h[0] = 5
-    h[1] = 7
-    d = StackBuf(2)
+    h = [5, 0, 7, 0]
+    d = StackBuf(4)
     blake2s(h, h, d)
-    packed = pack64x2(5, 7)
+    e = mul192(add192(d[0:3], f192(1, 2, 3)), d[1:4])
     p = 1
-    p[1] = buff[GEN ** 4] + packed
+    p[1] = buff[GEN ** 4] + e[0]
     p[GEN] = d[0]
     return
 ";
@@ -41,7 +34,7 @@ def main():
     let text = disassemble(&program.prog);
     print!("{text}");
 
-    for mnemonic in ["SET", "XOR", "MUL", "DEREF", "JUMP", "BLAKE2S"] {
+    for mnemonic in ["SET", "XOR64", "MUL64", "DEREF", "JUMP", "BLAKE2S", "XOR192", "MUL192"] {
         assert!(text.contains(mnemonic), "disassembly is missing {mnemonic}");
     }
 }

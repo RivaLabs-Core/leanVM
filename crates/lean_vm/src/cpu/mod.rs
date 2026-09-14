@@ -1,12 +1,11 @@
 //! Whole-program assembly over GF(2^64) (`doc/leanvm/main.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
 //! commitment and verified oracle-free. Addresses, the program counter, and read
-//! counts are g-powers, so every increment is a free ×g. Machine-word arithmetic
-//! is over `E = F192 = K[y]/(y³+y+1)` (XOR degree 1, MUL_NATIVE degree 2),
-//! with each word carried by three committed `K = F64` limbs. `BLAKE2s`
-//! adds the memory/state/bytecode plumbing for a 64→32-byte compression
-//! whose relation is discharged by flock (see [`crate::hash_flock`]). All
-//! Challenges and transcript scalars live in the same tower E.
+//! counts are g-powers, so every increment is a free ×g. A memory word is one
+//! `K = F64` element; `XOR192`/`MUL192` compute in `E = F192 = K[y]/(y³+y+1)` over
+//! three consecutive cells. `BLAKE2s` adds the memory/state/bytecode plumbing for a
+//! 64→32-byte compression whose relation is discharged by flock (see
+//! [`crate::hash_flock`]). Challenges and transcript scalars live in `E`.
 
 use std::collections::HashMap;
 
@@ -15,8 +14,8 @@ use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_BLAKE2S, OP_DEREF, OP_JUMP, OP_MUL, OP_SET, OP_XOR, SEP_BYTECODE, SEP_MEM,
-    SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_BLAKE2S, OP_DEREF, OP_JUMP, OP_MUL64, OP_MUL192, OP_SET, OP_XOR64, OP_XOR192,
+    SEP_BYTECODE, SEP_MEM, SEP_STATE,
 };
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use crate::witness;
@@ -31,14 +30,13 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
+pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, X3row, Xrow};
 
-/// Witness-gen `BLAKE2s` compression: the four message cells' eight
-/// words are laid out little-endian into 64 bytes, combined with the supplied
-/// chaining value and metadata, and the 32-byte result is split back into the
-/// four output words `c`. Flock proves this same compression relation
-/// ([`crate::hash_flock`]).
-fn blake2s_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: F192) -> [F64; 4] {
+/// Witness-gen `BLAKE2s` compression: the eight message words laid out
+/// little-endian into 64 bytes, combined with the supplied chaining value and
+/// metadata, and the 32-byte result split back into four words. Flock proves this
+/// same compression relation ([`crate::hash_flock`]).
+fn blake2s_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: [F64; 2]) -> [F64; 4] {
     crate::hash_flock::digest(&crate::hash_flock::compression(va, vb, vcv, metadata))
 }
 
@@ -63,7 +61,7 @@ const MAX_LOG_ROWS: usize = 32;
 /// `2^32` instructions.
 const MAX_LOG_BYTECODE: usize = 32;
 
-/// The Fiat-Shamir IV: ONE 32-byte digest, as two field words, committing to
+/// The Fiat-Shamir IV: ONE 32-byte digest, as its four words, committing to
 /// everything fixed about the proving environment.
 ///
 /// Two things go in. [`flock::hash::R1CS_DIGEST`] names the flock BLAKE2s
@@ -78,8 +76,8 @@ const MAX_LOG_BYTECODE: usize = 32;
 /// The IV IS the transcript's starting chaining value ([`fiat_shamir::FiatShamirState::new`]),
 /// so all challenges depend on the circuit version and the program before
 /// anything else; a recursion guest carries the INNER program's IV in its public
-/// input, pinning both with one word pair.
-pub fn fs_seed(program: &Program) -> [F192; 2] {
+/// input, pinning both with one digest.
+pub fn fs_seed(program: &Program) -> [F64; 4] {
     let mut h = primitives::hash::Hasher::new();
     h.update(b"leanvm");
     // Length-framed so the preimage parses one way: the domain and the bytecode
@@ -87,22 +85,7 @@ pub fn fs_seed(program: &Program) -> [F192; 2] {
     h.update(&(flock::hash::R1CS_DIGEST.len() as u64).to_le_bytes());
     h.update(&flock::hash::R1CS_DIGEST);
     h.update(&program.bytecode_hash);
-    let d = h.finalize();
-    let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
-    [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)]
-}
-
-/// The two 128-bit halves a digest travels in, as the four words the
-/// Fiat-Shamir chain runs on. Only defined for a real digest, whose halves have
-/// no third limb; [`read_public`] rejects a public input that has one, so a
-/// third limb can never be silently dropped from what the transcript binds.
-fn digest_words(halves: &[F192; 2]) -> [F64; 4] {
-    [
-        F64(halves[0].c0),
-        F64(halves[0].c1),
-        F64(halves[1].c0),
-        F64(halves[1].c1),
-    ]
+    fiat_shamir::digest_words(&h.finalize())
 }
 
 /// Announce the prover's sizes (`log_mem`, every table's log height, the PCS rate)
@@ -127,7 +110,7 @@ fn announce_public(ps: &mut ProverState, log_mem: usize, taus: [usize; tables::N
 /// rate from the stream, validate them, and reconstruct the public [`Layout`]
 /// from the program + sizes + public input. (The public input was already bound
 /// by seeding the transcript.)
-fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2]) -> Result<(Layout, usize), CpuError> {
+fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) -> Result<(Layout, usize), CpuError> {
     let read_size = |vs: &mut VerifierState| -> Result<usize, CpuError> {
         let word = vs.next_scalar().map_err(CpuError::Transcript)?;
         if word.c1 != 0 || word.c2 != 0 {
@@ -136,11 +119,6 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
         usize::try_from(word.c0).map_err(|_| CpuError::PublicInput)
     };
 
-    // The transcript binds a public input as two 128-bit halves, so a third limb
-    // would be dropped and two statements would share a transcript.
-    if public_input.iter().any(|half| half.c2 != 0) {
-        return Err(CpuError::PublicInput);
-    }
     let log_mem = read_size(vs)?;
     let mut taus = [0usize; tables::N_TABLES];
     for t in &mut taus {
@@ -196,7 +174,7 @@ pub struct Program {
     /// slice of values per `hint_witness` call; the same symbol may be
     /// hinted many times); each call pops the next entry, whose length must
     /// match its destination. Prover-side only; verification ignores them.
-    pub(crate) witness: HashMap<String, Vec<Vec<F192>>>,
+    pub(crate) witness: HashMap<String, Vec<Vec<F64>>>,
     /// The fill blocks in the bytecode ([`filler`]): the cycles the interpreter
     /// traverses, after the program halts, to bring every table's row count to a power
     /// of two. Set by the compiler, prover-side only, and no program code reaches them,
@@ -279,7 +257,7 @@ impl Program {
     /// `hint_witness(dest, "name")` call, popped in order (the same symbol
     /// may be hinted many times). Prover-side data: entirely unconstrained,
     /// invisible to verification.
-    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F192>>) {
+    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F64>>) {
         self.witness.insert(name.into(), entries);
     }
 
@@ -434,8 +412,7 @@ fn blake2s_value_slot(col: usize) -> Option<usize> {
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
-/// instructions), the per-opcode counts
-/// `[XOR, MUL, SET, DEREF, JUMP, BLAKE2s]`, and the
+/// instructions), the per-opcode counts in [`Stats::TABLES`] order, and the
 /// committed witness size, the sum of the column lengths, i.e. the real data
 /// before the stacked witness is zero-padded to a power of two `2^m`.
 pub struct Stats {
@@ -456,7 +433,8 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"];
+    pub const TABLES: [&'static str; tables::N_TABLES] =
+        ["XOR64", "MUL64", "SET", "DEREF", "JUMP", "BLAKE2S", "XOR192", "MUL192"];
 
     /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
     ///
@@ -498,7 +476,7 @@ impl Stats {
 /// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
 /// Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
-pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
+pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> (Proof, Stats) {
     ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
@@ -527,11 +505,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
     // every challenge depends on the exact program and public input.
-    debug_assert!(
-        public_input.iter().all(|h| h.c2 == 0),
-        "a public input is a 256-bit digest"
-    );
-    let mut ps = ProverState::new(digest_words(&fs_seed(program)), digest_words(&public_input));
+    let mut ps = ProverState::new(fs_seed(program), public_input);
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
@@ -558,7 +532,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             leaf::prove_balance(&l.push, &l.pull, &l.count, &cols, &owners, &spans, &mut ps)
         });
         let table_claims = crate::stage!("Prove constraints", || {
-            // One sumcheck for all six tables (§constraints).
+            // One sumcheck for all eight tables (§constraints).
             let table_cols: Vec<Vec<&[F64]>> = spans
                 .iter()
                 .map(|&(base, n)| (0..n).map(|c| cols[base + c]).collect())
@@ -581,23 +555,8 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     };
     let l = &w.layout;
 
-    // The PI binding transmits the two LOW memory limbs' evaluations
-    // (§sec:e2e-pi); the verifier checks them against the public-input line at
-    // `r_pi`. The top limb of both public words is zero, so its evaluation is
-    // zero at every `r_pi` and rides no scalar.
-    let r_pi = ps.sample();
-    let pi_limbs = [
-        primitives::multilinear::interp_k(F64(l.pi[0].c0), F64(l.pi[1].c0), r_pi),
-        primitives::multilinear::interp_k(F64(l.pi[0].c1), F64(l.pi[1].c1), r_pi),
-        F192::ZERO,
-    ];
-    for v in &pi_limbs[..2] {
-        ps.add_scalar(*v);
-    }
-    // Memory binds the message, chaining-value, and output words; bytecode binds
-    // the counter and flags. All corresponding value columns are virtual and route
-    // to q_flock through `slot_claims`.
-    let slots = finish_claims(l, bus.claims, &table_claims, r_pi, pi_limbs);
+    let r_pi = [ps.sample(), ps.sample()];
+    let slots = finish_claims(l, bus.claims, &table_claims, r_pi);
 
     // Run flock's reduction (zerocheck + lincheck) over the prepared native
     // layouts retained from the fused q_flock build pass; it returns the
@@ -626,14 +585,13 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
 
 /// Everything the PCS has to open, in the ORDER that feeds the batch's weights:
 /// the bus's framework claims, then the zerocheck's per-table column claims, then
-/// the three public-input limb claims, each located in its committed slot. Both
-/// sides assemble it here, so a claim can never shift by one element.
+/// the public-input claim, each located in its committed slot. Both sides assemble
+/// it here, so a claim can never shift by one element.
 fn finish_claims(
     l: &Layout,
     bus_claims: Vec<ColumnClaim>,
     table_claims: &[constraints::Claims],
-    r_pi: F192,
-    pi_limbs: [F192; 3],
+    r_pi: [F192; 2],
 ) -> Vec<pcs::SlotClaim> {
     let mut claims = bus_claims;
     let sch = schema();
@@ -647,23 +605,22 @@ fn finish_claims(
             });
         }
     }
-    claims.extend(bind_pi_claim(r_pi, &l.placements, pi_limbs));
+    claims.push(bind_pi_claim(r_pi, &l.placements, &l.pi));
     slot_claims(l, claims)
 }
 
-/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r, 0,…,0)` must
-/// equal `interp(pi[0], pi[1], r)`, one transmitted evaluation per physical `K`
-/// limb. The caller has already checked the three against the line; here they
-/// simply become the three claims the opening discharges. `placements` comes from
-/// the prover's or verifier's layout, so both sides build byte-identical claims.
-fn bind_pi_claim(r: F192, placements: &[witness::Placement], limbs: [F192; 3]) -> [ColumnClaim; 3] {
-    let mut point = vec![F192::ZERO; placements[MEM_LO].n_vars];
-    point[0] = r;
-    [MEM_LO, MEM_HI, MEM_TOP].map(|col| ColumnClaim {
-        col,
-        point: point.clone(),
-        value: limbs[col - MEM_LO],
-    })
+/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r_0, r_1, 0,…,0)`
+/// must equal the multilinear extension of the four public words at `(r_0, r_1)`.
+/// Both parties know those words, so the claim's value is computed rather than
+/// transmitted, and the opening discharges it like any other.
+fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4]) -> ColumnClaim {
+    let mut point = vec![F192::ZERO; placements[MEM].n_vars];
+    point[..2].copy_from_slice(&r);
+    ColumnClaim {
+        col: MEM,
+        point,
+        value: primitives::multilinear::mle_eval(pi, &r),
+    }
 }
 
 /// Everything a recursion harness needs from an accepting verify run, named
@@ -692,8 +649,8 @@ pub struct VerifySummary {
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs, never the prover's witness.
 #[tracing::instrument(name = "Verify", skip_all)]
-pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Result<VerifySummary, CpuError> {
-    let mut vs = VerifierState::new(digest_words(&fs_seed(program)), proof, digest_words(public_input));
+pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Result<VerifySummary, CpuError> {
+    let mut vs = VerifierState::new(fs_seed(program), proof, *public_input);
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(CpuError::Transcript)?;
 
@@ -726,18 +683,8 @@ pub fn verify(program: &Program, public_input: &[F192; 2], proof: &Proof) -> Res
     )
     .map_err(CpuError::Constraint)?;
 
-    let r_pi = vs.sample();
-    let mut pi_limbs = [F192::ZERO; 3];
-    for v in &mut pi_limbs[..2] {
-        *v = vs.next_scalar().map_err(CpuError::Transcript)?;
-    }
-    // The two claimed evaluations must sit on the public-input line, the top
-    // limb's being zero (§sec:e2e-pi).
-    let want = primitives::multilinear::interp(l.pi[0], l.pi[1], r_pi);
-    if pi_limbs[0] + F192::Y * pi_limbs[1] != want {
-        return Err(CpuError::PublicInput);
-    }
-    let slots = finish_claims(&l, bus.claims, &table_claims, r_pi, pi_limbs);
+    let r_pi = [vs.sample(), vs.sample()];
+    let slots = finish_claims(&l, bus.claims, &table_claims, r_pi);
 
     // Replay flock's reduction straight off the shared stream (each scalar bound
     // as it is read) to recover its validity claim on q_flock, then
@@ -800,184 +747,93 @@ fn slot_claims(l: &Layout, claims: Vec<ColumnClaim>) -> Vec<pcs::SlotClaim> {
 mod tests {
     use super::*;
 
-    /// A K-embedded immediate (both extension limbs zero).
-    fn w(x: u64) -> F192 {
-        F192::new(x, 0, 0)
-    }
-
-    /// Pack two 64-bit flock words into the canonical BLAKE2s subspace of F192.
-    fn cell(lo: F64, hi: F64) -> F192 {
-        F192::new(lo.0, hi.0, 0)
-    }
+    const PI: [F64; 4] = [F64(7), F64(11), F64(13), F64(17)];
 
     /// The default one-block-root metadata for a hand-built BLAKE2s op.
-    fn md() -> F192 {
+    fn md() -> [F64; 2] {
         crate::hash_flock::metadata(crate::hash_flock::PINNED_T, crate::hash_flock::FINAL_FLAG, 0)
     }
 
-    /// The four chaining-value lanes of the two cv cells.
-    fn cv_lanes(cv0: F192, cv1: F192) -> [F64; 4] {
-        [F64(cv0.c0), F64(cv0.c1), F64(cv1.c0), F64(cv1.c1)]
-    }
-
-    /// A hand-built straight-line program with one BLAKE2s row: set up the two
-    /// 256-bit inputs (`a` at cells 2,3, `b` at cells 4,5, one 128-bit word per
-    /// cell) and the metadata (cell 8), hash them into the output `c` (cells 6,7),
-    /// pad with filler SETs so the last executed instruction lands one before the
-    /// sentinel, and halt there. The flock validity sub-proof plus the memory /
-    /// state / bytecode bus interactions are verified end-to-end (the proof
-    /// carries the WHIR opening they assert on).
-    fn blake2s_program(a: [F64; 4], b: [F64; 4]) -> Program {
-        // a → cells 2,3 and b → cells 4,5 (two flock lanes per BLAKE2s cell).
-        let mut prog = vec![
-            Op::Set {
-                o: 2,
-                k: cell(a[0], a[1]),
-            },
-            Op::Set {
-                o: 3,
-                k: cell(a[2], a[3]),
-            },
-            Op::Set {
-                o: 4,
-                k: cell(b[0], b[1]),
-            },
-            Op::Set {
-                o: 5,
-                k: cell(b[2], b[3]),
-            },
-            Op::Set { o: 8, k: md() },
-            // The chaining value reads cells 0,1 (the public input); any
-            // canonical cv is legal.
-            Op::Blake2s {
-                ins: [2, 3, 4, 5],
-                cv: 0,
-                out: 6,
-                md: 8,
-            },
-        ]; // c → cells 6,7
-        // 16 slots: 6 executed, then 9 filler SETs step the pc to 15, whose slot is
-        // the never-executed sentinel.
-        for k in 0..9u32 {
-            prog.push(Op::Set {
-                o: 16 + k,
-                k: F192::ONE,
-            });
+    /// A hand-built straight-line program over the first `frame` cells, padded with
+    /// `SET`s so its last instruction lands just before the never-executed sentinel
+    /// of a `len`-slot bytecode.
+    fn padded(mut prog: Vec<Op>, len: usize, frame: u32) -> Program {
+        let mut next = frame;
+        while prog.len() < len - 1 {
+            prog.push(Op::Set { o: next, k: F64::ONE });
+            next += 1;
         }
-        prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel
-        assert_eq!(prog.len(), 16);
-        Program::from_bytecode(prog, 32)
+        prog.push(Op::Xor64 { a: 0, b: 0, c: 0 });
+        Program::from_bytecode(prog, next)
     }
 
-    /// The opcode's execution semantics: the digest of the two message pairs under
-    /// the public input's chaining value lands in the output pair. Proving a program
-    /// is exercised from `lean_compiler`'s tests, which can compile one whose tables
-    /// come out powers of two.
+    /// One BLAKE2s row over hand-set cells: `a` at 4..8 and `b` at 8..12, the
+    /// metadata at 12..14, the public input as chaining value, the digest at 14..18.
+    fn blake2s_program(a: [F64; 4], b: [F64; 4], ins: [u32; 4]) -> Program {
+        let mut prog: Vec<Op> = a
+            .iter()
+            .chain(&b)
+            .chain(&md())
+            .enumerate()
+            .map(|(i, &k)| Op::Set { o: 4 + i as u32, k })
+            .collect();
+        prog.push(Op::Blake2s {
+            ins,
+            cv: 0,
+            out: 14,
+            md: 12,
+        });
+        padded(prog, 16, 18)
+    }
+
+    const A: [F64; 4] = [
+        F64(0x0123_4567_89ab_cdef),
+        F64(0xfedc_ba98_7654_3210),
+        F64(0x1111_2222_3333_4444),
+        F64(0x5555_6666_7777_8888),
+    ];
+    const B: [F64; 4] = [
+        F64(0xdead_beef_cafe_babe),
+        F64(0x0bad_f00d_0bad_f00d),
+        F64(0x9999_aaaa_bbbb_cccc),
+        F64(0xdddd_eeee_ffff_0000),
+    ];
+
+    /// The opcode's execution semantics: the digest of the four message chunks under
+    /// the public input's chaining value lands in the four output cells. Proving a
+    /// program is exercised from `lean_compiler`'s tests, which can compile one whose
+    /// tables come out powers of two.
     #[test]
     fn blake2s_computes_the_compression() {
-        let a: [F64; 4] = [
-            F64(0x0123_4567_89ab_cdef),
-            F64(0xfedc_ba98_7654_3210),
-            F64(0x1111_2222_3333_4444),
-            F64(0x5555_6666_7777_8888),
-        ];
-        let b: [F64; 4] = [
-            F64(0xdead_beef_cafe_babe),
-            F64(0x0badf00d_0badf00d),
-            F64(0x9999_aaaa_bbbb_cccc),
-            F64(0xdddd_eeee_ffff_0000),
-        ];
-        let program = blake2s_program(a, b);
-
-        let pi = [w(7), w(11)];
-        let exec = program.execute(pi);
-
-        // The output cells hold the compression of the two inputs under the
-        // pi-supplied chaining value (two 128-bit chunks).
-        let d = blake2s_compress(a, b, cv_lanes(pi[0], pi[1]), md());
-        assert_eq!(exec.mem[6], cell(d[0], d[1]));
-        assert_eq!(exec.mem[7], cell(d[2], d[3]));
+        let exec = blake2s_program(A, B, [4, 6, 8, 10]).execute(PI);
+        assert_eq!(exec.mem[14..18], blake2s_compress(A, B, PI, md()));
     }
 
-    /// BLAKE consumes the `(c0,c1,0)` embedding. This is not an extra AIR
-    /// constraint: the full three-limb memory bus makes a request carrying a
-    /// literal zero in limb 2 match only such a stored word.
-    #[test]
-    #[should_panic(expected = "BLAKE2s m0 cell is not a canonical 128-bit embedding")]
-    fn blake2s_requires_zero_third_limb() {
-        let mut program = blake2s_program([F64::ZERO; 4], [F64::ZERO; 4]);
-        program.prog[0] = Op::Set {
-            o: 2,
-            k: F192::new(0, 0, 1),
-        };
-        let _ = program.execute([w(7), w(11)]);
-    }
-
-    /// A self-hash `BLAKE2s(h, h)` (the hash-chain step) passes the *same* input
-    /// chunks as both `a` and `b` (`ins[0..2] == ins[2..4]`), so one 256-bit quad
-    /// feeds both inputs with no copy. The row reads those cells twice; the
-    /// running access counts thread through and the bus still balances. This is
-    /// the aliasing the DSL's hash-chain lowering relies on.
+    /// A self-hash `BLAKE2s(h, h)` names the same chunks as both halves, the aliasing
+    /// the DSL's hash-chain lowering relies on.
     #[test]
     fn blake2s_self_hash_aliased_operands() {
-        let h: [F64; 4] = [
-            F64(0xfeed_face_dead_beef),
-            F64(0x0123_4567_89ab_cdef),
-            F64(0xcafe_d00d_1337_c0de),
-            F64(0x8877_6655_4433_2211),
-        ];
-        // a == b: hash h ‖ h into cells 4,5, both input operands aliasing one pair
-        let mut prog = vec![
-            Op::Set {
-                o: 2,
-                k: cell(h[0], h[1]),
-            },
-            Op::Set {
-                o: 3,
-                k: cell(h[2], h[3]),
-            },
-            Op::Set { o: 6, k: md() },
-            Op::Blake2s {
-                ins: [2, 3, 2, 3],
-                cv: 0,
-                out: 4,
-                md: 6,
-            },
-        ];
-        // 8 slots: 4 executed, 3 filler SETs stepping the pc, then the sentinel.
-        for k in 0..3u32 {
-            prog.push(Op::Set {
-                o: 12 + k,
-                k: F192::ONE,
-            });
-        }
-        prog.push(Op::Xor { a: 0, b: 0, c: 0 }); // sentinel
-        assert_eq!(prog.len(), 8);
-        let program = Program::from_bytecode(prog, 16);
-        let pi = [w(3), w(5)];
-
-        let exec = program.execute(pi);
-        let d = blake2s_compress(h, h, cv_lanes(pi[0], pi[1]), md());
-        assert_eq!(exec.mem[4], cell(d[0], d[1]));
-        assert_eq!(exec.mem[5], cell(d[2], d[3]));
+        let exec = blake2s_program(A, B, [4, 6, 4, 6]).execute(PI);
+        assert_eq!(exec.mem[14..18], blake2s_compress(A, A, PI, md()));
     }
 
-    /// A 192-bit-word MUL: the E-product of two full machine words. Full-limb
-    /// constants are why this one is hand-written bytecode: a source literal fills
-    /// only the low two limbs.
+    /// `MUL192` multiplies the elements its three-cell operands spell, in the tower.
     #[test]
-    fn mul_192bit_word() {
+    fn mul192_multiplies_in_the_tower() {
         let x = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
         let y = F192::new(0x9999_aaaa_bbbb_cccc, 0x1357_9bdf_2468_ace0, 0x5555_6666_7777_8888);
-        let prog = vec![
-            Op::Set { o: 2, k: x },
-            Op::Set { o: 3, k: y },
-            Op::Mul { a: 2, b: 3, c: 4 },
-            Op::Xor { a: 0, b: 0, c: 0 }, // sentinel (never executed)
-        ];
-        let program = Program::from_bytecode(prog, 5);
-        let pi = [w(1), w(2)];
-        let exec = program.execute(pi);
-        assert_eq!(exec.mem[4], x * y, "MUL computes the E product");
+        let prog: Vec<Op> = [x, y]
+            .iter()
+            .flat_map(|v| [v.c0, v.c1, v.c2])
+            .enumerate()
+            .map(|(i, limb)| Op::Set {
+                o: 4 + i as u32,
+                k: F64(limb),
+            })
+            .chain([Op::Mul192 { a: 4, b: 7, c: 10 }])
+            .collect();
+        let exec = padded(prog, 8, 13).execute(PI);
+        let p = x * y;
+        assert_eq!(exec.mem[10..13], [F64(p.c0), F64(p.c1), F64(p.c2)]);
     }
 }

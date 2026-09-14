@@ -180,7 +180,6 @@ class E:
 ZERO = E(0)
 ONE = E(1)
 GEN = E(2)
-Y = E(0, 1)  # the tower generator, y^3 = y + 1
 
 
 def powers(base: E, count: int) -> list[E]:
@@ -213,13 +212,9 @@ class Digest:
         """Its four 64-bit words, the form the compression chain runs in."""
         return unpack("<4Q", self.value)
 
-    def halves(self) -> tuple[E, E]:
-        """Its two 128-bit halves, the one form a digest travels in."""
-        w0, w1, w2, w3 = self.words()
-        return (E(w0, w1), E(w2, w3))
-
     @classmethod
     def from_halves(cls, low: E, high: E) -> Digest:
+        """A digest as it travels on the stream: two 128-bit halves."""
         require(not (low.c2 or high.c2), "a digest half is 128-bit")
         return cls(pack("<4Q", low.c0, low.c1, high.c0, high.c1))
 
@@ -344,9 +339,9 @@ def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, in
 
 
 class Transcript:
-    def __init__(self, proof: Proof, fiat_shamir_IV: Digest, public_input: Digest) -> None:
+    def __init__(self, proof: Proof, fiat_shamir_IV: Digest, public_input: Sequence[K]) -> None:
         self.proof = proof
-        self.state = compress(fiat_shamir_IV.words(), public_input.words())
+        self.state = compress(fiat_shamir_IV.words(), public_input)
         self.stream_offset = 0  # in E field elements
         self.opening_offset = 0  # in bytes
 
@@ -549,12 +544,14 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
     # name them: the memory image on push, then each array's final count on pull.
     memory_low = tuple(point[: layout.log_memory])
     bytecode_low = tuple(point[: layout.log_bytecode])
-    memory = transcript.next_scalars(3)
+    memory = transcript.next_scalar()
     memory_final = transcript.next_scalar()
     bytecode_final = transcript.next_scalar()
-    claims = [ColumnClaim(column, memory_low, memory[column]) for column in (MEMORY_0, MEMORY_1, MEMORY_2)]
-    claims.append(ColumnClaim(MEMORY_FINAL_COUNTERS, memory_low, memory_final))
-    claims.append(ColumnClaim(BYTECODE_FINAL_COUNTERS, bytecode_low, bytecode_final))
+    claims = [
+        ColumnClaim(MEMORY, memory_low, memory),
+        ColumnClaim(MEMORY_FINAL_COUNTERS, memory_low, memory_final),
+        ColumnClaim(BYTECODE_FINAL_COUNTERS, bytecode_low, bytecode_final),
+    ]
     memory_index = index_mle(memory_low)
     bytecode_index = index_mle(bytecode_low)
     bytecode_value = multilinear_eval(layout.bytecode, (*bytecode_low, *alphas))
@@ -565,7 +562,7 @@ def verify_bus_balance(layout: Layout, transcript: Transcript) -> BusResult:
         with the committed final count and ends at the last pc. Both boundaries sit in frame 0."""
         return (
             dot(weights[:3], (SEP_STATE, pc, _gpow(0))),
-            dot(weights[:6], (SEP_MEM, memory_index, memory_count, *memory)),
+            dot(weights[:4], (SEP_MEM, memory_index, memory_count, memory)),
             dot(weights[:3], (SEP_BYTECODE, bytecode_index, bytecode_count)) + bytecode_value,
         )
 
@@ -633,8 +630,8 @@ def table_sumcheck(
 R1CS_DIGEST = bytes.fromhex("537ad20790308f8eb8c0e8bd3e6c58ee64573371e3d53c30613dd04d87c0b7ea")
 
 # The columns no instruction table owns. They come first in the global column numbering, the tables after.
-NUM_GLOBAL_COLUMNS = 6
-MEMORY_0, MEMORY_1, MEMORY_2, MEMORY_FINAL_COUNTERS, BYTECODE_FINAL_COUNTERS, QFLOCK = range(NUM_GLOBAL_COLUMNS)
+NUM_GLOBAL_COLUMNS = 4
+MEMORY, MEMORY_FINAL_COUNTERS, BYTECODE_FINAL_COUNTERS, QFLOCK = range(NUM_GLOBAL_COLUMNS)
 
 BLAKE2S_R1CS_LOG_SIZE = 14
 K_BITS = 64
@@ -706,11 +703,8 @@ class Flushes:
     def bytecode(self, pc: int, count: int, opcode: int, operands: Sequence[Form]) -> None:
         self._counted((_const(SEP_BYTECODE), _col(pc)), count, (_const(_gpow(opcode)), *operands))
 
-    def memory(self, address: Form, count: int, values: Sequence[Form]) -> None:
-        self._counted((_const(SEP_MEM), address), count, values)
-
-    def memory_cols(self, address: Form, count: int, *columns: int) -> None:
-        self.memory(address, count, [_col(column) for column in columns] + [_const(ZERO)] * (3 - len(columns)))
+    def memory(self, address: Form, count: int, value: Form) -> None:
+        self._counted((_const(SEP_MEM), address), count, (value,))
 
 
 # The instruction tables ------------------------------------------------------
@@ -739,50 +733,60 @@ class Table:
         return tuple(i for i, name in enumerate(self.columns) if name.startswith("cnt"))
 
 
-def _flushes_arith(opcode: int, multiply: bool) -> Flushes:
-    pc, fp, o_a, o_b, o_c, cnt_a, cnt_b, cnt_c, cnt_bc = _cols(ARITH_COLUMNS, "pc", "fp", "o_a", "o_b", "o_c", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-    va, vb = _cols(ARITH_COLUMNS, "va_0", "va_1", "va_2"), _cols(ARITH_COLUMNS, "vb_0", "vb_1", "vb_2")
+def _flushes_arith64(opcode: int, multiply: bool) -> Flushes:
+    pc, fp, o_a, o_b, o_c, va, vb = _cols(ARITH64_COLUMNS, "pc", "fp", "o_a", "o_b", "o_c", "va", "vb")
+    cnt_a, cnt_b, cnt_c, cnt_bc = _cols(ARITH64_COLUMNS, "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
-    flushes.memory_cols(_prod(fp, o_a), cnt_a, *va)
-    flushes.memory_cols(_prod(fp, o_b), cnt_b, *vb)
+    flushes.memory(_prod(fp, o_a), cnt_a, _col(va))
+    flushes.memory(_prod(fp, o_b), cnt_b, _col(vb))
+    flushes.memory(_prod(fp, o_c), cnt_c, _prod(va, vb) if multiply else _col(va) + _col(vb))
+    return flushes
+
+
+def _flushes_arith192(opcode: int, multiply: bool) -> Flushes:
+    """Each operand is three consecutive cells `fp*o*g^i`, the limbs of one E element, read one at a time."""
+    pc, fp, cnt_bc = _cols(ARITH192_COLUMNS, "pc", "fp", "cnt_bc")
+    va, vb = _cols(ARITH192_COLUMNS, "va_0", "va_1", "va_2"), _cols(ARITH192_COLUMNS, "vb_0", "vb_1", "vb_2")
+    operands = _cols(ARITH192_COLUMNS, "o_a", "o_b", "o_c")
+    flushes = Flushes()
+    flushes.state_step(pc, fp)
+    flushes.bytecode(pc, cnt_bc, opcode, (*(_col(o) for o in operands), _const(ZERO), _const(ZERO)))
+    # The tower product's three lanes: lane i is the sum of va[j]*vb[k] over TOWER_LANES[i].
     TOWER_LANES = (((0, 0), (1, 2), (2, 1)), ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)), ((0, 2), (1, 1), (2, 0), (2, 2)))
     result = (
         tuple(Form.sum(_prod(va[j], vb[k]) for j, k in lane) for lane in TOWER_LANES)
         if multiply
         else tuple(_col(va[i]) + _col(vb[i]) for i in range(3))
     )
-    flushes.memory(_prod(fp, o_c), cnt_c, result)
+    lanes = ((_col(v) for v in va), (_col(v) for v in vb), result)
+    for name, operand, values in zip("abc", operands, lanes, strict=True):
+        for limb, value in enumerate(values):
+            flushes.memory(_prod(fp, operand, limb), _cols(ARITH192_COLUMNS, f"cnt_{name}_{limb}")[0], value)
     return flushes
 
 
 def _flushes_set() -> Flushes:
-    pc, fp, o, cnt, cnt_bc = _cols(SET_COLUMNS, "pc", "fp", "o", "cnt", "cnt_bc")
-    k = _cols(SET_COLUMNS, "k_0", "k_1", "k_2")
+    pc, fp, o, k, cnt, cnt_bc = _cols(SET_COLUMNS, "pc", "fp", "o", "k", "cnt", "cnt_bc")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, OP_SET, (_col(o), *(_col(limb) for limb in k), _const(ZERO)))
-    flushes.memory_cols(_prod(fp, o), cnt, *k)
+    flushes.bytecode(pc, cnt_bc, OP_SET, (_col(o), _col(k), _const(ZERO), _const(ZERO), _const(ZERO)))
+    flushes.memory(_prod(fp, o), cnt, _col(k))
     return flushes
 
 
 def _flushes_deref() -> Flushes:
-    pc, fp, o1, o2, o3, f_pc, f_fp, ptr = _cols(DEREF_COLUMNS, "pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr")
+    pc, fp, o1, o2, o3, f_pc, f_fp, ptr, v3 = _cols(DEREF_COLUMNS, "pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3")
     cnt_ptr, cnt_target, cnt_local, cnt_bc = _cols(DEREF_COLUMNS, "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
-    v3 = _cols(DEREF_COLUMNS, "v3_0", "v3_1", "v3_2")
-
-    def gated(lane: int) -> list[Form]:
-        return [_col(lane), _prod(f_pc, lane), _prod(f_fp, lane)]
-
-    # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp, lane-wise: only the low lane takes the two K-valued sources.
-    store = (Form.sum((*gated(v3[0]), _prod(f_pc, pc, 2), _prod(f_fp, fp))), Form.sum(gated(v3[1])), Form.sum(gated(v3[2])))
+    # v2 = (1 + f_pc + f_fp)*v3 + f_pc*(g^2*pc) + f_fp*fp
+    store = Form.sum((_col(v3), _prod(f_pc, v3), _prod(f_fp, v3), _prod(f_pc, pc, 2), _prod(f_fp, fp)))
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, OP_DEREF, (_col(o1), _col(o2), _col(o3), _col(f_pc), _col(f_fp)))
-    flushes.memory_cols(_prod(fp, o1), cnt_ptr, ptr)
+    flushes.memory(_prod(fp, o1), cnt_ptr, _col(ptr))
     flushes.memory(_prod(ptr, o2), cnt_target, store)
-    flushes.memory_cols(_prod(fp, o3), cnt_local, *v3)
+    flushes.memory(_prod(fp, o3), cnt_local, _col(v3))
     return flushes
 
 
@@ -793,9 +797,9 @@ def _flushes_jump() -> Flushes:
     # next_pc = b*dest + (b+1)*g*pc, next_fp = b*frame + (b+1)*fp, both derived.
     flushes.state_derived(pc, fp, _prod(b, dest) + _prod(b, pc, 1) + _col(pc, 1), _prod(b, frame) + _prod(b, fp) + _col(fp))
     flushes.bytecode(pc, cnt_bc, OP_JUMP, (_col(o_c), _col(o_d), _col(o_f), _const(ZERO), _const(ZERO)))
-    flushes.memory_cols(_prod(fp, o_c), cnt_c, cond)
-    flushes.memory_cols(_prod(fp, o_d), cnt_d, dest)
-    flushes.memory_cols(_prod(fp, o_f), cnt_f, frame)
+    flushes.memory(_prod(fp, o_c), cnt_c, _col(cond))
+    flushes.memory(_prod(fp, o_d), cnt_d, _col(dest))
+    flushes.memory(_prod(fp, o_f), cnt_f, _col(frame))
     return flushes
 
 
@@ -806,50 +810,58 @@ def _jump_constraints(columns: Sequence[E]) -> tuple[E, ...]:
 
 def _flushes_blake2s() -> Flushes:
     pc, fp, cnt_bc = _cols(BLAKE2S_COLUMNS, "pc", "fp", "cnt_bc")
-    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md")
+    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_cv", "o_out", "o_md")
     flushes = Flushes()
     flushes.state_step(pc, fp)
     flushes.bytecode(pc, cnt_bc, OP_BLAKE2S, tuple(_col(i) for i in operands))
-    # The nine cells read, as (cell, operand, offset from it): four addressed message chunks, then
-    # the consecutive chaining-value and output pairs, then the metadata cell (the byte counter and
-    # the two flags). Each holds two q_flock limbs and a zero top.
-    cells = (("m0", "o_0", 0), ("m1", "o_1", 0), ("m2", "o_2", 0), ("m3", "o_3", 0),
-             ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1),
-             ("md", "o_md", 0))  # fmt: skip
-    for cell, operand, exponent in cells:
-        address, count, lo, hi = _cols(BLAKE2S_COLUMNS, operand, f"cnt_{cell}", f"{cell}_lo", f"{cell}_hi")
-        flushes.memory_cols(_prod(fp, address, exponent), count, lo, hi)
+    for lane, operand, exponent in BLAKE2S_LANES:
+        value, address, count = _cols(BLAKE2S_COLUMNS, lane, operand, f"cnt_{lane}")
+        flushes.memory(_prod(fp, address, exponent), count, _col(value))
     return flushes
 
 
-OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
+OP_XOR64, OP_MUL64, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S, OP_XOR192, OP_MUL192 = range(8)
 
-ARITH_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "cnt_a", "cnt_b", "cnt_c", "cnt_bc",)  # fmt: skip
-SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
-DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
+ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va", "vb", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
+ARITH192_COLUMNS = (
+    "pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2",
+    "cnt_a_0", "cnt_a_1", "cnt_a_2", "cnt_b_0", "cnt_b_1", "cnt_b_2", "cnt_c_0", "cnt_c_1", "cnt_c_2", "cnt_bc",
+)  # fmt: skip
+SET_COLUMNS = ("pc", "fp", "o", "k", "cnt", "cnt_bc")
+DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3", "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
+# The eighteen cells a BLAKE2s row reads, as (value lane, operand, offset from it): each message chunk's two cells,
+# then the digest's four, the chaining value's four and the metadata's two (the byte counter, then the flags).
+BLAKE2S_LANES = (
+    ("m0_lo", "o_0", 0), ("m0_hi", "o_0", 1), ("m1_lo", "o_1", 0), ("m1_hi", "o_1", 1),
+    ("m2_lo", "o_2", 0), ("m2_hi", "o_2", 1), ("m3_lo", "o_3", 0), ("m3_hi", "o_3", 1),
+    ("out0", "o_out", 0), ("out1", "o_out", 1), ("out2", "o_out", 2), ("out3", "o_out", 3),
+    ("cv0", "o_cv", 0), ("cv1", "o_cv", 1), ("cv2", "o_cv", 2), ("cv3", "o_cv", 3),
+    ("md_lo", "o_md", 0), ("md_hi", "o_md", 1),
+)  # fmt: skip
 BLAKE2S_COLUMNS = (
-    "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md",
-    # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.
-    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
-    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_lo", "md_hi",
+    "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_cv", "o_out", "o_md",
+    # The value lanes live in q_flock, not here: each is already a flock witness slot.
+    *(lane for lane, _, _ in BLAKE2S_LANES),
     # ...and the read counts, committed here like every other column.
-    "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_md", "cnt_bc",
+    *(f"cnt_{lane}" for lane, _, _ in BLAKE2S_LANES), "cnt_bc",
 )  # fmt: skip
 
 TABLES = (
-    Table("xor", OP_XOR, ARITH_COLUMNS, _flushes_arith(OP_XOR, multiply=False)),
-    Table("mul", OP_MUL, ARITH_COLUMNS, _flushes_arith(OP_MUL, multiply=True)),
+    Table("xor64", OP_XOR64, ARITH64_COLUMNS, _flushes_arith64(OP_XOR64, multiply=False)),
+    Table("mul64", OP_MUL64, ARITH64_COLUMNS, _flushes_arith64(OP_MUL64, multiply=True)),
     Table("set", OP_SET, SET_COLUMNS, _flushes_set()),
     Table("deref", OP_DEREF, DEREF_COLUMNS, _flushes_deref()),
     Table("jump", OP_JUMP, JUMP_COLUMNS, _flushes_jump(), _jump_constraints),
     Table("blake2s", OP_BLAKE2S, BLAKE2S_COLUMNS, _flushes_blake2s()),
+    Table("xor192", OP_XOR192, ARITH192_COLUMNS, _flushes_arith192(OP_XOR192, multiply=False)),
+    Table("mul192", OP_MUL192, ARITH192_COLUMNS, _flushes_arith192(OP_MUL192, multiply=True)),
 )
 
-# Where in the flock witness each embedded BLAKE2s limb live: one 64-bit slot per limb, the chaining value first, then the
+# Where in the flock witness each BLAKE2s value lane lives: one 64-bit slot per lane, the chaining value first, then the
 # digest, the message block and the metadata. Slots 8 and 9 are flock's constant wire and the padding up to its message base, which no memory cell carries.
 BLAKE2S_SLOTS = (
-    "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "out0_lo", "out0_hi", "out1_lo", "out1_hi", None, None,
+    "cv0", "cv1", "cv2", "cv3", "out0", "out1", "out2", "out3", None, None,
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_lo", "md_hi",
 )  # fmt: skip
 
@@ -881,11 +893,11 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
 
     # Every column's log size, in global order: the framework's, q_flock's, then each table's block.
     qflock_kappa = table_log_heights[OP_BLAKE2S] + QFLOCK_SLOT_BITS
-    kappas = [log_memory, log_memory, log_memory, log_memory, log_bytecode, qflock_kappa]
+    kappas = [log_memory, log_memory, log_bytecode, qflock_kappa]
     for table in TABLES:
         kappas += [table_log_heights[table.opcode]] * table.width
 
-    # A BLAKE2s value limb gets no block of its own: it is committed inside q_flock, whose slots
+    # A BLAKE2s value lane gets no block of its own: it is committed inside q_flock, whose slots
     # interleave, so it sits at q_flock's offset behind its own slot's bits. Same width either way.
     limbs = {GLOBAL_COLUMN_BASES[OP_BLAKE2S] + _cols(BLAKE2S_COLUMNS, name)[0]: slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
@@ -1357,7 +1369,8 @@ def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int,
     verify_whir(transcript, stack_log, log_inv_rate, dot(scales, values), root, lambda point: dot(scales, [weight(point) for weight in weights]))
 
 
-def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
+def verify_execution(bytecode: Sequence[K], public_input: Sequence[K], proof: Proof) -> None:
+    require(len(public_input) == 4, "the public input is four words")
     bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
     iv_preimage = b"leanvm" + pack("<Q", len(R1CS_DIGEST)) + R1CS_DIGEST + bytecode_hash.value
     fiat_shamir_IV = blake2s_hash(iv_preimage)
@@ -1379,7 +1392,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf decomposition, which leaves each table a degree-2 claim.
     bus = verify_bus_balance(layout, transcript)
 
-    # 4] One batched (back-loaded) "table sumcheck" over all six tables, at the bus point, proving the target the three
+    # 4] One batched (back-loaded) "table sumcheck" over all eight tables, at the bus point, proving the target the three
     # leaf claims derive and that constraints vanish. Every table takes a disjoint range of xi powers for its constraints
     xi = transcript.sample()
     n_constraints = sum(table.n_constraints for table in TABLES)
@@ -1389,12 +1402,10 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     table_sumcheck_claims = table_sumcheck(layout.table_log_heights, bus.forms, constraint_powers, form_powers, bus.point, target, transcript)
     claims = [*bus.claims, *table_sumcheck_claims]
 
-    # 5] binding the public input
-    public_challenge = transcript.sample()
-    public_limbs = (*transcript.next_scalars(2), ZERO)
-    require(poly_eval(public_limbs, Y) == multilinear_eval(public_input.halves(), [public_challenge]), "public input check failed")
-    public_point = (public_challenge, *[ZERO] * (layout.placements[MEMORY_0].variables - 1))
-    claims.extend(ColumnClaim(column, public_point, value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs))
+    # 5] binding the public input: memory at (r0, r1, 0, ..., 0) is the multilinear extension of the four public words at (r0, r1)
+    public_challenges = transcript.samples(2)
+    public_point = (*public_challenges, *[ZERO] * (layout.placements[MEMORY].variables - 2))
+    claims.append(ColumnClaim(MEMORY, public_point, multilinear_eval(public_input, public_challenges)))
 
     # 6] BLAKE2s validity via Flock
     flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_log_heights[OP_BLAKE2S], transcript)
@@ -1414,7 +1425,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(description="Verify a leanVM execution proof")
     parser.add_argument("bytecode", type=Path, help="stacked bytecode multilinear, little-endian 64-bit words")
-    parser.add_argument("public_input", type=Path, help="256-bit public input")
+    parser.add_argument("public_input", type=Path, help="public input, four little-endian 64-bit words")
     parser.add_argument("stream", type=Path, help="the proof's scalar stream, 24-byte little-endian field elements")
     parser.add_argument("merkle_openings", type=Path, help="every Merkle opening: its leaf's words, then its sibling digests")
     arguments = parser.parse_args(argv)
@@ -1422,8 +1433,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         encoded_bytecode = arguments.bytecode.read_bytes()
         require(len(encoded_bytecode) % 8 == 0, "bytecode is not a whole number of 64-bit words")
         bytecode = [K(int.from_bytes(encoded_bytecode[i : i + 8], "little")) for i in range(0, len(encoded_bytecode), 8)]
+        encoded_public_input = arguments.public_input.read_bytes()
+        require(len(encoded_public_input) == 32, "the public input is four 64-bit words")
+        public_input = [K(word) for word in unpack("<4Q", encoded_public_input)]
         proof = Proof.load(arguments.stream, arguments.merkle_openings)
-        verify_execution(bytecode, Digest(arguments.public_input.read_bytes()), proof)
+        verify_execution(bytecode, public_input, proof)
     except (OSError, ValueError, KeyError, VerificationError) as exc:
         parser.exit(1, f"verification failed: {exc}\n")
     print("verification succeeded")

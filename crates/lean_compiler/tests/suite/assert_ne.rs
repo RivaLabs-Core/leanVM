@@ -1,11 +1,13 @@
-//! `assert a != b`: a proof-enforced inequality. It lowers to `XOR x = a + b`,
-//! a hinted `inv = x⁻¹`, `MUL p = x·inv` and `SET p = 1`, the write-once
+//! `assert a != b`: a proof-enforced inequality. It lowers to `XOR64 x = a + b`,
+//! a hinted `inv = x⁻¹`, `MUL64 p = x·inv` and `SET p = 1`, the write-once
 //! conflict on `p` being the assertion. Sound whatever the hint: `x = 0` forces
 //! `p = 0`, which cannot then be set to `1`. Three rows and no `JUMP`.
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{Op, prove, verify};
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
+
+use crate::common::pi;
 
 /// Honest inequality over runtime values: prove + verify pass, and corrupting
 /// the public output is still caught (the assert does not disturb the trace).
@@ -24,11 +26,11 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(g_pow(12)), F192::from(g_pow(5))];
+    let want = pi(&[g_pow(12), g_pow(5)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("inequality program verifies");
 
-    let bad = [F192::from(g_pow(11)), F192::from(g_pow(5))];
+    let bad = pi(&[g_pow(11), g_pow(5)]);
     assert!(
         verify(&program, &bad, &proof).is_err(),
         "wrong public input must be rejected"
@@ -53,9 +55,9 @@ def main():
 ";
     let run = |a: F64, b: F64| -> bool {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("vals", vec![vec![F192::from(a), F192::from(b)]]);
+        program.set_witness("vals", vec![vec![a, b]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let pi = [F192::from(a), F192::from(b)];
+            let pi = pi(&[a, b]);
             let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &pi, &proof).is_ok()
         }))
@@ -81,7 +83,7 @@ def main():
     return
 ";
     let program = compile(&parse(src).expect("parse"));
-    let want = [F192::from(F64(5)), F192::from(F64(7))];
+    let want = pi(&[F64(5), F64(7)]);
     let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
     verify(&program, &want, &proof).expect("loop inequality verifies");
 }
@@ -102,8 +104,8 @@ fn opcode_delta(with: &str, without: &str) -> (i64, i64, i64) {
         let (mut xor, mut mul, mut jump) = (0i64, 0i64, 0i64);
         for op in &p.prog {
             match op {
-                Op::Xor { .. } => xor += 1,
-                Op::Mul { .. } => mul += 1,
+                Op::Xor64 { .. } => xor += 1,
+                Op::Mul64 { .. } => mul += 1,
                 Op::Jump { .. } => jump += 1,
                 _ => {}
             }
@@ -114,10 +116,10 @@ fn opcode_delta(with: &str, without: &str) -> (i64, i64, i64) {
     (a.0 - b.0, a.1 - b.1, a.2 - b.2)
 }
 
-/// The check costs one `XOR`, one `MUL` and, above all, no `JUMP`: a
-/// branch-based lowering would put an `E`-valued condition back on the one table
-/// that carries constraints. The `SET` that closes the check is not counted,
-/// constant materialisation elsewhere moving with the frame layout.
+/// The check costs one `XOR64`, one `MUL64` and, above all, no `JUMP`: a
+/// branch-based lowering would put the condition back on the one table that
+/// carries constraints. The `SET` that closes the check is not counted, constant
+/// materialisation elsewhere moving with the frame layout.
 #[test]
 fn assert_ne_emits_no_jump() {
     let body = |extra: &str| {
@@ -134,11 +136,11 @@ def main():
         )
     };
     let delta = opcode_delta(&body("    assert x != y\n"), &body(""));
-    assert_eq!(delta, (1, 1, 0), "one XOR, one MUL, no JUMP");
+    assert_eq!(delta, (1, 1, 0), "one XOR64, one MUL64, no JUMP");
 }
 
 /// The check survives cell sharing. `SET p = 1` writes a constant another cell
-/// may already hold, and `MUL p = x·inv` a product that could otherwise be
+/// may already hold, and `MUL64 p = x·inv` a product that could otherwise be
 /// shared; both are kept because `p` is written twice, which is what makes the
 /// write-once conflict the assertion. Dropping either would delete the check
 /// silently, so this pins it: the same product exists elsewhere in the frame,
@@ -160,9 +162,9 @@ def main():
 ";
     let run = |a: F64, b: F64| -> bool {
         let mut program = compile(&parse(src).expect("parse"));
-        program.set_witness("vals", vec![vec![F192::from(a), F192::from(b)]]);
+        program.set_witness("vals", vec![vec![a, b]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let pi = [F192::from(a) + F192::from(b), F192::ONE];
+            let pi = pi(&[a + b, F64::ONE]);
             let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
             verify(&program, &pi, &proof).is_ok()
         }))
@@ -192,18 +194,18 @@ def main():
     p[GEN] = v[1]
     return
 ";
-    let run = |a: F192, b: F192, inv: F192| -> bool {
+    let run = |a: F64, b: F64, inv: F64| -> bool {
         let mut program = compile(&parse(src).expect("parse"));
         program.set_witness("vals", vec![vec![a, b, inv]]);
         std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let (proof, _) = prove(&program, [a, b], lean_vm::pcs::TEST_LOG_INV_RATE);
-            verify(&program, &[a, b], &proof).is_ok()
+            let (proof, _) = prove(&program, pi(&[a, b]), lean_vm::pcs::TEST_LOG_INV_RATE);
+            verify(&program, &pi(&[a, b]), &proof).is_ok()
         }))
         .unwrap_or(false)
     };
-    let (a, b) = (F192::from(g_pow(3)), F192::from(g_pow(5)));
+    let (a, b) = (g_pow(3), g_pow(5));
     let d = a + b;
     assert!(run(a, b, d.inv()), "the true inverse verifies");
-    assert!(!run(a, b, d.inv() + F192::ONE), "a wrong inverse must be rejected");
-    assert!(!run(a, a, F192::ONE), "equal sides admit no inverse at all");
+    assert!(!run(a, b, d.inv() + F64::ONE), "a wrong inverse must be rejected");
+    assert!(!run(a, a, F64::ONE), "equal sides admit no inverse at all");
 }

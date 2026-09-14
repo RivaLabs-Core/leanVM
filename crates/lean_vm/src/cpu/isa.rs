@@ -1,25 +1,24 @@
 //! The ISA and the `DEREF` store modes.
 
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
-    Xor {
+    /// `m[c] = m[a] + m[b]` in `K`.
+    Xor64 {
         a: u32,
         b: u32,
         c: u32,
     },
-    Mul {
+    /// `m[c] = m[a] · m[b]` in `K`.
+    Mul64 {
         a: u32,
         b: u32,
         c: u32,
     },
     Set {
         o: u32,
-        /// The immediate stored into `mem[fp·o]`. A full 192-bit machine word
-        /// (`E = F192`); K-valued constants (addresses, small ints) ride the
-        /// low lane with `c1 = c2 = 0`.
-        k: F192,
+        k: F64,
     },
     Deref {
         o1: u32,
@@ -32,26 +31,28 @@ pub enum Op {
         od: u32,
         of: u32,
     },
-    /// `BLAKE2s`: one standard BLAKE2s compression. The four 16-byte
-    /// message chunks `ins` (each a canonical 128-bit chunk in ONE 192-bit cell,
-    /// top limb zero) form the 64-byte block; the digest lands in the TWO
-    /// consecutive cells `out, out+1`. Each message chunk is addressed
-    /// independently, with no forced contiguity, so the caller need not assemble
-    /// its operands into adjacent cells. Every operand is a memory operand, the
-    /// metadata included. The compression relation is proven by flock.
+    /// One standard BLAKE2s compression. Each message chunk `ins[i]` names two
+    /// consecutive 64-bit cells, so the 64-byte block is addressed as four
+    /// independent 128-bit chunks. The chaining value and the digest each span
+    /// four consecutive cells, the metadata `counter | f0 ‖ f1` two. The
+    /// compression relation is proven by flock.
     Blake2s {
         ins: [u32; 4],
-        /// Base of two consecutive cells holding the 256-bit chaining value
-        /// (canonical 128-bit chunks, top limbs zero).
         cv: u32,
         out: u32,
-        /// The cell holding the metadata `counter:u64 | f0:u32 | f1:u32`,
-        /// little-endian in its two low K-lanes (top lane zero, as for every
-        /// other cell this opcode reads). `f0` is the final-block flag and `f1`
-        /// the last-node flag. A memory operand like the rest, so a program can
-        /// hash any length: a compile-time counter is one pooled `SET` per
-        /// frame, a runtime one any cell the program computes.
         md: u32,
+    },
+    /// `m[c..c+3] = m[a..a+3] + m[b..b+3]` in `E`, each operand three consecutive cells.
+    Xor192 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
+    /// `m[c..c+3] = m[a..a+3] · m[b..b+3]` in `E = K[y]/(y³+y+1)`.
+    Mul192 {
+        a: u32,
+        b: u32,
+        c: u32,
     },
 }
 

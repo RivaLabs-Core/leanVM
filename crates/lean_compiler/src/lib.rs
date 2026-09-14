@@ -79,7 +79,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
     // Definitions by name, for Const-parameter specialization at call sites.
     let defs: HashMap<&str, &Func> = ast.funcs.iter().map(|f| (f.name.as_str(), f)).collect();
     // Constant arrays by name, resolved at lowering (`NAME[i]`, `len(NAME)`).
-    let const_arrays: HashMap<&str, &[F192]> = ast
+    let const_arrays: HashMap<&str, &[F64]> = ast
         .const_arrays
         .iter()
         .map(|(name, values)| (name.as_str(), values.as_slice()))
@@ -191,7 +191,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
     }
 
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
-    prog.resize(bytecode_size, Op::Set { o: 0, k: F192::ZERO });
+    prog.resize(bytecode_size, Op::Set { o: 0, k: F64::ZERO });
     let mut program = Program::assemble(prog, hints, frame_size["main"]);
     program.src_lines = src_lines;
     program.fn_ranges = lowered
@@ -215,20 +215,20 @@ pub fn disassemble(prog: &[Op]) -> String {
         gmap.entry(acc).or_insert(j);
         acc *= primitives::field::G;
     }
-    // A machine word is 192-bit; K-valued immediates (both high limbs zero) may be small
-    // g-powers (code addresses, indices), shown as `gʲ`.
-    let kfmt = |k: F192| match (k.c1 == 0 && k.c2 == 0).then(|| gmap.get(&F64(k.c0))).flatten() {
+    // An immediate may be a small g-power (a code address, an index), shown as `gʲ`.
+    let kfmt = |k: F64| match gmap.get(&k) {
         Some(j) => format!("g^{j}"),
-        None if k.c1 == 0 && k.c2 == 0 => format!("0x{:016x}", k.c0),
-        None => format!("0x{:016x}{:016x}{:016x}", k.c2, k.c1, k.c0),
+        None => format!("0x{:016x}", k.0),
     };
 
     let mut out = String::new();
     for (pc, op) in prog.iter().enumerate() {
         let line = match op {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
-            Op::Xor { a, b, c } => format!("XOR    fp[{c}] = fp[{a}] ^ fp[{b}]"),
-            Op::Mul { a, b, c } => format!("MUL    fp[{c}] = fp[{a}] * fp[{b}]"),
+            Op::Xor64 { a, b, c } => format!("XOR64  fp[{c}] = fp[{a}] ^ fp[{b}]"),
+            Op::Mul64 { a, b, c } => format!("MUL64  fp[{c}] = fp[{a}] * fp[{b}]"),
+            Op::Xor192 { a, b, c } => format!("XOR192 fp[{c}..] = fp[{a}..] ^ fp[{b}..]"),
+            Op::Mul192 { a, b, c } => format!("MUL192 fp[{c}..] = fp[{a}..] * fp[{b}..]"),
             Op::Deref { o1, o2, o3, mode } => {
                 let src = match mode {
                     DerefMode::Cell => format!("fp[{o3}]"),
@@ -242,7 +242,7 @@ pub fn disassemble(prog: &[Op]) -> String {
             }
             Op::Blake2s { ins, cv, out, md } => {
                 format!(
-                    "BLAKE2S fp[{out}..]= compress(cv=fp[{cv}..], m=fp[{}],fp[{}],fp[{}],fp[{}], meta=fp[{md}])",
+                    "BLAKE2S fp[{out}..] = compress(cv=fp[{cv}..], m=fp[{}..],fp[{}..],fp[{}..],fp[{}..], md=fp[{md}..])",
                     ins[0], ins[1], ins[2], ins[3]
                 )
             }
@@ -252,9 +252,9 @@ pub fn disassemble(prog: &[Op]) -> String {
     out
 }
 
-/// Embed a `u128` source literal into the low 128 bits of a 192-bit machine word.
-pub(crate) fn lit_field(n: u128) -> F192 {
-    F192::new(n as u64, (n >> 64) as u64, 0)
+/// A source literal as the machine word with its bits, if it fits in one.
+pub(crate) fn lit_field(n: u128) -> Option<F64> {
+    u64::try_from(n).ok().map(F64)
 }
 
 /// `g^e` for a `u128` exponent (square-and-multiply). `field::g_pow` only takes
@@ -274,19 +274,17 @@ fn g_pow_u128(mut e: u128) -> F64 {
 }
 
 fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32, frame_size: u32) -> Op {
-    let resolve_kval = |kv: &KVal| -> F192 {
+    let resolve_kval = |kv: &KVal| -> F64 {
         match kv {
-            KVal::FrameSize => g_pow(frame_size as usize).into(),
+            KVal::FrameSize => g_pow(frame_size as usize),
             KVal::Const(c) => *c,
-            // Address / entry / sentinel constants are K-valued g-powers;
-            // embed them canonically as (c0, 0, 0).
-            KVal::Entry(name) => g_pow(entry[name] as usize).into(),
-            KVal::EndSentinel => g_pow(sentinel as usize).into(),
-            KVal::Local(i) => g_pow((base + i) as usize).into(),
+            KVal::Entry(name) => g_pow(entry[name] as usize),
+            KVal::EndSentinel => g_pow(sentinel as usize),
+            KVal::Local(i) => g_pow((base + i) as usize),
         }
     };
     match op {
-        LOp::MulNextFrame { a, b, c } => Op::Mul {
+        LOp::MulNextFrame { a, b, c } => Op::Mul64 {
             a: *a,
             b: *b,
             c: frame_size.checked_add(*c).expect("frame offset overflow"),
@@ -295,8 +293,10 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32, fra
             o: *o,
             k: resolve_kval(kv),
         },
-        LOp::Xor { a, b, c } => Op::Xor { a: *a, b: *b, c: *c },
-        LOp::Mul { a, b, c } => Op::Mul { a: *a, b: *b, c: *c },
+        LOp::Xor64 { a, b, c } => Op::Xor64 { a: *a, b: *b, c: *c },
+        LOp::Mul64 { a, b, c } => Op::Mul64 { a: *a, b: *b, c: *c },
+        LOp::Xor192 { a, b, c } => Op::Xor192 { a: *a, b: *b, c: *c },
+        LOp::Mul192 { a, b, c } => Op::Mul192 { a: *a, b: *b, c: *c },
         LOp::Deref { o1, o2, o3, mode } => Op::Deref {
             o1: *o1,
             o2: *o2,

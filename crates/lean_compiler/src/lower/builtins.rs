@@ -2,7 +2,7 @@
 //! instruction computing it.
 //!
 //! `blake2s` is a STATEMENT, not an expression: it writes its digest into a
-//! two-cell run the caller names, so a pre-written destination checks the digest
+//! four-cell run the caller names, so a pre-written destination checks the digest
 //! instead of computing it, by the same write-once rule as any store.
 //!
 //! A hint writes values the prover chose and the circuit did not, so **the
@@ -13,15 +13,24 @@
 
 use super::*;
 
+/// One word of a `blake2s` message operand: a compile-time constant, a cell, or
+/// the list element at this index, evaluated only once its chunk has cells.
+#[derive(Clone, Copy)]
+enum Word {
+    Const(F64),
+    Cell(Off),
+    Expr(usize),
+}
+
 impl FnLower<'_> {
     /// `blake2s(a, b, out)`: the digest of the two 256-bit operands lands in the
-    /// existing 2-cell run `out` (write-once: if `out` was already written, this
+    /// existing 4-cell run `out` (write-once: if `out` was already written, this
     /// asserts the digest equals it). A heap `out` slice takes the digest via a
-    /// fresh stack pair and two `DEREF`s after the hash, the store direction
+    /// fresh stack run and four `DEREF`s after the hash, the store direction
     /// being the same instruction as the load (write-once fills the unset side).
     /// Keyword arguments set the metadata: `counter=` / `final=` / `last_node=`
-    /// build it at compile time, `md=` takes the whole word from a value the
-    /// program computed.
+    /// build it at compile time, `md=` takes the two cells from values the program
+    /// computed.
     fn lower_blake2s(&mut self, args: &[Expr]) {
         let first_kw = args
             .iter()
@@ -53,11 +62,11 @@ impl FnLower<'_> {
             self.fail(format!("unknown blake2s keyword {bad:?}; the keywords are {allowed:?}"))
         };
         let customized = kwargs.keys().any(|k| matches!(*k, "counter" | "final" | "last_node"));
-        // `md=` hands over the whole metadata word as a runtime value, so it
-        // replaces the three keywords that would otherwise build it.
+        // `md=` hands over the whole metadata as runtime values, so it replaces the
+        // three keywords that would otherwise build it.
         let runtime_md = kwargs.get("md").copied();
         if runtime_md.is_some() && customized {
-            self.fail("blake2s md= is the whole metadata word, so counter=, final= and last_node= cannot come with it")
+            self.fail("blake2s md= is the whole metadata, so counter=, final= and last_node= cannot come with it")
         };
         if kwargs.contains_key("cv") && !customized && runtime_md.is_none() {
             self.fail(
@@ -66,31 +75,32 @@ impl FnLower<'_> {
             )
         };
 
-        let a = self.blake2s_input(&args[0]);
-        let b = self.blake2s_input(&args[1]);
-        let (c, heap_out) = match self.blake2s_operand(&args[2]) {
+        let a = self.blake2s_chunks(&args[0]);
+        let b = self.blake2s_chunks(&args[1]);
+        let out = self.cell_run(&args[2]);
+        if out.cells() != 4 {
+            self.fail("a blake2s digest destination spans exactly 4 cells; slice a larger buffer: `buf[lo:lo + 4]`")
+        }
+        let (c, heap_out) = match out {
             CellRun::Stack { base, .. } => (base, None),
-            CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(2), Some((ptr, lo))),
+            CellRun::Heap { ptr, lo, .. } => (self.alloc_stack(4), Some((ptr, lo))),
         };
-        let cv = if let Some(value) = kwargs.get("cv") {
-            self.blake2s_cv(value)
-        } else {
-            self.default_blake2s_cv()
+        let cv = match kwargs.get("cv") {
+            Some(value) => self.run(value, 4),
+            None => self.const_run(&lean_vm::hash_flock::IV),
         };
         let md = match runtime_md {
-            // A metadata word the program computes, which is what lets a hash whose
-            // block count is only known at run time carry the byte counter the
-            // standard asks for (doc §sec:prog-byte-counter). It owes the same
-            // canonical embedding as every other operand: the memory interaction
-            // carries a literal zero above its two low limbs.
+            // Metadata the program computes, which is what lets a hash whose block
+            // count is only known at run time carry the byte counter the standard
+            // asks for (doc §sec:prog-byte-counter).
             //
             // Aliasing the digest destination is the one case write-once does not
             // catch: the runner reads the metadata before storing the digest, while
             // the witness reads the finished memory image, so the two disagree and
             // the proof fails its opening rather than saying why.
             Some(expr) => {
-                let md = self.expr(expr);
-                if md == c || md == c + 1 {
+                let md = self.run(expr, 2);
+                if md + 2 > c && md < c + 4 {
                     self.fail("blake2s md= must not name a cell of the digest destination")
                 };
                 md
@@ -103,7 +113,7 @@ impl FnLower<'_> {
                             this.try_const_int(e).unwrap_or_else(|| {
                                 self.fail(format!(
                                     "BLAKE2s `{name}` must be a compile-time integer, got `{e:?}`; \
-                                     a metadata word computed at run time goes through md="
+                                     a metadata computed at run time goes through md="
                                 ))
                             })
                         })
@@ -127,15 +137,11 @@ impl FnLower<'_> {
                 } else {
                     0
                 };
-                // A compile-time metadata is a pooled `SET`: one per distinct value
+                // A compile-time metadata is a pooled run: one per distinct value
                 // per frame, however many compressions read it.
-                self.const_cell(lean_vm::hash_flock::metadata(counter, f0, f1))
+                self.const_run(&lean_vm::hash_flock::metadata(counter, f0, f1))
             }
         };
-        // Each operand is two 128-bit chunk cells; the flexible opcode addresses
-        // the four input cells independently (`blake2s_input` forwards the real
-        // chunk sources where it can). The digest occupies the two consecutive
-        // output cells `c, g·c`.
         self.emit(LOp::Blake2s {
             ins: [a[0], a[1], b[0], b[1]],
             cv,
@@ -143,7 +149,7 @@ impl FnLower<'_> {
             md,
         });
         if let Some((ptr, lo)) = heap_out {
-            for k in 0..2 {
+            for k in 0..4 {
                 self.deref(ptr, lo + k, c + k, DerefMode::Cell);
             }
         }
@@ -154,7 +160,7 @@ impl FnLower<'_> {
     /// advice, re-checked in-circuit by their caller: `hint_decompose_bits`
     /// writes a value's bits into a buffer, `hint_decompose_bits_exponent` the
     /// bits of `n` where the value is `g^n` (a bounded dlog at witness
-    /// generation), `hint_f192_limbs` a value's coordinate limbs.
+    /// generation).
     pub(super) fn lower_builtin(&mut self, f: &str, args: &[Expr]) -> bool {
         match f {
             "hint_decompose_bits" | "hint_decompose_bits_exponent" => {
@@ -165,6 +171,11 @@ impl FnLower<'_> {
                     ))
                 };
                 let nbits = self.const_index(&args[2]);
+                if f == "hint_decompose_bits" && nbits > 64 {
+                    self.fail(format!(
+                        "hint_decompose_bits of a 64-bit word takes at most 64 bits, got {nbits}"
+                    ))
+                }
                 let bits = self.bits_dest(&args[0], nbits, f);
                 let value = self.expr(&args[1]);
                 self.pending.push(Hint::Resolved(if f == "hint_decompose_bits" {
@@ -174,102 +185,77 @@ impl FnLower<'_> {
                 }));
             }
             "blake2s" => self.lower_blake2s(args),
-            "assert_in_k" => {
-                if args.len() != 2 {
-                    self.fail("assert_in_k(a, b) takes two scalar cells")
+            "assert_eq192" | "assert_ne192" => {
+                let [a, b] = args else {
+                    self.fail(format!("{f}(a, b) takes two 192-bit values"))
                 };
-                let a = self.expr(&args[0]);
-                let b = self.expr(&args[1]);
-                let zero = self.zero();
-                self.emit(LOp::Jump { oc: zero, od: a, of: b });
+                if f == "assert_eq192" {
+                    self.lower_assert_eq192(a, b);
+                } else {
+                    self.lower_assert_ne192(a, b);
+                }
             }
-            "hint_f192_limbs" => {
-                if args.len() != 2 {
-                    self.fail(format!(
-                        "hint_f192_limbs takes two arguments, `(dest, value)`, got {}",
-                        args.len()
-                    ))
-                };
-                let (base, len) = self.stack_of(&args[0]).unwrap_or_else(|| {
-                    self.fail(format!(
-                        "hint_f192_limbs writes 1..=3 frame cells, so its destination must be a \
-                             StackBuf, got `{:?}`",
-                        args[0]
-                    ))
-                });
-                if !((1..=3).contains(&len)) {
-                    self.fail("hint_f192_limbs destination must have 1..=3 cells")
-                };
-                let value = self.expr(&args[1]);
-                // Names the physical cells, as the two consumers above do: whatever
-                // the program stores into them afterwards is a second write, and so
-                // the assertion that pins these limbs.
-                self.pending
-                    .push(Hint::Resolved(RHint::FieldLimbs { value, base, len }));
-            }
+            _ if parser::RUN192_BUILTINS.contains(&f) => self.fail(format!(
+                "`{f}(...)` is a 192-bit value, not a statement: bind it (`x = {f}(...)`) or store it"
+            )),
             _ => return false,
         }
         true
     }
 
-    /// Resolve a `blake2s` operand: a [`Self::cell_run`] pinned to exactly 2
-    /// cells, a 256-bit value being two 128-bit cells. Stack operands are used
-    /// in place; heap operands must be bridged through the stack, since
-    /// `BLAKE2s` addresses only frame cells (see [`Self::blake2s_input`]).
-    fn blake2s_operand(&mut self, e: &Expr) -> CellRun {
-        let run = self.cell_run(e);
-        if run.cells() != 2 {
-            self.fail("a blake2s operand must span exactly 2 cells (two 128-bit words); slice a larger buffer: `buf[lo:lo + 2]`")
+    /// A `blake2s` message operand as its two chunk bases, each two consecutive
+    /// cells. The opcode addresses the chunks independently, so a LIST LITERAL
+    /// operand gathers nothing it does not have to: a chunk whose two words already
+    /// sit side by side is used in place, a constant one is a pooled run, and any
+    /// other chunk is a fresh pair. A computed word is evaluated straight into its
+    /// pair, so only a word that already lives in a cell is copied.
+    pub(super) fn blake2s_chunks(&mut self, e: &Expr) -> [Off; 2] {
+        let Expr::ListLit(elems) = e else {
+            let base = self.run(e, 4);
+            return [base, base + 2];
         };
-        run
-    }
-
-    /// A `blake2s` *input* operand as its two independently-addressed 128-bit
-    /// chunk bases (each chunk is ONE 128-bit cell): stack runs in place; a heap
-    /// slice is pulled into a fresh stack pair first, one `DEREF` per cell
-    /// (`m[ptr·g^{lo+k}] == m[fp+t+k]`, the `β` immediate doing the pointer
-    /// offset). The heap cells must already be written.
-    ///
-    /// A LIST LITERAL names its two words directly and allocates nothing. The
-    /// opcode addresses its four input chunks independently, so an operand
-    /// assembled out of values living elsewhere never has to be gathered into a
-    /// consecutive run: `blake2s([a, b], …)` is the spelling that says so.
-    pub(super) fn blake2s_input(&mut self, e: &Expr) -> [Off; 2] {
-        if let Expr::ListLit(words) = e {
-            if words.len() != 2 {
-                self.fail(format!(
-                    "a blake2s operand written as a list needs exactly 2 words, got {}",
-                    words.len()
-                ))
-            };
-            return [self.expr(&words[0]), self.expr(&words[1])];
-        }
-        match self.blake2s_operand(e) {
-            CellRun::Stack { base, .. } => [base, base + 1],
-            CellRun::Heap { ptr, lo, .. } => {
-                let t = self.alloc_stack(2);
-                for k in 0..2 {
-                    self.deref(ptr, lo + k, t + k, DerefMode::Cell);
+        let mut words: Vec<Word> = Vec::new();
+        for (i, el) in elems.iter().enumerate() {
+            match self.run_len(el) {
+                Some(w) => {
+                    let base = self.run(el, w);
+                    words.extend((base..base + w).map(Word::Cell));
                 }
-                [t, t + 1]
+                None => words.push(match (self.try_field_const(el), el) {
+                    (Some(v), _) => Word::Const(v),
+                    (None, Expr::Var(_)) => Word::Cell(self.expr(el)),
+                    (None, Expr::Index(arr, idx)) if self.stack_of(arr).is_some() => {
+                        Word::Cell(self.frame_cell(arr, idx).expect("a StackBuf element"))
+                    }
+                    (None, _) => Word::Expr(i),
+                }),
             }
         }
-    }
-
-    fn default_blake2s_cv(&mut self) -> Off {
-        if let Some(o) = self.scope.blake2s_iv {
-            return o;
+        if words.len() != 4 {
+            self.fail(format!(
+                "a blake2s message operand is 4 words, this list spells {}",
+                words.len()
+            ))
         }
-        let o = self.alloc_stack(2);
-        for (k, value) in lean_vm::hash_flock::IV_CELLS.into_iter().enumerate() {
-            self.set_const(o + k as u32, value);
-            self.scope
-                .const_cells
-                .entry([value.c0, value.c1, value.c2])
-                .or_insert(o + k as u32);
+        let mut chunks = [0; 2];
+        for (i, chunk) in chunks.iter_mut().enumerate() {
+            *chunk = match (words[2 * i], words[2 * i + 1]) {
+                (Word::Const(x), Word::Const(y)) => self.const_run(&[x, y]),
+                (Word::Cell(x), Word::Cell(y)) if y == x + 1 => x,
+                (x, y) => {
+                    let t = self.alloc_stack(2);
+                    for (k, w) in [x, y].into_iter().enumerate() {
+                        match w {
+                            Word::Const(v) => self.set_const(t + k as u32, v),
+                            Word::Cell(c) => self.copy(c, t + k as u32),
+                            Word::Expr(i) => self.expr_into(&elems[i], t + k as u32),
+                        }
+                    }
+                    t
+                }
+            };
         }
-        self.scope.blake2s_iv = Some(o);
-        o
+        chunks
     }
 
     /// A computed-advice bit buffer's destination ([`BitsDest`]). Not
@@ -283,7 +269,6 @@ impl FnLower<'_> {
                         "{what} needs {nbits} cells, its StackBuf destination has {len}"
                     ))
                 };
-                // The hint names the physical cells, as `hint_f192_limbs` does.
                 BitsDest::Stack(base)
             }
             None => {
@@ -308,21 +293,5 @@ impl FnLower<'_> {
             CellRun::Heap { ptr, lo, len } => RHint::WitnessHeap { name, ptr, lo, len },
         };
         self.pending.push(Hint::Resolved(hint));
-    }
-    /// A BLAKE2s chaining value must occupy two consecutive frame cells because
-    /// the opcode carries one base offset for both words. Preserve a genuine
-    /// consecutive pair, including a heap pair already bridged by
-    /// [`Self::blake2s_input`]. A `cv` written as a two-word LIST exposes two
-    /// sources that need not be adjacent, so those are copied into a fresh
-    /// consecutive pair.
-    fn blake2s_cv(&mut self, e: &Expr) -> Off {
-        let pair = self.blake2s_input(e);
-        if pair[1] == pair[0] + 1 {
-            return pair[0];
-        }
-        let cv = self.alloc_stack(2);
-        self.copy(pair[0], cv);
-        self.copy(pair[1], cv + 1);
-        cv
     }
 }

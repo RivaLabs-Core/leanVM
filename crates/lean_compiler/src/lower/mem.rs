@@ -112,9 +112,9 @@ impl FnLower<'_> {
                      same number as cell n. Write `buf[GEN ** {k}]` and say which you mean"
                 ),
                 None => format!(
-                    "folds to the field constant {:#x}:{:#x}, which is not a g-power, so it names \
+                    "folds to the field constant {:#x}, which is not a g-power, so it names \
                      no heap cell (did an integer index leak in from a StackBuf conversion?)",
-                    c.c1, c.c0
+                    c.0
                 ),
             };
             self.fail(format!("heap index {why}"));
@@ -234,7 +234,7 @@ impl FnLower<'_> {
         if extra == 0 {
             return (a, 0);
         }
-        let k = self.const_cell(g_pow_u128(extra).into());
+        let k = self.const_cell(g_pow_u128(extra));
         (self.pure(PureOp::Mul, a, k), 0)
     }
 
@@ -269,7 +269,7 @@ impl FnLower<'_> {
                 base: Some(c), exp: 0, ..
             } => c,
             GAddr { base, exp, .. } => {
-                let k = self.const_cell(g_pow_u128(exp).into());
+                let k = self.const_cell(g_pow_u128(exp));
                 let Some(c) = base else { return k };
                 self.pure(PureOp::Mul, c, k)
             }
