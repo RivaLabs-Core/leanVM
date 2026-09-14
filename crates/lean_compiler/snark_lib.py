@@ -13,10 +13,11 @@ argument; the compiler specializes the function per distinct constant."""
 
 
 class _Elt:
-    """A 192-bit machine word in E = GF(2^192), represented as a cubic tower
-    over K = GF(2^64). Indices and addresses are K-valued powers of GEN, i.e.
-    "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its successor.
-    A heap pointer is K-valued too; `buf[i]` is the write-once cell at `buf * i`."""
+    """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of
+    GEN, i.e. "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its
+    successor. A heap pointer is a word too; `buf[i]` is the write-once cell at
+    `buf * i`. A 192-bit element of E = K[y]/(y^3 + y + 1) is not a word but a
+    run of three cells, limbs low first, computed with `add192`/`mul192`/`div192`."""
 
     def __add__(self, other):  # field addition = XOR
         _ = other
@@ -24,7 +25,7 @@ class _Elt:
 
     __radd__ = __add__
 
-    def __mul__(self, other):  # tower-field product
+    def __mul__(self, other):  # GF(2^64) product
         _ = other
         return _Elt()
 
@@ -40,18 +41,50 @@ class _Elt:
         _ = k
         return _Elt()
 
-    def __getitem__(self, idx):  # heap read m[self · idx]
+    def __getitem__(self, idx):  # heap read m[self · idx], or a slice (a run)
         _ = idx
         return _Elt()
 
-    def __setitem__(self, idx, value):  # heap store m[self · idx] (write-once)
+    def __setitem__(self, idx, value):  # heap store m[self · idx], or a run store (write-once)
         _ = idx, value
 
 
 def f192(c0: int, c1: int, c2: int) -> _Elt:
-    """Construct a field constant from its three little-endian GF(2^64) limbs."""
+    """A 192-bit constant `c0 + c1·y + c2·y^2`, a three-cell run. Each limb is a
+    compile-time unsigned 64-bit integer. Also valid as a global constant,
+    `ONE = f192(1, 0, 0)`."""
     _ = c0, c1, c2
     return _Elt()
+
+
+def add192(a, b) -> _Elt:
+    """The 192-bit sum of two three-cell runs: one XOR192."""
+    _ = a, b
+    return _Elt()
+
+
+def mul192(a, b) -> _Elt:
+    """The 192-bit product of two three-cell runs: one MUL192."""
+    _ = a, b
+    return _Elt()
+
+
+def div192(a, b) -> _Elt:
+    """The 192-bit quotient `a · b⁻¹`: one MUL192 whose unwritten operand is the
+    quotient, back-solved at witness generation. A zero divisor is rejected there."""
+    _ = a, b
+    return _Elt()
+
+
+def assert_eq192(a, b) -> None:
+    """Assert two three-cell runs are equal: one XOR192 into a zero run."""
+    _ = a, b
+
+
+def assert_ne192(a, b) -> None:
+    """Assert two three-cell runs differ: their sum times a hinted inverse, one
+    MUL192 into a one run. Sound whatever the hint, as for `assert a != b`."""
+    _ = a, b
 
 
 GEN = _Elt()
@@ -59,9 +92,10 @@ GEN = _Elt()
 
 
 def hint_decompose_bits(bits, value, nbits: int) -> None:
-    """Computed advice: the prover writes the `nbits` bits of `value` into the
-    `bits` buffer. UNCONSTRAINED: the caller must check booleanity and that the
-    bits reconstruct `value` (a range check that `value < 2^nbits`)."""
+    """Computed advice: the prover writes the low `nbits` (at most 64) bits of the
+    word `value` into the `bits` buffer. UNCONSTRAINED: the caller must check
+    booleanity and that the bits reconstruct `value` (a range check that
+    `value < 2^nbits`)."""
     _ = bits, value, nbits
 
 
@@ -150,8 +184,8 @@ def HeapBuf(n) -> _Elt:
 
 
 def StackBuf(n: int) -> _Elt:
-    """Allocate `n` consecutive frame (stack) cells. A size-2 StackBuf holds a
-    256-bit value and is a valid `blake2s` operand."""
+    """Allocate `n` consecutive frame (stack) cells. A size-3 StackBuf holds a
+    192-bit value, and a size-4 one a 256-bit value, a valid `blake2s` operand."""
     _ = n
     return _Elt()
 
@@ -167,13 +201,13 @@ def addr(buf) -> _Elt:
 
 
 def hint_witness(dest, name: Optional[str] = None) -> Any:
-    """Take the next ENTRY (a slice of values) of the named prover witness
+    """Take the next ENTRY (a slice of words) of the named prover witness
     stream.
 
     Two forms. As a statement, `hint_witness(dest, "name")` fills `dest` (a
     StackBuf, or a StackBuf/HeapBuf slice of any length). As an expression,
-    `x = hint_witness("name")` binds ONE value and needs no destination, the
-    entry then having to hold exactly one value.
+    `x = hint_witness("name")` binds ONE word and needs no destination, the
+    entry then having to hold exactly one word.
 
     The same symbol may be hinted many times, each call popping the next entry
     (`Program::set_witness`; test programs declare one `# witness name: v1, …`
@@ -182,19 +216,6 @@ def hint_witness(dest, name: Optional[str] = None) -> Any:
     checks, hashes)."""
     _ = dest, name
     return _Elt()
-
-
-def assert_in_k(a, b) -> None:
-    """Prove that both machine words are GF(2^64)-valued. This is the sole
-    packing-related intrinsic and lowers to one untaken JUMP."""
-    _ = a, b
-
-
-def hint_f192_limbs(dest, value) -> None:
-    """Computed advice: write the first `len(dest)` GF(2^64) coordinate limbs
-    of `value` into a 1-to-3-cell StackBuf. UNCONSTRAINED; callers bind the
-    result with `assert_in_k` and field reconstruction."""
-    _ = dest, value
 
 
 def blake2s(
@@ -209,8 +230,8 @@ def blake2s(
     md=None,
 ) -> None:
     """One standard BLAKE2s compression of the two 256-bit message operands
-    `a`, `b`, written into the 2-cell run `out` (write-once: if `out` was
-    already written, this asserts it equals the chaining value).
+    `a`, `b`, written into the 4-cell run `out` (write-once: if `out` was
+    already written, this asserts it equals the digest).
 
     With no keywords this hashes exactly 64 bytes: the parameterized BLAKE2s-256
     initial chaining value, byte counter 64, final-block flag set. That is
@@ -218,19 +239,20 @@ def blake2s(
 
     For a longer message, drive the blocks yourself. `counter` is the CUMULATIVE
     byte count through this block (`64 * whole_blocks_before + bytes_in_this_block`)
-    and `final=1` marks the last block; `cv` carries the previous block's output
-    and requires one of `counter`, `final`, `last_node` or `md`. Setting any of
-    `counter`, `final` or `last_node` makes `final` default
-    to 0, so a single short block needs `counter=<len>, final=1`. Bytes past the
-    block's real length must be zero-filled by the program. `last_node` is
-    BLAKE2s's tree-mode `f1` and is 0 everywhere here.
+    and `final=1` marks the last block; `cv` carries the previous block's 4-cell
+    output and requires one of `counter`, `final`, `last_node` or `md`. Setting any
+    of `counter`, `final` or `last_node` makes `final` default to 0, so a single
+    short block needs `counter=<len>, final=1`. Bytes past the block's real length
+    must be zero-filled by the program. `last_node` is BLAKE2s's tree-mode `f1`
+    and is 0 everywhere here.
 
-    `md` is the whole 128-bit metadata word as a value the program computed, for
-    a hash whose block count is only known at run time. It replaces `counter`,
-    `final` and `last_node` (giving both is an error), and it must not name a
-    cell of `out`.
+    `md` is the whole metadata as a 2-cell run the program computed,
+    `[counter, f0 | f1 << 32]`, for a hash whose block count is only known at run
+    time. It replaces `counter`, `final` and `last_node` (giving both is an
+    error), and it must not name a cell of `out`.
 
-    Message, chaining-value, and output operands are size-2 StackBufs or
-    2-cell slices `buf[lo:hi]` of larger StackBufs or HeapBufs (heap inputs are
-    bridged through the stack, one DEREF per cell)."""
+    Message, chaining-value, and output operands are 4-cell runs: a StackBuf(4),
+    or a slice `buf[lo:hi]` of a larger StackBuf or a HeapBuf (heap inputs are
+    bridged through the stack, one DEREF per cell). A message operand may also
+    be a list literal of four words, a run element flattening into its words."""
     _ = a, b, out, cv, counter, final, last_node, md
