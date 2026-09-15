@@ -14,8 +14,9 @@
 //!
 //! [`hash`] is the protocol's circuit: the BLAKE2s compression as a per-block
 //! R1CS, plus its witness generation and the leanVM-facing reduction entry
-//! points (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). [`mul`] is a
-//! u64 multiplier, proved only by its benchmark. Steps 2 to 4 above are
+//! points (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). [`arith`]
+//! holds u64 addition and multiplication, proved only by their benchmarks.
+//! Steps 2 to 4 above are
 //! circuit-agnostic ([`reduction`]): they take the block shape as plain numbers
 //! and reach the matrices only through [`lincheck::LincheckCircuit`], whose
 //! impls walk the circuit rather than reading any matrix.
@@ -26,10 +27,10 @@
 //! gadgets, forwards and transposed, kept separate because the fused
 //! three-operand adder's bit boundaries are the subtlest thing here.
 
+pub mod arith;
 mod gf2;
 pub mod hash;
 pub mod lincheck;
-pub mod mul;
 pub mod reduction;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and so the slow
