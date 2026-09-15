@@ -156,50 +156,72 @@ Flock BLAKE2s batch proving, 262,144 compressions (2^18 slots)
   (~3289.9 XMSS/s equivalent at 146 compressions/signature)
 ```
 
+### u64 addition
+
+```bash
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=24 cargo test --release --package flock --test batch_proving_arithmetic -- add_wrapping_prove_verify --exact --nocapture --include-ignored
+```
+
+```
+Flock Wrapping u64 addition batch proving, 16,777,216 sums (2^24 slots)
+  block                           : 2^8 bits, 256 constrained
+  setup (circuit, excluded)       :      0.0 ms
+  witness-gen                     :     52.1 ms ± 13.9%   8.1%
+  commit                          :    102.3 ms ± 5.5%   15.9%
+  zerocheck                       :    252.7 ms ± 11.2%  39.4%
+  lincheck                        :     41.6 ms ± 9.6%    6.5%
+  pcs opening                     :    192.4 ms ± 8.1%   30.0%
+  other                           :      0.0 ms           0.0%
+  ------------------------------------------
+  prove TOTAL (witness included)  :    641.2 ms ± 5.4%
+  verify                          :      1.8 ms
+  throughput                      :     26,165,809 sums/s ± 5.4%
+```
+
 ### u64 multiplication
 
 Wrapping (`u64` result):
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=20 cargo test --release --package flock --test batch_proving_mul -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=20 cargo test --release --package flock --test batch_proving_arithmetic -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
 ```
 
 ```
 Flock Wrapping u64 multiplication batch proving, 1,048,576 products (2^20 slots)
   block                           : 2^12 bits, 2,336 constrained
   setup (circuit, excluded)       :      0.1 ms
-  witness-gen                     :     74.0 ms ± 2.1%   12.3%
-  commit                          :    102.0 ms ± 0.8%   17.0%
-  zerocheck                       :    227.5 ms ± 5.6%   37.8%
-  lincheck                        :     12.1 ms ± 3.9%    2.0%
-  pcs opening                     :    186.2 ms ± 2.6%   30.9%
+  witness-gen                     :     79.7 ms ± 15.3%  13.4%
+  commit                          :    101.5 ms ± 0.9%   17.1%
+  zerocheck                       :    214.6 ms ± 0.5%   36.2%
+  lincheck                        :     12.6 ms ± 17.5%   2.1%
+  pcs opening                     :    184.8 ms ± 4.0%   31.2%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness included)  :    601.7 ms ± 2.0%
+  prove TOTAL (witness included)  :    593.2 ms ± 2.3%
   verify                          :      1.8 ms
-  throughput                      :      1,742,636 products/s ± 2.0%
+  throughput                      :      1,767,718 products/s ± 2.3%
 ```
 
 Widening (`u128` result):
 
 ```bash
-BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=19 cargo test --release --package flock --test batch_proving_mul -- mul_widening_prove_verify --exact --nocapture --include-ignored
+BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=19 cargo test --release --package flock --test batch_proving_arithmetic -- mul_widening_prove_verify --exact --nocapture --include-ignored
 ```
 
 ```
 Flock Widening u64 multiplication batch proving, 524,288 products (2^19 slots)
   block                           : 2^13 bits, 4,544 constrained
   setup (circuit, excluded)       :      0.1 ms
-  witness-gen                     :     48.3 ms ± 5.5%    9.0%
-  commit                          :    102.3 ms ± 4.7%   19.1%
-  zerocheck                       :    185.1 ms ± 9.5%   34.6%
-  lincheck                        :     11.3 ms ± 4.4%    2.1%
-  pcs opening                     :    188.7 ms ± 2.4%   35.2%
+  witness-gen                     :     49.2 ms ± 22.5%   9.3%
+  commit                          :    102.6 ms ± 3.0%   19.4%
+  zerocheck                       :    179.2 ms ± 3.0%   33.9%
+  lincheck                        :     11.6 ms ± 7.3%    2.2%
+  pcs opening                     :    186.6 ms ± 8.4%   35.3%
   other                           :      0.0 ms           0.0%
   ------------------------------------------
-  prove TOTAL (witness included)  :    535.6 ms ± 2.4%
+  prove TOTAL (witness included)  :    529.2 ms ± 5.2%
   verify                          :      1.9 ms
-  throughput                      :        978,878 products/s ± 2.4%
+  throughput                      :        990,726 products/s ± 5.2%
 ```
 
 ### Fibonacci

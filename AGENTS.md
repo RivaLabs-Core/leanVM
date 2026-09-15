@@ -60,7 +60,7 @@ cargo fmt --all                   # max_width = 120
 ruff format --line-length 150 python-verifier/verifier.py   # and `ruff check` it
 ```
 
-Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `hash_batch_prove_verify`, `mul_wrapping_prove_verify`, `mul_widening_prove_verify`, `pcs_throughput`, `aggregate_three_levels`, `aggregate_statement_binds`, `aggregate_hints_bind`, `aggregate_rejects_a_bad_signature`, `print_whir_query_counts`, `encoding_grinding_bits`.
+Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- --ignored --nocapture`: `hash_batch_prove_verify`, `add_wrapping_prove_verify`, `mul_wrapping_prove_verify`, `mul_widening_prove_verify`, `pcs_throughput`, `aggregate_three_levels`, `aggregate_statement_binds`, `aggregate_hints_bind`, `aggregate_rejects_a_bad_signature`, `print_whir_query_counts`, `encoding_grinding_bits`.
 
 ## Benchmarking
 

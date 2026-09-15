@@ -1,15 +1,15 @@
-//! Standalone batch u64 multiplication proving, isolated from the VM: the
-//! wrapping product (`u64` result) and the widening one (`u128` result).
+//! Standalone batch u64 arithmetic proving, isolated from the VM: wrapping
+//! addition, and multiplication wrapping (a `u64` result) or widening (a `u128`).
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release --package flock --test batch_proving_mul -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=20 cargo test --release --package flock --test batch_proving_arithmetic -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
 //! ```
 
 use std::sync::Mutex;
 use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
-use flock::mul::{MulCircuit, MulKind};
+use flock::arith::{U64Circuit, U64Op};
 use flock::reduction::{min_n_blocks_log, ring_switch_open, ring_switch_verify};
 use pcs::pack::LOG_PACKING;
 use pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
@@ -18,23 +18,34 @@ use pcs::whir::{commit, config_for_rate};
 use primitives::bench::{Plan, Timing};
 use primitives::{field::F64, pretty_integer, test_rng::Rng};
 
-/// Arena phases are process-global, so the two benchmarks must not overlap.
+/// Arena phases are process-global, so the benchmarks must not overlap.
 static ONE_AT_A_TIME: Mutex<()> = Mutex::new(());
 
 #[test]
 #[ignore = "manual release benchmark; needs substantial memory"]
+fn add_wrapping_prove_verify() {
+    bench(U64Op::WrappingAdd);
+}
+
+#[test]
+#[ignore = "manual release benchmark; needs substantial memory"]
 fn mul_wrapping_prove_verify() {
-    bench(MulKind::Wrapping);
+    bench(U64Op::WrappingMul);
 }
 
 #[test]
 #[ignore = "manual release benchmark; needs substantial memory"]
 fn mul_widening_prove_verify() {
-    bench(MulKind::Widening);
+    bench(U64Op::WideningMul);
 }
 
-fn bench(kind: MulKind) {
+fn bench(op: U64Op) {
     let _serial = ONE_AT_A_TIME.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (title, unit) = match op {
+        U64Op::WrappingAdd => ("Wrapping u64 addition", "sums"),
+        U64Op::WrappingMul => ("Wrapping u64 multiplication", "products"),
+        U64Op::WideningMul => ("Widening u64 multiplication", "products"),
+    };
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -45,7 +56,7 @@ fn bench(kind: MulKind) {
     let n_log = min_n_blocks_log(n);
 
     let t = Instant::now();
-    let circuit = MulCircuit::new(kind);
+    let circuit = U64Circuit::new(op);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
     let block = circuit.block();
     let mu = circuit.k_log() + n_log - LOG_PACKING;
@@ -57,7 +68,7 @@ fn bench(kind: MulKind) {
     let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15 ^ n as u64);
     let pairs: Vec<(u64, u64)> = (0..n).map(|_| (rng.next_u64(), rng.next_u64())).collect();
     let config = config_for_rate(mu, LOG_INV_RATE_0).expect("WHIR configuration");
-    let label = format!("flock-mul-{kind:?}-batch").into_bytes();
+    let label = format!("flock-{op:?}-batch").into_bytes();
 
     // One full prove pass from the raw pairs, one arena phase, as in
     // `batch_proving_hashes`.
@@ -142,7 +153,7 @@ fn bench(kind: MulKind) {
     let ms = |t: &Timing| format!("{:>8.1} ms{:<9}{}", t.mean() * 1e3, t.spread(), share(t.mean()));
     let named = witness.mean() + commit_stage.mean() + zerocheck.mean() + lincheck.mean() + open.mean();
     println!(
-        "\nFlock {kind:?} u64 multiplication batch proving, {} products (2^{n_log} slots)",
+        "\nFlock {title} batch proving, {} {unit} (2^{n_log} slots)",
         pretty_integer(n)
     );
     println!(
@@ -173,7 +184,7 @@ fn bench(kind: MulKind) {
         verify_time.mean() * 1e3
     );
     println!(
-        "  throughput                      : {:>14} products/s{}",
+        "  throughput                      : {:>14} {unit}/s{}",
         pretty_integer((n as f64 / pass_s).round() as u64),
         pass.spread()
     );
