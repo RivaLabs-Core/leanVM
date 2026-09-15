@@ -12,12 +12,13 @@
 //!   4. The PCS binds that family of slices ([`hash::SliceClaim`]) to the
 //!      commitment.
 //!
-//! [`hash`] is the one circuit: the BLAKE2s compression as a per-block R1CS,
-//! plus its witness generation and the leanVM-facing reduction entry points
-//! (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). Steps 2 to 4 above
-//! are circuit-agnostic ([`reduction`]): they take the block shape as plain
-//! numbers and reach the matrices only through [`lincheck::LincheckCircuit`],
-//! whose one live impl walks the circuit rather than reading any matrix.
+//! [`hash`] is the protocol's circuit: the BLAKE2s compression as a per-block
+//! R1CS, plus its witness generation and the leanVM-facing reduction entry
+//! points (`Blake2sSetup::{prove_reduction, verify_reduction, …}`). [`mul`] is a
+//! u64 multiplier, proved only by its benchmark. Steps 2 to 4 above are
+//! circuit-agnostic ([`reduction`]): they take the block shape as plain numbers
+//! and reach the matrices only through [`lincheck::LincheckCircuit`], whose
+//! impls walk the circuit rather than reading any matrix.
 //!
 //! BLAKE2s is a 32-bit ARX round whose XORs and rotations are free over GF(2),
 //! so its only nonlinear constraints are the product bits of the modular ADDs.
@@ -28,6 +29,7 @@
 mod gf2;
 pub mod hash;
 pub mod lincheck;
+pub mod mul;
 pub mod reduction;
 /// The circuit driven through the whole reduction. A `src` module rather than
 /// its own test binary so it shares the process, and so the slow
