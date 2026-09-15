@@ -21,16 +21,16 @@ LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Mach
   \item the frame pointer $\fp \xleftarrow{} 1_\K$
 \end{itemize}
 
-Then, initialize the write-once memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\E$-valued \textit{memory words} (192 bits). The memory is indexed \textit{in the exponent} of $\gen$ (64 bits). The first memory word is $\mem[\gen^0] \in \E$, the second is $\mem[\gen^1]$, the third is $\mem[\gen^2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\gen^{\nmem - 1}$ (resp. $\gen^{\nprog - 1}$ for the bytecode) is invalid.
+Then, initialize the write-once memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed \textit{in the exponent} of $\gen$ (64 bits). The first memory word is $\mem[\gen^0] \in \K$, the second is $\mem[\gen^1]$, the third is $\mem[\gen^2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\gen^{\nmem - 1}$ (resp. $\gen^{\nprog - 1}$ for the bytecode) is invalid.
 
-The public input fixes the first two memory words $\mem[\gen^0] = \textsf{input}_0 + \textsf{input}_1 \cdot y \in \E$ and $\mem[\gen^1] = \textsf{input}_2 + \textsf{input}_3 \cdot y \in \E$.
+The public input fixes the first four memory words, $\mem[\gen^i] = \textsf{input}_i \in \K$ for $i<4$.
 
 The Virtual Machine execution loop is the following:
 \begin{enumerate}
   \item fetch the instruction $\mathsf{inst}$ at address $\pc$.
   \item execute $\mathsf{inst}$:
     \begin{itemize}
-      \item assert the memory constraints (e.g. $\loc{o_C}=\loc{o_A}+\loc{o_B}$ for XOR)
+      \item assert the memory constraints (e.g. $\loc{o_C}=\loc{o_A}+\loc{o_B}$ for \texttt{XOR64})
       \item update $\pc$ and $\fp$ (all instructions except \texttt{JUMP} set $\pc \xleftarrow{} \pc \cdot \gen$, advancing to the next instruction, and leave $\fp \xleftarrow{} \fp$ unchanged)
     \end{itemize}
   \item if $\pc$ equals $\pc_{\textsf{final}} := \gen^{\nprog - 1}$, exit the loop (successful execution). Otherwise go back to $1.$
@@ -48,23 +48,29 @@ For a given pair of bytecode and public input, there is more than one valid exec
 
 In particular, the memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$.
 
-\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or one $\K$-lane of an \emph{immediate} ($k_0,k_1,k_2$ in \texttt{SET\_CONSTANT}). With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
+\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
+A run of three consecutive cells spells one element of $\E$, its limbs low first:
+\[
+  \locE{o}\;=\;\loc{o}+\loc{\gen\cdot o}\,y+\loc{\gen^{2}\cdot o}\,y^{2}\;\in\;\E.
+\]
 
-\paragraph{Instruction set.} The machine implements six instructions.
+\paragraph{Instruction set.} The machine implements eight instructions.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
 Instruction & Operands & Semantics\\
 \hline
-\texttt{XOR}           & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\E$)\\
-\texttt{MUL\_NATIVE}   & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\E$)\\
-\texttt{SET\_CONSTANT} & $[o,k_0,k_1,k_2]$ & $\loc{o}=k_0+k_1y+k_2y^{2}$\\
+\texttt{XOR64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\K$)\\
+\texttt{MUL64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\K$)\\
+\texttt{SET\_CONSTANT} & $[o,k]$ & $\loc{o}=k$\\
 \texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]=\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
+\texttt{XOR192}        & $[o_A,o_B,o_C]$ & $\locE{o_C}=\locE{o_A}+\locE{o_B}$ \quad(addition in $\E$)\\
+\texttt{MUL192}        & $[o_A,o_B,o_C]$ & $\locE{o_C}=\locE{o_A}\cdot\locE{o_B}$ (multiplication in $\E$)\\
 \hline
 \end{tabularx}
 \end{center}
@@ -80,18 +86,16 @@ Instruction & Operands & Semantics\\
   \end{cases}
 \]
 
-Additionally, it asserts $\loc{o_1} \in \K$.
-
 \vspace{5mm}
 
 
-\texttt{JUMP} reads a condition $c=\loc{o_c}$, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it defaults to $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$. Additionally, it asserts $\loc{o_c},\loc{o_f}, \loc{o_d} \in \K$ (unconditionally).
+\texttt{JUMP} reads a condition $c=\loc{o_c}$, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it defaults to $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
 
 \vspace{5mm}
 
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Each $128$-bit chunk occupies one full $\E$ memory cell through the canonical embedding $a_0+a_1y\mapsto a_0+a_1y+0y^2$; using a cell as a BLAKE2s operand therefore constrains its top limb to zero. The four message chunks are addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$ (chunk $i$ at address $\fp\cdot o_{m_i}$), while $o_{\mathit{cv}}$ names two \emph{consecutive} chaining-value cells $\loc{o_{\mathit{cv}}},\loc{\gen\cdot o_{\mathit{cv}}}$. The $256$-bit result is written to the consecutive cells $\loc{o_{\mathit{out}}},\loc{\gen\cdot o_{\mathit{out}}}$, and $o_{\md}$ names one more cell, so each row accesses nine. That cell $\md=\loc{o_{\md}}=\md_0+\md_1y$ packs the standard compression metadata in little-endian order,
+\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{\gen\cdot o_{m_i}}$. The chaining value is read from the four \emph{consecutive} cells $\loc{\gen^{k}\cdot o_{\mathit{cv}}}$, $k<4$, and the result is written to the four consecutive cells $\loc{\gen^{k}\cdot o_{\mathit{out}}}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{\gen\cdot o_{\md}}$, little-endian:
 \[
-  \md=\mathit{counter}_{64}\;\Vert\;\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
+  \md_0=\mathit{counter}_{64},\qquad \md_1=\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]
 
 

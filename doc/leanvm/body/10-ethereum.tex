@@ -13,7 +13,7 @@ The DA claim is a sorted, duplicate-free list of at most $16$ LeanDA roots, poss
 
 \subsubsection{The public input}\label{sec:rec-stmt}
 
-The proof carries the signature claims and DA root list. Their digests bind these variable-length lists into a fixed-size statement. The VM's public input is BLAKE2s of the following fields, in order:
+The proof carries the signature claims and DA root list. Their digests bind these variable-length lists into a fixed-size statement. The VM's public input is the four words (\S\ref{sec:e2e-pi}) of the BLAKE2s digest of the following fields, in order, zero-filled to a whole $64$-byte block. Each deferred element of $\E$ takes $24$ bytes, its three limbs.
 \begin{center}
 \begin{tabular}{@{}rl@{}}
 \hline
@@ -29,13 +29,13 @@ The deferred claims let recursion postpone expensive polynomial evaluations unti
 
 The DA list digest is BLAKE2s of the concatenated pairs $(\daroot,\davechash)$, each a $32$-byte DA root $\daroot$ followed by a $32$-byte hash $\davechash$ of the membership test vector $\dual$.
 
-The signer-set digest is BLAKE2s of the following, where each cell is $16$ bytes and a count is encoded as $\gen^{\text{count}}$ (8 bytes, zero-padded to one cell):
+The signer-set digest is BLAKE2s of the following $64$-byte blocks, where a count is encoded as $\gen^{\text{count}}$, and a count or an epoch takes $16$ bytes: its $8$-byte word, then a zero word.
 \begin{center}
 \begin{tabular}{@{}ll@{}}
 \hline
 block $0$ & XMSS group count, SPHINCS+ claim count, SPHINCS+ list digest\\
 per XMSS group & epoch, key count, $32$-byte message\\
-& key list digest, two zero cells\\
+& key list digest, $32$ zero bytes\\
 \hline
 \end{tabular}
 \end{center}
