@@ -2,7 +2,7 @@
 //! wrapping product (`u64` result) and the widening one (`u128` result).
 //!
 //! ```text
-//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=16 cargo test --release --package flock --test batch_proving_mul -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
+//! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release --package flock --test batch_proving_mul -- mul_wrapping_prove_verify --exact --nocapture --include-ignored
 //! ```
 
 use std::sync::Mutex;
@@ -59,22 +59,23 @@ fn bench(kind: MulKind) {
     let config = config_for_rate(mu, LOG_INV_RATE_0).expect("WHIR configuration");
     let label = format!("flock-mul-{kind:?}-batch").into_bytes();
 
-    // One full prove pass, one arena phase, as in `batch_proving_hashes`.
+    // One full prove pass from the raw pairs, one arena phase, as in
+    // `batch_proving_hashes`.
     zk_alloc::enable_arena();
     let prove_pass = || {
         let _phase = zk_alloc::enter_phase();
         let t_pass = Instant::now();
         let t = Instant::now();
         let (z_packed, a_packed, b_packed, z_lincheck) = circuit.generate_witness(&pairs, n_log);
-        let q_flock: Vec<F64> = z_packed.iter().map(|&w| F64(w)).collect();
+        // SAFETY: `F64` is `repr(transparent)` over `u64`.
+        let q_flock: &[F64] = unsafe { std::slice::from_raw_parts(z_packed.as_ptr().cast(), z_packed.len()) };
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
         let mut ps = ProverState::from_label(&label);
-        let t_prove = Instant::now();
 
         let t = Instant::now();
-        let (commitment, prover_data) = commit(&q_flock, mu, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
+        let (commitment, prover_data) = commit(q_flock, mu, INITIAL_FOLDING_FACTOR, LOG_INV_RATE_0);
         ps.add_root(&commitment.root);
         let commit_s = t.elapsed().as_secs_f64();
 
@@ -85,24 +86,20 @@ fn bench(kind: MulKind) {
         let t = Instant::now();
         let reduced = block.prove_lincheck(n_log, stage, &z_lincheck, &mut ps);
         let lincheck_s = t.elapsed().as_secs_f64();
-        drop((z_packed, a_packed, b_packed, z_lincheck));
+        drop((a_packed, b_packed, z_lincheck));
 
         let t = Instant::now();
         let ring = ring_switch_open(mu, 0, &reduced);
-        open_batch_mixed_whir_stacked(&mut ps, mu, &q_flock, &prover_data, &config, &[], &ring);
+        open_batch_mixed_whir_stacked(&mut ps, mu, q_flock, &prover_data, &config, &[], &ring);
         let open_s = t.elapsed().as_secs_f64();
-        let prove_s = t_prove.elapsed().as_secs_f64();
 
         let proof = ps.into_proof();
         let pass_s = t_pass.elapsed().as_secs_f64();
-        (
-            proof,
-            [witness_s, commit_s, zerocheck_s, lincheck_s, open_s, prove_s, pass_s],
-        )
+        (proof, [witness_s, commit_s, zerocheck_s, lincheck_s, open_s, pass_s])
     };
 
     let plan = Plan::from_env();
-    let mut stages: [Timing; 7] = std::array::from_fn(|_| Timing::default());
+    let mut stages: [Timing; 6] = std::array::from_fn(|_| Timing::default());
     let (transcript, _) = plan.warm_then_measure(|_final_pass| {
         let (out, secs) = prove_pass();
         for (timing, s) in stages.iter_mut().zip(secs) {
@@ -111,7 +108,7 @@ fn bench(kind: MulKind) {
         out
     });
     // The warmup pass also pushed a sample; drop the leading one per stage.
-    let [witness, commit_stage, zerocheck, lincheck, open, prove, pass] = stages.map(|t| {
+    let [witness, commit_stage, zerocheck, lincheck, open, pass] = stages.map(|t| {
         let mut kept = Timing::default();
         for &s in &t.samples()[1..] {
             kept.push(s);
@@ -166,14 +163,18 @@ fn bench(kind: MulKind) {
         share(pass_s - named)
     );
     println!("  ------------------------------------------");
-    println!("  prove TOTAL (witness excluded)  : {}", ms(&prove));
+    println!(
+        "  prove TOTAL (witness included)  : {:>8.1} ms{}",
+        pass_s * 1e3,
+        pass.spread()
+    );
     println!(
         "  verify                          : {:>8.1} ms",
         verify_time.mean() * 1e3
     );
     println!(
         "  throughput                      : {:>14} products/s{}",
-        pretty_integer((n as f64 / prove.mean()).round() as u64),
-        prove.spread()
+        pretty_integer((n as f64 / pass_s).round() as u64),
+        pass.spread()
     );
 }
