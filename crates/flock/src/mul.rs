@@ -6,24 +6,32 @@
 //!
 //! A schoolbook multiplier pays one product per partial product `a_i·b_j`, then
 //! one per carry to sum them. Over GF(2) the first half is avoidable: with
-//! `e_ij = ¬(a_i ⊕ b_j)`, `2·a_i·b_j = a_i + b_j − 1 + e_ij`, so with
-//! `M = 2^64 − 1`
+//! `e_ij = ¬(a_i ⊕ b_j)`, `2·a_i·b_j = a_i + b_j − 1 + e_ij`. Summed, with
+//! `M = 2^64 − 1` and `¬a = M − a` the 64-bit complement,
 //!
 //! ```text
-//!   2ab = Σ e_ij·2^(i+j) + (a + b)·M − M²
-//!       = Σ e_ij·2^(i+j) + (a + b)·2^64 + ¬a + ¬b + 1 − 2^128
+//!   2ab = Σ_i (a_i ? b : ¬b)·2^i + ¬a + ¬b + (a + b)·2^64 + 1 − 2^128
 //! ```
 //!
-//! where `¬a = M − a` is the 64-bit complement. Every term is an affine bit at a
-//! fixed column, so the product is a column sum of affine bits. For an `N`-bit
-//! result it is taken mod `2^(N+1)`, whose bits `1..=N` are `a·b mod 2^N`.
+//! Every row there is affine in the inputs. Its column 0,
+//! `¬(a_0 ⊕ b_0) + ¬a_0 + ¬b_0 + 1`, is `2 + 2g` with `g = ¬a_0·¬b_0`, so after
+//! that one product the identity halves: `a·b mod 2^N` is `1 + g` plus the other
+//! columns shifted down a place. That is 66 rows of affine bits, with `1` and
+//! `g` in the empty low bits of two of them.
 //!
 //! ## Compression
 //!
-//! Each column is summed by full adders, whose one row is the carry
-//! `maj(x, y, z) = (x ⊕ z)(y ⊕ z) ⊕ z`, and by a half adder `x·y` when two bits
-//! remain. Sums stay affine and uncommitted. The top column's carries fall off
-//! the modulus, so it folds by XOR alone.
+//! A carry-save step turns three rows into their XOR and their majority shifted
+//! up a place. The majority `(x ⊕ z)(y ⊕ z) ⊕ z` is one product at each position
+//! where at least two rows have a bit, except where exactly two do and the carry
+//! row is still free there: one of the two bits moves into it instead. Taking
+//! the three rows that end lowest each time, the 64 steps cost as few products
+//! as summing column by column, and a ripple-carry addition finishes the last
+//! two rows. The top position's majority would carry out of the modulus, so it
+//! is never a product.
+//!
+//! Every step is word arithmetic on `u128` rows and its products are one run of
+//! slots, so an instance's witness is a few shifts and masks per step.
 //!
 //! ## Witness layout per block
 //!
@@ -32,23 +40,28 @@
 //!   z[64        .. 128)       = b             (free input)
 //!   z[128       .. 128 + N)   = a·b mod 2^N   (committed copies)
 //!   z[128 + N]                = 1             (constant wire)
-//!   z[129 + N   .. useful)    = adder products
+//!   z[129 + N   .. useful)    = g, then each step's products
 //!   z[useful    .. 2^k_log)   = padding (forced to 0 by empty rows)
 //! ```
 //!
-//! As in [`crate::hash`], no matrix is ever built. The circuit is one gate
-//! list, walked forwards for the verifier, backwards for the prover, and over
-//! bits for the witness (doc/leanvm, Annex C "Evaluating the matrices").
+//! As in [`crate::hash`], no matrix is ever built. The steps also build one gate
+//! list, walked forwards for the verifier and backwards for the prover
+//! (doc/leanvm, Annex C "Evaluating the matrices").
 
 use crate::lincheck::LincheckCircuit;
 use crate::reduction::Block;
-use primitives::bits::{bit_transpose_64bytes, transpose_8_u64s_to_64_bytes};
+use crate::witness::{drive_witness_packed_and_lincheck, or_bit_at};
 use primitives::field::F192;
 use zk_alloc::ArenaVec;
 
 pub const A_BASE: usize = 0;
 pub const B_BASE: usize = 64;
 pub const OUT_BASE: usize = 128;
+
+/// The rows `(a_i ? b : ¬b)` for `i < 64`, then the `a` and `b` rows.
+const N_ROWS: usize = 66;
+const A_ROW: usize = 64;
+const B_ROW: usize = 65;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MulKind {
@@ -80,6 +93,21 @@ enum Gate {
     Copy(u32, u32),
 }
 
+/// One carry-save step: rows `x`, `y`, `z` become the sum row, stored in `x`,
+/// and the carry row, stored in `y`.
+#[derive(Clone, Copy)]
+struct Csa {
+    x: usize,
+    y: usize,
+    z: usize,
+    /// Positions whose majority is a product, one run of slots from `slot`.
+    products: u128,
+    /// Positions where the pair's `y` (or `z`) bit moves to the carry row.
+    move_y: u128,
+    move_z: u128,
+    slot: usize,
+}
+
 struct Builder {
     gates: Vec<Gate>,
     next_slot: usize,
@@ -91,19 +119,54 @@ impl Builder {
         (self.gates.len() - 1) as u32
     }
 
-    fn xor(&mut self, x: u32, y: u32) -> u32 {
-        self.push(Gate::Xor(x, y))
+    /// `None` is a structural zero.
+    fn xor(&mut self, x: Option<u32>, y: Option<u32>) -> Option<u32> {
+        match (x, y) {
+            (Some(x), Some(y)) => Some(self.push(Gate::Xor(x, y))),
+            _ => x.or(y),
+        }
     }
 
-    fn and(&mut self, x: u32, y: u32) -> u32 {
+    fn and(&mut self, x: Option<u32>, y: Option<u32>) -> u32 {
         let slot = self.next_slot as u32;
         self.next_slot += 1;
-        self.push(Gate::And(x, y, slot))
+        self.push(Gate::And(x.unwrap(), y.unwrap(), slot))
+    }
+}
+
+/// A row's `(highest, lowest)` position.
+fn ends(row: u128) -> (u32, u32) {
+    (127 - row.leading_zeros(), row.trailing_zeros())
+}
+
+fn is_run(mask: u128) -> bool {
+    let run = mask.checked_shr(mask.trailing_zeros()).unwrap_or(0);
+    run & run.wrapping_add(1) == 0
+}
+
+/// OR `v` into `buf` from bit `at`.
+#[inline(always)]
+fn or_bits(buf: &mut [u64], at: usize, v: u128) {
+    let s = at % 64;
+    let words = [
+        (v << s) as u64,
+        ((v >> 1) >> (63 - s)) as u64,
+        ((v >> 1) >> (127 - s)) as u64,
+    ];
+    for (w, x) in buf[at / 64..].iter_mut().zip(words) {
+        *w |= x;
     }
 }
 
 pub struct MulCircuit {
     gates: Vec<Gate>,
+    steps: Vec<Csa>,
+    /// The two rows the steps leave, and where adding them makes a product.
+    last: (usize, usize),
+    carries: u128,
+    carry_slot: usize,
+    /// Positions below `N`.
+    width: u128,
     const_pos: usize,
     k_log: usize,
     useful_bits: usize,
@@ -112,62 +175,139 @@ pub struct MulCircuit {
 impl MulCircuit {
     pub fn new(kind: MulKind) -> Self {
         let n = kind.out_bits();
+        let width = u128::MAX >> (128 - n);
         let const_pos = OUT_BASE + n;
         let mut c = Builder {
             gates: Vec::new(),
             next_slot: const_pos + 1,
         };
-        let one = c.push(Gate::Free(const_pos as u32));
-        let a: [u32; 64] = std::array::from_fn(|i| c.push(Gate::Free((A_BASE + i) as u32)));
-        let b: [u32; 64] = std::array::from_fn(|i| c.push(Gate::Free((B_BASE + i) as u32)));
+        let one = Some(c.push(Gate::Free(const_pos as u32)));
+        let a: [_; 64] = std::array::from_fn(|i| Some(c.push(Gate::Free((A_BASE + i) as u32))));
+        let b: [_; 64] = std::array::from_fn(|i| Some(c.push(Gate::Free((B_BASE + i) as u32))));
+        let not_a: [_; 64] = std::array::from_fn(|i| c.xor(a[i], one));
+        let not_b: [_; 64] = std::array::from_fn(|i| c.xor(b[i], one));
+        let g = Some(c.and(not_a[0], not_b[0]));
 
-        // The affine bits of `2ab mod 2^(n+1)`, by column.
-        let mut cols = vec![Vec::new(); n + 1];
-        for i in 0..64 {
-            for j in 0..64.min(n + 1 - i) {
-                let x = c.xor(a[i], b[j]);
-                cols[i + j].push(c.xor(x, one));
-            }
-            for x in [a[i], b[i]] {
-                cols[i].push(c.xor(x, one));
-                if 64 + i <= n {
-                    cols[64 + i].push(x);
+        // Each row's wire per position, all shifted down a place: row 0's bit 0
+        // is what `g` and the constant 1 replace.
+        let mut rows = vec![vec![None; n]; N_ROWS];
+        for i in 0..64usize {
+            for j in 0..64 {
+                if let Some(p) = (i + j).checked_sub(1).filter(|&p| p < n) {
+                    rows[i][p] = c.xor(b[j], not_a[i]);
                 }
             }
         }
-        // The constant `1 − 2^128`, which is `1 + 2^128` mod `2^129`.
-        for p in [0, 128] {
-            if p <= n {
-                cols[p].push(one);
-            }
+        // `(¬a ≫ 1) + a·2^63`, and the same for `b`.
+        for (row, low, high) in [(A_ROW, not_a, a), (B_ROW, not_b, b)] {
+            let len = 64.min(n - 63);
+            rows[row][..63].copy_from_slice(&low[1..]);
+            rows[row][63..63 + len].copy_from_slice(&high[..len]);
         }
+        rows[2][0] = one;
+        rows[3][0] = g;
+        // Half of the constant `2^128`, which survives only mod `2^128`.
+        if n == 128 {
+            rows[A_ROW][127] = one;
+        }
+        let mut present: Vec<u128> = rows
+            .iter()
+            .map(|row| (0..n).filter(|&p| row[p].is_some()).fold(0, |m, p| m | (1 << p)))
+            .collect();
 
-        for p in 0..=n {
-            let mut col = std::mem::take(&mut cols[p]);
-            while col.len() > 1 {
-                let (x, y) = (col.pop().unwrap(), col.pop().unwrap());
-                if p == n {
-                    col.push(c.xor(x, y));
-                } else if let Some(z) = col.pop() {
-                    let xz = c.xor(x, z);
-                    let yz = c.xor(y, z);
-                    let maj = c.and(xz, yz);
-                    cols[p + 1].push(c.xor(maj, z));
-                    col.push(c.xor(xz, y));
+        let mut live: Vec<usize> = (0..N_ROWS).collect();
+        let mut steps = Vec::new();
+        while live.len() > 2 {
+            let mut order: Vec<usize> = (0..live.len()).collect();
+            order.sort_by_key(|&t| ends(present[live[t]]));
+            let [x, y, z] = [live[order[0]], live[order[1]], live[order[2]]];
+            live.retain(|r| ![x, y, z].contains(r));
+            live.extend([x, y]);
+
+            let (px, py, pz) = (present[x], present[y], present[z]);
+            let pairs = ((px & py) | (px & pz) | (py & pz)) & (width >> 1);
+            let triples = px & py & pz;
+            let (mut products, mut moves) = (0u128, 0u128);
+            for p in (0..n - 1).filter(|&p| (pairs >> p) & 1 == 1) {
+                // The carry row is free at `p` unless `p − 1` has a product.
+                if (triples >> p) & 1 == 0 && (products << 1) >> p & 1 == 0 {
+                    moves |= 1 << p;
                 } else {
-                    cols[p + 1].push(c.and(x, y));
-                    col.push(c.xor(x, y));
+                    products |= 1 << p;
                 }
             }
-            // Column 0 is always zero, since `2ab` is even.
-            if p > 0 {
-                c.push(Gate::Copy(col[0], (OUT_BASE + p - 1) as u32));
+            assert!(is_run(products), "a step's products must be one run of slots");
+            let step = Csa {
+                x,
+                y,
+                z,
+                products,
+                move_y: moves & !pz,
+                move_z: moves & pz,
+                slot: c.next_slot,
+            };
+
+            let (mut sum, mut carry) = (vec![None; n], vec![None; n]);
+            for p in 0..n {
+                let (wx, wy, wz) = (rows[x][p], rows[y][p], rows[z][p]);
+                if (products >> p) & 1 == 1 {
+                    let xz = c.xor(wx, wz);
+                    let yz = c.xor(wy, wz);
+                    let maj = c.and(xz, yz);
+                    carry[p + 1] = c.xor(Some(maj), wz);
+                    sum[p] = c.xor(xz, wy);
+                } else if (step.move_z >> p) & 1 == 1 {
+                    carry[p] = wz;
+                    sum[p] = c.xor(wx, wy);
+                } else if (step.move_y >> p) & 1 == 1 {
+                    carry[p] = wy;
+                    sum[p] = wx;
+                } else {
+                    let xz = c.xor(wx, wz);
+                    sum[p] = c.xor(xz, wy);
+                }
             }
+            rows[x] = sum;
+            rows[y] = carry;
+            present[x] = px | py | pz;
+            present[y] = (products << 1) | moves;
+            steps.push(step);
         }
+
+        let &[x, y] = live.as_slice() else {
+            unreachable!("the steps stop at two rows")
+        };
+        let carry_slot = c.next_slot;
+        let mut carries = 0u128;
+        let mut carry = None;
+        for p in 0..n {
+            let (wx, wy) = (rows[x][p], rows[y][p]);
+            let out = if p + 1 < n && [wx, wy, carry].iter().flatten().count() >= 2 {
+                carries |= 1 << p;
+                let xc = c.xor(wx, carry);
+                let yc = c.xor(wy, carry);
+                let maj = c.and(xc, yc);
+                carry = c.xor(Some(maj), carry);
+                c.xor(xc, wy)
+            } else {
+                let xy = c.xor(wx, wy);
+                c.xor(xy, carry.take())
+            };
+            c.push(Gate::Copy(
+                out.expect("every output bit has a wire"),
+                (OUT_BASE + p) as u32,
+            ));
+        }
+        assert!(is_run(carries), "the final carries must be one run of slots");
 
         let useful_bits = c.next_slot;
         Self {
             gates: c.gates,
+            steps,
+            last: (x, y),
+            carries,
+            carry_slot,
+            width,
             const_pos,
             k_log: useful_bits.next_power_of_two().trailing_zeros() as usize,
             useful_bits,
@@ -225,105 +365,66 @@ impl MulCircuit {
     /// `(z, a, b, z_lincheck)` for `pairs` padded with `(0, 0)` to
     /// `2^n_blocks_log` instances: the bit-packed `z`, `A·z` and `B·z`
     /// (`2^k_log / 64` words per instance), and lincheck's byte stripes.
-    ///
-    /// The gates run on eight instances at once, one byte per wire with bit `t`
-    /// for instance `t`. That is a stripe's own layout, so `z` lands in
-    /// `z_lincheck` as it is computed and only the packed tables take a
-    /// transpose.
     pub fn generate_witness(
         &self,
         pairs: &[(u64, u64)],
         n_blocks_log: usize,
     ) -> (ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u8>) {
-        let k = self.n_cols();
-        let words = k / 64;
-        let n_total = 1usize << n_blocks_log;
-        assert!(n_total >= 8, "lincheck stripes need at least 8 instances");
-        assert!(pairs.len() <= n_total, "{} pairs exceed {n_total} slots", pairs.len());
-
-        // SAFETY (x4): group `g` writes all of chunk `g` of every table: its
-        // stripe is zeroed and then written, and `unstripe` stores every word.
-        let mut z = unsafe { ArenaVec::<u64>::uninitialized(n_total * words) };
-        let mut a = unsafe { ArenaVec::<u64>::uninitialized(n_total * words) };
-        let mut b = unsafe { ArenaVec::<u64>::uninitialized(n_total * words) };
-        let mut z_lincheck = unsafe { ArenaVec::<u8>::uninitialized(n_total / 8 * k) };
-        let z_chunks = parallel::Chunks::new(&mut z, 8 * words);
-        let a_chunks = parallel::Chunks::new(&mut a, 8 * words);
-        let b_chunks = parallel::Chunks::new(&mut b, 8 * words);
-        let stripes = parallel::Chunks::new(&mut z_lincheck, k);
-        parallel::for_each_chunk(n_total / 8, |start, end| {
-            let mut wires = Vec::with_capacity(self.gates.len());
-            let mut az = vec![0u8; k];
-            let mut bz = vec![0u8; k];
-            for g in start..end {
-                // SAFETY: group `g` takes chunk `g` of each table exactly once, and
-                // all four tables stay borrowed for the whole dispatch.
-                let (zg, ag, bg, stripe) =
-                    unsafe { (z_chunks.get(g), a_chunks.get(g), b_chunks.get(g), stripes.get(g)) };
-                let pair = |t: usize| pairs.get(8 * g + t).copied().unwrap_or((0, 0));
-                let mut a_in = [0u8; 64];
-                let mut b_in = [0u8; 64];
-                transpose_8_u64s_to_64_bytes(&std::array::from_fn(|t| pair(t).0), &mut a_in);
-                transpose_8_u64s_to_64_bytes(&std::array::from_fn(|t| pair(t).1), &mut b_in);
-                self.eval8(&a_in, &b_in, &mut wires, stripe, &mut az, &mut bz);
-                unstripe(stripe, zg);
-                unstripe(&az, ag);
-                unstripe(&bz, bg);
-            }
-        });
-        (z, a, b, z_lincheck)
+        drive_witness_packed_and_lincheck(pairs, Some(&(0, 0)), n_blocks_log, self.k_log, |&(a, b), z, az, bz| {
+            self.block_witness(a, b, z, az, bz)
+        })
     }
 
-    /// Run the gates on eight instances, writing each row's `z`, `A·z` and `B·z`
-    /// bytes.
-    fn eval8(&self, a_in: &[u8; 64], b_in: &[u8; 64], wires: &mut Vec<u8>, z: &mut [u8], az: &mut [u8], bz: &mut [u8]) {
-        z.fill(0);
-        az.fill(0);
-        bz.fill(0);
-        wires.clear();
-        for &gate in &self.gates {
-            let v = match gate {
-                Gate::Free(s) => {
-                    let s = s as usize;
-                    let v = match s {
-                        A_BASE..B_BASE => a_in[s - A_BASE],
-                        B_BASE..OUT_BASE => b_in[s - B_BASE],
-                        _ => 0xFF,
-                    };
-                    (z[s], az[s], bz[s]) = (v, v, 0xFF);
-                    v
-                }
-                Gate::Xor(x, y) => wires[x as usize] ^ wires[y as usize],
-                Gate::And(x, y, s) => {
-                    let (l, r) = (wires[x as usize], wires[y as usize]);
-                    let s = s as usize;
-                    (z[s], az[s], bz[s]) = (l & r, l, r);
-                    l & r
-                }
-                Gate::Copy(x, s) => {
-                    let v = wires[x as usize];
-                    let s = s as usize;
-                    (z[s], az[s], bz[s]) = (v, v, 0xFF);
-                    v
-                }
-            };
-            wires.push(v);
+    /// One instance: its rows run through the steps as words, each step's
+    /// products written as one bit field.
+    fn block_witness(&self, a: u64, b: u64, z: &mut [u64], az: &mut [u64], bz: &mut [u64]) {
+        let (na, nb) = (!a, !b);
+        let mut rows = [0u128; N_ROWS];
+        for (i, row) in rows[..64].iter_mut().enumerate() {
+            let v = (b ^ ((a >> i) & 1).wrapping_sub(1)) as u128;
+            *row = if i == 0 { v >> 1 } else { v << (i - 1) };
         }
-    }
-}
+        rows[A_ROW] = ((na >> 1) as u128) | ((a as u128) << 63) | (1 << 127);
+        rows[B_ROW] = ((nb >> 1) as u128) | ((b as u128) << 63);
+        rows[2] |= 1;
+        rows[3] |= (na & nb & 1) as u128;
+        for row in &mut rows {
+            *row &= self.width;
+        }
 
-/// Lay out a stripe (byte `j`, bit `t` = instance `t`'s bit `j`) as its eight
-/// instances' packed words. The transpose cycles three index roles, so applying
-/// it twice undoes the once `transpose_8_u64s_to_64_bytes` applies.
-fn unstripe(stripe: &[u8], out: &mut [u64]) {
-    let words = stripe.len() / 64;
-    let mut once = [0u8; 64];
-    let mut lanes = [0u8; 64];
-    for (w, window) in stripe.as_chunks::<64>().0.iter().enumerate() {
-        bit_transpose_64bytes(window, &mut once);
-        bit_transpose_64bytes(&once, &mut lanes);
-        for (t, lane) in lanes.as_chunks::<8>().0.iter().enumerate() {
-            out[t * words + w] = u64::from_le_bytes(*lane);
+        for (base, v) in [(A_BASE, a), (B_BASE, b)] {
+            (z[base / 64], az[base / 64], bz[base / 64]) = (v, v, !0);
+        }
+        for buf in [&mut *z, &mut *az, &mut *bz] {
+            or_bit_at(buf, self.const_pos);
+        }
+        let mut write = |slot: usize, mask: u128, left: u128, right: u128| {
+            if mask != 0 {
+                let shift = mask.trailing_zeros();
+                or_bits(z, slot, (left & right & mask) >> shift);
+                or_bits(az, slot, (left & mask) >> shift);
+                or_bits(bz, slot, (right & mask) >> shift);
+            }
+        };
+        write(self.const_pos + 1, 1, na as u128, nb as u128);
+
+        for s in &self.steps {
+            let (rx, ry, rz) = (rows[s.x], rows[s.y], rows[s.z]);
+            let (xz, yz) = (rx ^ rz, ry ^ rz);
+            let moved = (ry & s.move_y) | (rz & s.move_z);
+            rows[s.x] = rx ^ ry ^ rz ^ moved;
+            rows[s.y] = ((((xz & yz) ^ rz) & s.products) << 1) | moved;
+            write(s.slot, s.products, xz, yz);
+        }
+
+        let (rx, ry) = (rows[self.last.0], rows[self.last.1]);
+        let sum = rx.wrapping_add(ry) & self.width;
+        let carry_in = sum ^ rx ^ ry;
+        write(self.carry_slot, self.carries, rx ^ carry_in, ry ^ carry_in);
+        for w in 0..self.width.count_ones() as usize / 64 {
+            let v = (sum >> (64 * w)) as u64;
+            let i = OUT_BASE / 64 + w;
+            (z[i], az[i], bz[i]) = (v, v, !0);
         }
     }
 }
@@ -403,8 +504,8 @@ mod tests {
             .collect()
     }
 
-    /// The committed output is the native product, every row holds, and the
-    /// stripes are the packed witness transposed.
+    /// The committed output is the native product and every row holds, which
+    /// ties the word-level witness to the gate list the walks read.
     #[test]
     fn witness_is_the_product_and_satisfies_r1cs() {
         let n_log = 6;
@@ -412,11 +513,7 @@ mod tests {
             let circuit = MulCircuit::new(kind);
             let k = circuit.n_cols();
             let pairs = pairs(1 << n_log, 0x3A11);
-            let (z, _, _, z_lincheck) = circuit.generate_witness(&pairs, n_log);
-            assert_eq!(
-                *z_lincheck,
-                *crate::lincheck::pack_z_lincheck_from_packed(&z, circuit.k_log + n_log, circuit.k_log)
-            );
+            let (z, _, _, _) = circuit.generate_witness(&pairs, n_log);
             for (t, &(x, y)) in pairs.iter().enumerate() {
                 let word = |w: usize| z[t * (k / 64) + w];
                 let product = x as u128 * y as u128;
@@ -440,8 +537,8 @@ mod tests {
     }
 
     /// The reduction verifies an honest batch, which is also what ties the
-    /// prover's backward walk to the verifier's forward one, and rejects one
-    /// flipped witness bit.
+    /// prover's backward walk and the `A·z`, `B·z` tables to the verifier's
+    /// forward walk, and rejects one flipped witness bit.
     #[test]
     fn reduction_roundtrip_rejects_tampering() {
         const LABEL: &[u8] = b"flock-mul-reduction-test";
