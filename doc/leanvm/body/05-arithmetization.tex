@@ -9,7 +9,7 @@ The arithmetization is inspired by the M3 model (multi-multiset matching)~\cite{
 
 \paragraph{Constraints.} The constraints of $T_j$ are $C_{j,1},\dots,C_{j,\ncons{j}}$, each a polynomial over $\K$ of degree at most $d$ ($d=2$ throughout) in the $\ncol{j}$ columns, required to vanish on every row in $\cube{\tau_j}$.
 
-\paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=16$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns. A few \emph{boundary} tuples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \fp)$, the initial $(\dsep{ST}, \gen^0, \gen^0)$ is pushed and the final $(\dsep{ST}, \gen^{\,\nprog-1}, \gen^{0})$ is pulled).
+\paragraph{The bus.} All interactions (between tables) share a single \emph{bus}, a channel carrying tuples of up to $m=16$ $\K$-elements (shorter ones are zero-padded). Table $T_j$ has $\nfl{j}$ flushes $\btup_{j,1},\dots,\btup_{j,\nfl{j}}$, each is either a \emph{push} or a \emph{pull}. Each one of the $m$ coordinates in each tuple is a fixed polynomial of degree at most $d$ in the table's columns, so every row $x\in\cube{\tau_j}$ emits one tuple $\btup_{j,f}(x)$ per flush. A few \emph{boundary} tuples are pushed (resp. pulled) by default to the bus (for instance for the VM state $(\dsep{ST}, \pc, \fp)$, the initial $(\dsep{ST}, \gen^0, \gen^0)$ is pushed and the final $(\dsep{ST}, \gen^{\,\nprog-1}, \gen^{0})$ is pulled).
 
 \paragraph{Balance.} The bus balances when its pushed tuples and its pulled tuples form the same multiset (\ref{def:multiset}).
 
@@ -96,31 +96,31 @@ All $\nside$ trees leave the pass on claims at one shared terminal point $\zeta$
 
 \subsection{Stacking the leaves}\label{sec:leafstack}
 
-The GKR grand-product argument reduces each side of \eqref{eq:gp} to a single evaluation $\widetilde V_0(\zeta)$ of its \emph{leaves}, the product's factors $\beta-\pi_\alpha(\btup)$, one per bus tuple $\btup$.
+GKR (\S\ref{sec:gkr}) leaves one claim per side $s$: the value of $\widetilde V^{s}_0(\zeta)$, the extension of that side's leaves at the terminal point $\zeta\in\E^{\mu}$. This subsection reduces it to one sum per table, over its rows, of a polynomial of degree at most $d=2$ in its columns: exactly what the \emph{table sumcheck} (\S\ref{sec:air}) proves.
 
-\paragraph{Flush blocks.} The leaves split into \emph{blocks}, one per flush rule and one per boundary set. A block of a $2^{\kappa}$-row table holds $2^{\kappa}$ leaves; the row-$z$ leaf is $\beta-\sum_{\iota}\eq(\alpha,\iota)\,c_{\iota}(z)$, with $c_{\iota}(z)$ slot $\iota$ of the row's tuple. Each $c_\iota$ is a polynomial of degree at most $d = 2$ in the columns (at the corresponding row) (\S\ref{sec:m3}).
-
-\paragraph{Layout.} Order the blocks largest first at aligned offsets, padding to $2^{\mu}$ leaves with $1$s, which leave the product unchanged. This is the stacking of \S\ref{sec:stacking} applied to blocks: block $b$, of $2^{\kappa_b}$ leaves, occupies the subcube $\{(z,\mathsf{sel}_b):z\in\cube{\kappa_b}\}$ for a fixed selector $\mathsf{sel}_b$ (that depends only on the table, bytecode and memory sizes).
-
-\paragraph{Decomposition.} Split $\zeta=(\zeta^{b}_{\mathrm{lo}},\zeta^{b}_{\mathrm{hi}})$ at block $b$'s boundary. Each block is a subcube, so the leaf MLE splits into a public selector times the block's own MLE, plus what the padding contributes:
+\paragraph{Blocks.} The leaves of side $s$ are a stack (\S\ref{sec:stacking}) whose pieces are its \emph{blocks}: one per flush of each table on that side, and one per boundary set (\S\ref{sec:m3}, \S\ref{sec:lookup}). Block $b$ holds $2^{\kappa_b}$ leaves $L_b(x)$ and sits at the public selector $\mathsf{sel}_b$; for the block of a flush $\btup_{j,f}$, $\kappa_b=\tau_j$ and $L_b(x)=\beta-\pi_\alpha(\btup_{j,f}(x))$. One diffence with the stacking at commitment (\S\ref{sec:stacking}) is the padding: $1$s rather than $0$s.
 \begin{equation}\label{eq:gkr_leaves}
-  \widetilde V_0(\zeta)\;=\;\sum_b \eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_{\iota}\eq(\alpha,\iota)\,\widetilde c_{b,\iota}(\zeta^{b}_{\mathrm{lo}})\Bigr)\;+\;\Bigl(1+\sum_b\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigr).
+  \widetilde V^{s}_0(\zeta)\;=\;\sum_{b}\eq(\mathsf{sel}_b,\zeta_{\ge\kappa_b})\;\widetilde L_b(\zeta_{<\kappa_b})\;+\;\underbrace{\Bigl(1-\sum_{b}\eq(\mathsf{sel}_b,\zeta_{\ge\kappa_b})\Bigr)}_{\text{padding}},
 \end{equation}
-That last term is the padding's weight, for the final $\dots 1111$.
+both sums over the blocks of side $s$.
 
-\paragraph{Settling it.} Fix one side $s$. The boundary tuples (\S\ref{sec:m3}) and each array's seed and finalization (\S\ref{sec:lookup}) belong to no table. Their entries have degree one: a constant, the index column (\S\ref{sec:idxcol}), a public component, or one committed column. The prover sends, for each such committed multilinear, its evaluation at $\zeta^{b}_{\mathrm{lo}}$. These claims are then deferred to the PCS (\S\ref{sec:stacking}). The verifier finally evaluates each contribution, and subtracts them, with the corresponding padding term, from the claimed value of $\widetilde V^{s}_0(\zeta)$. Call the remainder $\mathsf{rem}_{s}$: it remains to prove an equation similar to \eqref{eq:gkr_leaves}, summing only on the flush blocks from tables.
+\paragraph{Who settles what.} Three kinds of terms:
+\begin{itemize}[itemsep=1pt,topsep=3pt]
+\item \emph{Padding.} Public: the verifier evaluates it.
+\item \emph{Boundary blocks.} Every slot of their tuples is public (a constant, a public input, or the index column of \S\ref{sec:idxcol}) or a single committed column, so $\widetilde L_b(\zeta_{<\kappa_b})$ is a linear combination of their evaluations at $\zeta_{<\kappa_b}$. The verifier computes the public ones; the prover sends each committed one, as a claim deferred to the PCS (\S\ref{sec:stacking}).
+\item \emph{Table blocks.} Nothing is sent for them: the table sumcheck proves them.
+\end{itemize}
+The verifier subtracts the first two kinds from the claimed value; the difference, $\mathsf{rem}_{s}$, is what the tables owe.
 
-Let $\mathcal B$ be the blocks of $T_j$'s flushes in this leaf vector, one per flush rule (\S\ref{sec:m3}). Each holds one leaf per row of $T_j$, so each is $2^{\tau_j}$ tall and all of them split $\zeta$ at the same place, $\zeta^{b}_{\mathrm{lo}}=\zeta_{<\tau_j}$ and $\zeta^{b}_{\mathrm{hi}}=\zeta_{\ge\tau_j}$, differing only through their selector. Exchanging the two sums,
-\begin{align*}
-  \sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\Bigl(\beta-\sum_{\iota}\eq(\alpha,\iota)\,c_{b,\iota}(x)\Bigr)
-  &\;=\;\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x),\\
-  B^{s}_j&\;=\;\sum_{b\in\mathcal B}\eq(\mathsf{sel}_b,\zeta^{b}_{\mathrm{hi}})\Bigl(\beta-\sum_\iota\eq(\alpha,\iota)\,c_{b,\iota}\Bigr).
-\end{align*}
-$B^{s}_j$ has degree at most $d$ in $T_j$'s columns, and the verifier builds its coefficients from $\alpha$, $\beta$ and the selectors. What remains to prove is
-\[
-  \sum_j\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s} .
-\]
-There is one such equation per side. Nothing is sent for these blocks. Each constraint of $T_j$ owes a sum of the same shape, so one sumcheck over the tables' rows proves them all (\S\ref{sec:air}).
+\paragraph{What a table owes.} A block of $T_j$ has $\kappa_b=\tau_j$, so by Fact~\ref{fact:eq} its term in \eqref{eq:gkr_leaves} is a sum over $T_j$'s rows against the weight $\eq(\zeta_{<\tau_j},\cdot)$. The blocks of $T_j$ share that weight and differ only by selector, so together they contribute one such sum, of
+\begin{equation}\label{eq:bus_poly}
+  B^{s}_j(x)\;=\;\sum_{b\,\in\,T_j}\eq(\mathsf{sel}_b,\zeta_{\ge\tau_j})\,L_b(x),
+\end{equation}
+of degree at most $d$ in $T_j$'s columns, with coefficients the verifier builds from $\alpha$, $\beta$ and the selectors. What remains of side $s$ is
+\begin{equation}\label{eq:bus}
+  \sum_{j=1}^{\ntab}\ \sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s},
+  \qquad s\in\{1,\dots,\nside\}.
+\end{equation}
 
 \subsection{Table sumcheck}\label{sec:air}
 
@@ -135,12 +135,7 @@ There is one such equation per side. Nothing is sent for these blocks. Each cons
   \qquad \text{for } j\in\{1,\dots,\ntab\},\ i\in\{1,\dots,\ncons{j}\}.
 \end{equation}
 
-\paragraph{The bus claims join in.} \S\ref{sec:leafstack} left one per side, at that same point,
-\begin{equation}\label{eq:bus}
-  \sum_{j=1}^{\ntab}\sum_{x\in\cube{\tau_j}}\eq(\zeta_{<\tau_j},x)\,B^{s}_j(x)\;\qeq\;\mathsf{rem}_{s},
-  \qquad \text{for } s\in\{1,\dots,\nside\}.
-\end{equation}
-Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
+\paragraph{The bus claims join in.} \S\ref{sec:leafstack} left one claim per side at that same point, \eqref{eq:bus}. Both \eqref{eq:cons} and \eqref{eq:bus} are built from $\eq(\zeta_{<\tau_j},\cdot)$-weighted sums over one table's rows of a polynomial of degree at most $d$ in its columns: we batch them in a single sumcheck.
 
 \paragraph{Back-loaded batched sumcheck.} The verifier samples $\xi\in\E$ and gives each claim its own power of it: $\xi^{\,o_j+i-1}$ for $C_{j,i}$, with $o_j=\ncons{1}+\dots+\ncons{j-1}$ numbering the constraints table by table, and then $\xi^{\,\nconstot+s-1}$ for side $s$, with $\nconstot=\sum_j\ncons{j}$ the constraint count. A sumcheck runs over one cube, so write $\taumax=\max_j\tau_j$, let $X_{<\tau_j}=(X_0,\dots,X_{\tau_j-1})$ be the variables $T_j$ uses, and multiply in the ones it does not:
 \[
