@@ -9,8 +9,7 @@ use primitives::field::{F64, F192};
 /// `f(a, b) = BLAKE2s(a‖b)` on two 256-bit halves laid out little-endian into
 /// 64 bytes, *exactly* the VM's `Blake2s` opcode: 64 input bytes → 32-byte
 /// digest, split back into four field words. THE primitive; the chain is a
-/// chain of these, so a zkDSL program replays it with one `blake2s(...)` per
-/// step.
+/// chain of these, so a VM program replays it with one `BLAKE2S` row per step.
 ///
 /// A 64-byte input is one compression, so this is `compress(init_state(0), m,
 /// t = 64, last = true)` and nothing about the byte-level padding rules can

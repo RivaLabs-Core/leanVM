@@ -38,7 +38,7 @@ leanVM is designed for security:
 Expect leanVM to change significantly:
 
 * **hash**: BLAKE2s is a placeholder. SHA2, SHA3, BLAKE3 are actively considered.
-* **ISA**: A migration from leanISA to RISC-V (rv64im) is planned. Memory is already read-write, and `ADD_U64` / `MUL_U64` give the ISA wrapping 64-bit integer arithmetic, proven by Flock. This branch has no front end: programs are hand-assembled.
+* **ISA**: A migration from leanISA to RISC-V (rv64im) is planned. Memory is already read-write and addressed by integers (a pointer is a word holding a cell's number), and `ADD_U64` / `MUL_U64` give the ISA wrapping 64-bit integer arithmetic, proven by Flock. This branch has no front end: programs are hand-assembled.
 * **zk**: Support for zero-knowledge is planned.
 
 **note**: Prior to binary fields leanVM used [KoalaBear](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458). The historical design is in [this branch](https://github.com/leanEthereum/leanVM/tree/koalabear).

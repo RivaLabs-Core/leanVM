@@ -2,58 +2,35 @@
 
 use primitives::field::F64;
 
+/// One instruction (§sec:vm). Every `u32` operand is an offset into the current
+/// frame: `m[x]` below is the cell `fp + x`. Cells, `pc` and `fp` are numbered
+/// `0, 1, 2, ...`, and a word used as a pointer, a jump target or a frame holds that
+/// integer, `F64(i)`.
 #[derive(Clone, Copy, Debug)]
 pub enum Op {
     /// `m[c] = m[a] + m[b]` in `K`.
-    Xor64 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
+    Xor64 { a: u32, b: u32, c: u32 },
     /// `m[c] = m[a] · m[b]` in `K`.
-    Mul64 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
-    Set {
-        o: u32,
-        k: F64,
-    },
-    Deref {
-        o1: u32,
-        o2: u32,
-        o3: u32,
-        mode: DerefMode,
-    },
-    Jump {
-        oc: u32,
-        od: u32,
-        of: u32,
-    },
+    Mul64 { a: u32, b: u32, c: u32 },
+    /// `m[o] = k`.
+    Set { o: u32, k: F64 },
+    /// A store through a pointer: the cell `m[o1] + o2`, an absolute address, receives
+    /// `m[o3]`, `pc + 2` or `fp` according to `mode`. `m[o3]` is read in every mode.
+    Deref { o1: u32, o2: u32, o3: u32, mode: DerefMode },
+    /// If `m[oc]` is nonzero, continue at `pc = m[od]` in the frame `fp = m[of]`;
+    /// otherwise fall through. A call is a `Deref` in `Pc` mode then a `Jump`, which
+    /// returns to the instruction after the `Jump`.
+    Jump { oc: u32, od: u32, of: u32 },
     /// One standard BLAKE2s compression. Each message chunk `ins[i]` names two
     /// consecutive 64-bit cells, so the 64-byte block is addressed as four
     /// independent 128-bit chunks. The chaining value and the digest each span
     /// four consecutive cells, the metadata `counter | f0 ‖ f1` two. The
     /// compression relation is proven by flock.
-    Blake2s {
-        ins: [u32; 4],
-        cv: u32,
-        out: u32,
-        md: u32,
-    },
+    Blake2s { ins: [u32; 4], cv: u32, out: u32, md: u32 },
     /// `m[c] = m[a] + m[b] mod 2^64`, the three words read as unsigned integers.
-    AddU64 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
+    AddU64 { a: u32, b: u32, c: u32 },
     /// `m[c] = m[a] · m[b] mod 2^64`.
-    MulU64 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
+    MulU64 { a: u32, b: u32, c: u32 },
 }
 
 /// The source `DEREF` stores at `mem[loc_o1 + o2]`: a local cell, the return
