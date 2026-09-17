@@ -86,7 +86,7 @@ If $\mu$ is odd, GKR first processes the root-most binary layer, which has no su
 
 \subsubsection{Batching several grand-products}
 
-For recursion friendliness, the $\nside$ grand products, numbered $s=1,\dots,\nside$, are proven in one pass, at one sumcheck per layer instead of $\nside$.
+The $\nside$ grand products, numbered $s=1,\dots,\nside$, are proven in one pass, at one sumcheck per layer instead of $\nside$.
 
 Pad every tree with $1$-leaves up to the depth $\mu$ of the deepest. The verifier then samples at every layer a combiner $\lambda \in \E$, and each layer runs a single sumcheck on the random linear combination of the $\nside$ identities,
 \[
