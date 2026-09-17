@@ -9,10 +9,15 @@ use super::*;
 // Shared committed columns (indices `0..N_SHARED`). The program (opcode +
 // operands) is PUBLIC, not committed: it rides the bytecode seed/finalize blocks
 // as `Coord::Public`; only the witness-dependent finalize counts are committed.
-// The data-memory image, one K word per cell.
-pub const MEM: usize = 0;
-pub const MFCNT: usize = 1; // per-cell memory access count, g^{A[i]}
-pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
+// The data memory before the run and after it, one K word per cell, and each
+// cell's last timestamp (§sec:memchan).
+pub const MEM_INIT: usize = 0;
+pub const MEM_FIN: usize = 1;
+pub const MFTS: usize = 2; // per-cell final timestamp g^y, g^0 if never accessed
+pub const BFCNT: usize = 3; // per-pc bytecode execution count, g^{A[pc]}
+// Per-entry read counts of the two range arrays (§sec:rangecheck).
+pub const RLO_CNT: usize = 4;
+pub const RHI_CNT: usize = 5;
 // flock's packed BLAKE2s witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE2s program commits one full padding instance). It is the
@@ -20,8 +25,8 @@ pub const BFCNT: usize = 2; // per-pc bytecode execution count, g^{A[pc]}
 // virtual and their memory-bus claims route to `q_flock` slots (§hash_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
-pub const QFLOCK: usize = 3;
-pub const N_SHARED: usize = 4;
+pub const QFLOCK: usize = 6;
+pub const N_SHARED: usize = 7;
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
@@ -68,7 +73,7 @@ fn offset_coord(base: usize, c: Coord) -> Coord {
 pub struct Layout {
     pub push: Vec<Block>,
     pub pull: Vec<Block>,
-    /// Count channel: read-count columns whose product must be nonzero (§sec:memchan).
+    /// Count channel: the lookups' read-count columns, whose product must be nonzero (§sec:lookup).
     pub count: Vec<Block>,
     /// Per-column placement (offset + n_vars) in the stacked witness; from the
     /// columns' log-sizes alone, so reconstructable by the verifier.
@@ -76,8 +81,8 @@ pub struct Layout {
     /// The stacked witness's shape: its announced `2^mu` size, plus how many lane
     /// blocks of it the prover actually commits (see [`witness::StackShape`]).
     pub shape: witness::StackShape,
-    /// Public input: the first four memory cells, bound to the committed memory at
-    /// verification (§sec:e2e-pi).
+    /// The public words: the first four memory cells, bound to the committed memory
+    /// before and after the run at verification (§sec:e2e-pi).
     pub pi: [F64; 4],
     pub taus: [usize; tables::N_TABLES],
 }
@@ -92,6 +97,8 @@ pub(crate) struct Witness {
     pub(crate) virt: Vec<(usize, zk_alloc::ArenaVec<F64>)>,
     pub(crate) layout: Layout,
     pub(crate) log_mem: usize,
+    /// The clock the run ended on, which the prover announces.
+    pub(crate) ts_final: F64,
     /// Freed immediately after reduction, before the mixed PCS opening.
     pub(crate) flock_reduction: crate::hash_flock::PreparedReductionWitness,
 }
@@ -138,9 +145,12 @@ impl Witness {
 pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
-    k[MEM] = Some((1, 0));
-    k[MFCNT] = Some((1, 0));
+    k[MEM_INIT] = Some((1, 0));
+    k[MEM_FIN] = Some((1, 0));
+    k[MFTS] = Some((1, 0));
     k[BFCNT] = Some((0, log_bytecode));
+    k[RLO_CNT] = Some((0, tables::RANGE_LOG));
+    k[RHI_CNT] = Some((0, tables::RANGE_LOG));
     // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
     // instance (a no-BLAKE2s program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
@@ -168,8 +178,15 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 /// 0, 1 = log_mem, 2 + t = tau_t. Keep in lockstep with the block
 /// construction in [`fn@layout`].
 pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
-    let mut push = vec![(0, 0), (1, 0), (0, log_bytecode)];
-    let mut pull = vec![(0, 0), (1, 0), (0, log_bytecode)];
+    let framework = vec![
+        (0, 0),
+        (1, 0),
+        (0, log_bytecode),
+        (0, tables::RANGE_LOG),
+        (0, tables::RANGE_LOG),
+    ];
+    let mut push = framework.clone();
+    let mut pull = framework;
     let mut count = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
         let mut fb = tables::FlushBuilder::new();
@@ -307,13 +324,15 @@ pub fn bytecode_table(prog: &[Op]) -> Vec<F64> {
     crate::leaf::stacked_bytecode_table(std::slice::from_ref(&block))
 }
 
-pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F64; 4]) -> Layout {
+pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: [F64; 4], ts_final: F64) -> Layout {
     let bytecode_size = prog.len();
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
     // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
-    // there), with fp returned to 0. All public, no trace needed.
+    // there), with fp returned to 0. The clock starts at cycle 1 and ends wherever
+    // the prover announced (`ts_final`), which nothing has to check: a wrong one
+    // unbalances the bus.
     let final_pc = (bytecode_size - 1) as u32;
 
     let one = F64::ONE;
@@ -325,7 +344,7 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let prog_cols: [std::sync::Arc<Vec<F64>>; 8] = bytecode_columns(prog).map(std::sync::Arc::new);
 
     // ---- bus blocks ----
-    use Coord::{Col, Const, Index, Public};
+    use Coord::{Col, Const, Index, Powers, Public};
     let blk = |kappa: usize, coords: Vec<Coord>| Block { kappa, coords };
 
     let mut push: Vec<Block> = Vec::new();
@@ -333,14 +352,23 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
 
     // Shared blocks (cross-instruction infra, not owned by any single table).
     // boundary state.
-    push.push(blk(0, vec![Const(SEP_STATE), Const(one), Const(one)]));
+    push.push(blk(
+        0,
+        vec![Const(SEP_STATE), Const(one), Const(one), Const(tables::CLOCK_START)],
+    ));
     pull.push(blk(
         0,
-        vec![Const(SEP_STATE), Const(g_pow(final_pc as usize)), Const(one)],
+        vec![
+            Const(SEP_STATE),
+            Const(g_pow(final_pc as usize)),
+            Const(one),
+            Const(ts_final),
+        ],
     ));
-    // memory seed + finalize (every address real, no padding).
-    push.push(blk(log_mem, vec![Const(SEP_MEM), Index, Const(one), Col(MEM)]));
-    pull.push(blk(log_mem, vec![Const(SEP_MEM), Index, Col(MFCNT), Col(MEM)]));
+    // memory seed + finalize: every cell starts at timestamp g^0 holding its initial
+    // word, and ends at its last timestamp holding its final one (§sec:memchan).
+    push.push(blk(log_mem, vec![Const(SEP_MEM), Index, Const(one), Col(MEM_INIT)]));
+    pull.push(blk(log_mem, vec![Const(SEP_MEM), Index, Col(MFTS), Col(MEM_FIN)]));
     // bytecode seed + finalize (program columns are public; padding entries
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
     let bytecode_block = |count: Coord| {
@@ -354,6 +382,17 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     };
     push.push(bytecode_block(Const(one)));
     pull.push(bytecode_block(Col(BFCNT)));
+    // The two range arrays (§sec:rangecheck): entries with no value, so a read is a
+    // range check on its address. Neither is committed: their addresses are
+    // geometric, `g^{j+1}` and `g^{-2^16·j}`.
+    for (sep, first, ratio, count) in [
+        (tables::SEP_RANGE_LO, tables::range_lo_first(), F64::G, RLO_CNT),
+        (tables::SEP_RANGE_HI, one, tables::range_hi_ratio(), RHI_CNT),
+    ] {
+        let addresses = Powers { first, ratio };
+        push.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses.clone(), Const(one)]));
+        pull.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses, Col(count)]));
+    }
 
     // Per-table blocks: each table declares its flushes and read-count columns in
     // local indices; offset them to the table's global columns.
@@ -391,6 +430,7 @@ impl Program {
     pub(crate) fn build(&self, exec: &Execution) -> Witness {
         assert!(self.prog.len().is_power_of_two());
         assert!(exec.mem.len().is_power_of_two());
+        assert_eq!(exec.init.len(), exec.mem.len());
         // The trace was emitted in the same walk as the memory image (no re-walk).
         let tr = &exec.trace;
         let cells = exec.mem.len();
@@ -429,8 +469,16 @@ impl Program {
             crate::hash_flock::n_blocks_log(row_counts[tables::BLAKE2S_TABLE]),
             "the BLAKE2s table must be filled to flock's instance floor"
         );
-        let pi = [exec.mem[0], exec.mem[1], exec.mem[2], exec.mem[3]];
-        let l = layout(&self.prog, log_mem, taus, pi);
+        let pi = [exec.init[0], exec.init[1], exec.init[2], exec.init[3]];
+        assert_eq!(
+            pi,
+            [exec.mem[0], exec.mem[1], exec.mem[2], exec.mem[3]],
+            "the run must leave the four public words as it found them (§sec:e2e-pi)"
+        );
+        let l = layout(&self.prog, log_mem, taus, pi, tr.ts_final);
+        // The range arrays' addresses, to turn a gap's chunks into column values.
+        let range_lo = primitives::field::geometric(tables::range_lo_first(), F64::G, 1 << tables::RANGE_LOG);
+        let range_hi = primitives::field::geometric(F64::ONE, tables::range_hi_ratio(), 1 << tables::RANGE_LOG);
 
         // The stacked witness is written exactly ONCE: allocate it, carve one window
         // per committed column, and have every fill write its column straight into
@@ -467,29 +515,29 @@ impl Program {
         crate::stage!("Fill columns", || {
             for (t, table) in tables::tables().iter().enumerate() {
                 let (base, n) = (sch.base[t], table.n_committed_columns());
-                let ctx = FillCtx::new(tr, &exec.mem, &gpow, &self.prog, 1 << l.taus[t]);
+                let ctx = FillCtx::new(tr, &gpow, &range_lo, &range_hi, &self.prog, 1 << l.taus[t], n);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
-            // Shared columns. These three plus `QFLOCK` below are every shared
+            // Shared columns. These six plus `QFLOCK` below are every shared
             // column, and each has to be written: the stack is uninitialized, so one
             // left out would be read as indeterminate bytes rather than caught by a
             // length mismatch.
-            const _: () = assert!(N_SHARED == 4, "a new shared column needs a fill here");
-            windows[MEM].copy_from_slice(&exec.mem);
-            parallel::fill(windows[MFCNT], |i| tr.mem_count[i]); // counts ended at g^{A[i]}
-            parallel::fill(windows[BFCNT], |i| tr.bytecode_count[i]); // … at g^{A[pc]}
+            const _: () = assert!(N_SHARED == 7, "a new shared column needs a fill here");
+            windows[MEM_INIT].copy_from_slice(&exec.init);
+            windows[MEM_FIN].copy_from_slice(&exec.mem);
+            windows[MFTS].copy_from_slice(&tr.mem_ts);
+            windows[BFCNT].copy_from_slice(&tr.bytecode_count); // counts ended at g^{A[pc]}
+            windows[RLO_CNT].copy_from_slice(&tr.range_lo_count);
+            windows[RHI_CNT].copy_from_slice(&tr.range_hi_count);
         });
         // flock's packed BLAKE2s witness q_flock, ALWAYS committed in this same stack:
         // built from the executed BLAKE2s rows in order (row j = flock instance j),
         // padded to `2^n_blocks_log(max(count,1))` all-padding instances, so a
         // program with no BLAKE2s still carries a single padding instance.
         let flock_reduction = crate::stage!("Build q_flock", || {
-            // The rows carry only their access counts; the compression's input
-            // words are the cells they read, in the finished (write-once) memory
-            // image.
+            // The compression's input words are the ones the row read.
             let blocks: Vec<_> = parallel::map_collect(tr.blake2s.len(), |i| {
-                let r = &tr.blake2s[i];
-                let w = tables::blake2s_cells(&self.prog, r.pc, r.fp).map(|a| exec.mem[a as usize]);
+                let w = &tr.blake2s[i].w;
                 crate::hash_flock::compression(
                     [w[0], w[1], w[2], w[3]],
                     [w[4], w[5], w[6], w[7]],
@@ -508,6 +556,7 @@ impl Program {
             virt,
             layout: l,
             log_mem,
+            ts_final: tr.ts_final,
             flock_reduction,
         }
     }

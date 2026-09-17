@@ -30,7 +30,7 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
+pub(crate) use trace::{Access, Brow, Drow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE2s` compression: the eight message words laid out
 /// little-endian into 64 bytes, combined with the supplied chaining value and
@@ -97,12 +97,20 @@ pub fn fs_seed(program: &Program) -> [F64; 4] {
 /// having run each count up to a power of two (`filler`), so a height is all there is
 /// to say. That also spares both sides a `log2_ceil`, which
 /// in-circuit is a bit decomposition against a hinted exponent rather than a shift.
-fn announce_public(ps: &mut ProverState, log_mem: usize, taus: [usize; tables::N_TABLES], log_inv_rate: usize) {
+fn announce_public(
+    ps: &mut ProverState,
+    log_mem: usize,
+    taus: [usize; tables::N_TABLES],
+    log_inv_rate: usize,
+    ts_final: F64,
+) {
     ps.add_scalar(F192::new(log_mem as u64, 0, 0));
     for t in taus {
         ps.add_scalar(F192::new(t as u64, 0, 0));
     }
     ps.add_scalar(F192::new(log_inv_rate as u64, 0, 0));
+    // The clock the run ended on: the final state's timestamp (§sec:state).
+    ps.add_scalar(F192::from(ts_final));
 }
 
 /// Verifier side of [`announce_public`]: read the announced sizes and PCS
@@ -124,6 +132,10 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) 
         *t = read_size(vs)?;
     }
     let log_inv_rate = read_size(vs)?;
+    let ts_final = vs.next_scalar().map_err(CpuError::Transcript)?;
+    if ts_final.c1 != 0 || ts_final.c2 != 0 {
+        return Err(CpuError::PublicInput);
+    }
     // The public instance caps ensure that, with `ord(g) = 2^64 − 1`, the
     // counting arguments (memory soundness, count non-wrap, exponent range checks)
     // are theorems only when the announced instance keeps the total read-flush
@@ -145,7 +157,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) 
     {
         return Err(CpuError::PublicInput);
     }
-    let l = layout(&prog.prog, log_mem, taus, *public_input);
+    let l = layout(&prog.prog, log_mem, taus, *public_input, F64(ts_final.c0));
     // The caps bound each announced log on its own; what the PCS is configured for
     // is the stacked size they imply, which they do not bound.
     if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
@@ -184,6 +196,13 @@ pub struct Program {
     /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
     /// diagnostic; empty for hand-assembled programs.
     pub fn_ranges: Vec<(String, u32, u32)>,
+    /// Whether the program is written against write-once memory, as every zkDSL
+    /// program is: a cell nothing has written yet is prover-chosen, and a second
+    /// write must agree with the first. The machine's memory is read-write and the
+    /// proof enforces neither, so this only selects how [`Program::execute`] finds
+    /// the initial memory (`cpu::execute`), and makes a conflicting write a panic
+    /// there. Prover-side only.
+    pub write_once: bool,
     /// Source line of the statement that emitted each pc. Prover-side only, and
     /// outside `bytecode_hash`, so it costs nothing in the proof: a failed
     /// check reports a line rather than a pc to disassemble around. Empty for a
@@ -216,8 +235,39 @@ impl Program {
             witness: HashMap::new(),
             filler: Vec::new(),
             fn_ranges: Vec::new(),
+            write_once: true,
             src_lines: Vec::new(),
         }
+    }
+
+    /// Assemble a read-write program from its instructions alone, to be run in frame
+    /// 0 over `main_frame` cells, the first four of them the public words.
+    ///
+    /// `body` runs from its first instruction and halts by falling off its end. What
+    /// is appended takes it from there: a jump to the halt sentinel through two cells
+    /// past the frame, the padding blocks ([`filler`]), and the fill up to a power of
+    /// two that ends on the never-executed sentinel (§sec:state).
+    pub fn from_body(mut body: Vec<Op>, main_frame: u32) -> Self {
+        let (dest, frame) = (main_frame, main_frame + 1);
+        let halt = body.len();
+        body.extend([Op::Set { o: 0, k: F64::ZERO }; 2]); // patched below
+        body.push(Op::Jump {
+            oc: dest,
+            od: dest,
+            of: frame,
+        });
+        let blocks = filler::append_blocks(&mut body);
+        let len = (body.len() + 1).next_power_of_two();
+        body.resize(len, Op::Xor64 { a: 0, b: 0, c: 0 });
+        body[halt] = Op::Set {
+            o: dest,
+            k: g_pow(len - 1),
+        };
+        body[halt + 1] = Op::Set { o: frame, k: F64::ONE };
+        let mut program = Self::assemble(body, HashMap::new(), main_frame + 2);
+        program.filler = blocks;
+        program.write_once = false;
+        program
     }
 
     /// Where `pc` came from: `"verify_sub (line 2204)"` when the compiler left a
@@ -323,16 +373,19 @@ fn table_spans() -> TableSpans {
 /// evaluated on the same values. The identities take the air's own `η`-range; the
 /// three forms take the shared powers at [`xi_form_base`], folded into the forms'
 /// coefficients once rather than multiplied onto every row's form value.
-fn airs(
-    taus: &[usize; tables::N_TABLES],
-    forms: &[Vec<leaf::BusForm>; 3],
-    form_pows: [F192; 3],
-) -> Vec<constraints::Air<'static>> {
+fn airs(taus: &[usize; tables::N_TABLES], forms: &[Vec<leaf::BusForm>; 3], xi: F192) -> Vec<constraints::Air<'static>> {
+    let form_pows = xi_form_pows(xi);
+    // Each table's slice of the batch's `η`-powers, exactly as `constraints` cuts
+    // them, turned into the weights its identities want once rather than per row.
+    let pows = primitives::field::powers(xi, xi_form_base());
+    let offsets = constraints::xi_offsets(tables::tables().iter().map(|t| t.n_constraints()));
     tables::tables()
         .iter()
         .zip(taus)
         .enumerate()
         .map(|(t, (&table, &tau))| {
+            let weights = table.constraint_weights(&pows[offsets[t]..offsets[t] + table.n_constraints()]);
+            let weights_k = weights.clone();
             // One form, not three: the batch adds the three sides' evaluations
             // anyway, and summing them here is a setup cost against a dot product
             // and a product list per row per node.
@@ -342,14 +395,14 @@ fn airs(
                 tau,
                 n_cols: table.n_committed_columns(),
                 n_constraints: table.n_constraints(),
-                eval: Box::new(move |p, vals, quadratic| {
-                    let air = <F192 as ColVal>::lift(table.eval_constraint(p, vals, quadratic));
+                eval: Box::new(move |_, vals, quadratic| {
+                    let air = <F192 as ColVal>::lift(table.eval_constraint(&weights, vals, quadratic));
                     <F192 as ColVal>::reduce(air ^ bus.eval_unreduced(vals, quadratic))
                 }),
                 // The same expression over K columns: the identity's K-only products
                 // stay 64-bit and the bus form becomes a mixed dot product.
-                eval_k: Box::new(move |p, vals, quadratic| {
-                    let air = <F64 as ColVal>::lift(table.eval_constraint_k(p, vals, quadratic));
+                eval_k: Box::new(move |_, vals, quadratic| {
+                    let air = <F64 as ColVal>::lift(table.eval_constraint_k(&weights_k, vals, quadratic));
                     <F64 as ColVal>::reduce(air ^ bus_k.eval_unreduced(vals, quadratic))
                 }),
             }
@@ -411,7 +464,7 @@ pub struct Stats {
     /// What a cost measurement wants.
     pub base_counts: [usize; tables::N_TABLES],
     pub committed: usize,
-    /// Data memory is `2^log_mem` cells (the padded write-once image).
+    /// Data memory is `2^log_mem` cells (the padded image).
     pub log_mem: usize,
     /// Cells actually touched, before the pad to `2^log_mem`, i.e. the real memory
     /// footprint (`log2` is fractional).
@@ -471,13 +524,12 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute(public_input));
-    // A live value that came from outside the constraint system means the emitted
-    // bytecode asserts less than its source asked for, so the proof would be about a
-    // weaker statement than the program text. That is a compiler bug and never a
-    // program one, so it is caught here, on the one path every proof takes, rather
-    // than left to whichever test happens to look. A hard assert, not a
-    // `debug_assert`: this is what makes the invariant hold in release, which is the
-    // only profile the VM is ever run in.
+    // A write-once program that read a cell nothing wrote took a live value from
+    // outside the program, so the emitted bytecode computes less than its source
+    // asked for. That is a compiler bug and never a program one, so it is caught
+    // here, on the one path every proof takes, rather than left to whichever test
+    // happens to look. A hard assert, not a `debug_assert`: release is the only
+    // profile the VM is ever run in.
     assert!(
         exec.unconstrained_reads.is_empty(),
         "the program read {} cell(s) nothing ever writes, first at {:?}: a constraint was \
@@ -485,8 +537,14 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
         exec.unconstrained_reads.len(),
         &exec.unconstrained_reads[..exec.unconstrained_reads.len().min(8)]
     );
+    prove_execution(program, &exec, public_input, log_inv_rate)
+}
+
+/// [`prove`] from a finished run. Split out so a test can hand it a run no honest
+/// machine produced.
+fn prove_execution(program: &Program, exec: &Execution, public_input: [F64; 4], log_inv_rate: usize) -> (Proof, Stats) {
     let cycles = exec.cycles;
-    let w = crate::stage!("Build witness", || program.build(&exec));
+    let w = crate::stage!("Build witness", || program.build(exec));
     let counts = w.layout.taus.map(|t| 1usize << t);
     let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
@@ -494,7 +552,7 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     let mut ps = ProverState::new(fs_seed(program), public_input);
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
-    announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate);
+    announce_public(&mut ps, w.log_mem, w.layout.taus, log_inv_rate, w.ts_final);
     let committed = crate::stage!("Commit", || {
         pcs::commit(&mut ps, &w.q, w.layout.shape, log_inv_rate)
     });
@@ -529,7 +587,7 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
             let form_pows = xi_form_pows(xi);
             let sigma = sigmas(&bus.sigmas, form_pows);
             constraints::prove(
-                &airs(&l.taus, &bus.forms, form_pows),
+                &airs(&l.taus, &bus.forms, xi),
                 &table_cols,
                 xi,
                 &bus.point,
@@ -571,7 +629,7 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
 
 /// Everything the PCS has to open, in the ORDER that feeds the batch's weights:
 /// the bus's framework claims, then the zerocheck's per-table column claims, then
-/// the public-input claim, each located in its committed slot. Both sides assemble
+/// the two public-word claims, each located in its committed slot. Both sides assemble
 /// it here, so a claim can never shift by one element.
 fn finish_claims(
     l: &Layout,
@@ -591,19 +649,22 @@ fn finish_claims(
             });
         }
     }
-    claims.push(bind_pi_claim(r_pi, &l.placements, &l.pi));
+    for col in [MEM_INIT, MEM_FIN] {
+        claims.push(bind_pi_claim(col, r_pi, &l.placements, &l.pi));
+    }
     slot_claims(l, claims)
 }
 
-/// The public-input binding (§sec:e2e-pi): the committed `MEM` at `(r_0, r_1, 0,…,0)`
-/// must equal the multilinear extension of the four public words at `(r_0, r_1)`.
-/// Both parties know those words, so the claim's value is computed rather than
-/// transmitted, and the opening discharges it like any other.
-fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4]) -> ColumnClaim {
-    let mut point = vec![F192::ZERO; placements[MEM].n_vars];
+/// The public words' binding (§sec:e2e-pi): the committed memory `col` (before the
+/// run, or after it) at `(r_0, r_1, 0,…,0)` must equal the multilinear extension of
+/// the four public words at `(r_0, r_1)`. Both parties know those words, so the
+/// claim's value is computed rather than transmitted, and the opening discharges it
+/// like any other.
+fn bind_pi_claim(col: usize, r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4]) -> ColumnClaim {
+    let mut point = vec![F192::ZERO; placements[col].n_vars];
     point[..2].copy_from_slice(&r);
     ColumnClaim {
-        col: MEM,
+        col,
         point,
         value: primitives::multilinear::mle_eval(pi, &r),
     }
@@ -649,14 +710,8 @@ pub fn verify_to_raw(
     // sides. A transmitted target would be a free value in its own check, and the
     // tables' bus blocks would be settled by nothing at all.
     let target = (0..3).fold(F192::ZERO, |a, s| a + form_pows[s] * bus.totals[s]);
-    let table_claims = constraints::verify(
-        &airs(&l.taus, &bus.forms, form_pows),
-        zc_xi,
-        &bus.point,
-        target,
-        &mut vs,
-    )
-    .map_err(CpuError::Constraint)?;
+    let table_claims = constraints::verify(&airs(&l.taus, &bus.forms, zc_xi), zc_xi, &bus.point, target, &mut vs)
+        .map_err(CpuError::Constraint)?;
 
     let r_pi = [vs.sample(), vs.sample()];
     let slots = finish_claims(&l, bus.claims, &table_claims, r_pi);
@@ -782,5 +837,88 @@ mod tests {
     fn blake2s_self_hash_aliased_operands() {
         let exec = blake2s_program(A, B, [4, 6, 4, 6]).execute(PI);
         assert_eq!(exec.mem[14..18], blake2s_compress(A, A, PI, md()));
+    }
+
+    /// Reassign every range read's count, as a prover would after changing a gap, so
+    /// that the range arrays balance and what is left to judge is the memory itself.
+    fn recount_range_reads(exec: &mut Execution) {
+        let mask = (1u32 << tables::RANGE_LOG) - 1;
+        let mut lo = vec![F64::ONE; 1 << tables::RANGE_LOG];
+        let mut hi = lo.clone();
+        let mut read = |a: &mut Access| {
+            let (l, h) = ((a.gap & mask) as usize, (a.gap >> tables::RANGE_LOG) as usize);
+            (a.count_lo, a.count_hi) = (lo[l], hi[h]);
+            lo[l] = primitives::field::mul_by_g(lo[l]);
+            hi[h] = primitives::field::mul_by_g(hi[h]);
+        };
+        let t = &mut exec.trace;
+        t.xor64
+            .iter_mut()
+            .chain(&mut t.mul64)
+            .for_each(|r| r.acc.iter_mut().for_each(&mut read));
+        t.set.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));
+        t.deref.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));
+        t.jump.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));
+        t.blake2s.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));
+        (t.range_lo_count, t.range_hi_count) = (lo, hi);
+    }
+
+    /// The point of the timestamps: a cell written twice cannot be read as of its
+    /// first write. The forged run is consistent everywhere else (the stale value
+    /// flows into the result, the final memory and the range reads), so what fails
+    /// is the memory multiset itself: the first write's tuple is pulled twice.
+    #[test]
+    fn a_stale_read_unbalances_the_bus() {
+        const RATE: usize = pcs::TEST_LOG_INV_RATE;
+        let (cell, other, dest) = (4, 5, 6);
+        let program = Program::from_body(
+            vec![
+                Op::Set { o: cell, k: F64(5) },
+                Op::Set { o: cell, k: F64(9) },
+                Op::Set { o: other, k: F64(3) },
+                Op::Xor64 {
+                    a: cell,
+                    b: other,
+                    c: dest,
+                },
+            ],
+            8,
+        );
+        let pi = [F64::ZERO; 4];
+        let honest = program.execute(pi);
+        assert_eq!(honest.mem[dest as usize], F64(9) + F64(3));
+        let (proof, _) = prove_execution(&program, &honest, pi, RATE);
+        verify(&program, &pi, &proof).expect("the honest run verifies");
+
+        let mut forged = program.execute(pi);
+        let row = forged
+            .trace
+            .xor64
+            .iter_mut()
+            .find(|r| !r.ts.is_zero())
+            .expect("the program's one XOR64 row");
+        // The read happens at cycle 4; the first write happened at cycle 1.
+        let stride = tables::CLOCK_STRIDE;
+        assert_eq!(
+            (row.va, row.acc[0].x, row.acc[0].gap),
+            (F64(9), g_pow(2 * stride as usize), 2 * stride - 1)
+        );
+        (row.va, row.acc[0].x, row.acc[0].gap) = (F64(5), g_pow(stride as usize), 3 * stride - 1);
+        forged.mem[dest as usize] = F64(5) + F64(3);
+        recount_range_reads(&mut forged);
+        let refused = std::panic::catch_unwind(|| prove_execution(&program, &forged, pi, RATE).0)
+            .expect_err("a stale read was proven");
+        let message = refused.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+        assert!(
+            message.contains("two products to agree"),
+            "refused for another reason: {message}"
+        );
+
+        // The same forgery with an honest read is a no-op: recounting alone changes
+        // no product, so the refusal above is the stale read's.
+        let mut recounted = program.execute(pi);
+        recount_range_reads(&mut recounted);
+        let (proof, _) = prove_execution(&program, &recounted, pi, RATE);
+        verify(&program, &pi, &proof).expect("recounting is harmless");
     }
 }

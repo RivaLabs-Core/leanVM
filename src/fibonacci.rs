@@ -84,7 +84,7 @@ fn fibonacci_program(fib_n: usize) -> (String, [F64; 4]) {
 
     // Publish the result g^{F(N)} = buff[GEN ** {2K}] into cell m[0]: a pointer
     // whose value is g^0 (`p = 1`) addresses m[0] (`p[1] = m[1·g^0] = m[g^0]`),
-    // and write-once forces m[0] to equal the seeded public input pi[0].
+    // and the final memory's m[0] is bound to the public input pi[0].
     let publish = format!("    p = 1\n    p[1] = buff[GEN ** {}]\n", 2 * blocks);
 
     let src = format!(

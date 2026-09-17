@@ -3,6 +3,10 @@
 
 How the zkDSL compiler (\path{crates/lean_compiler}; surface language in \path{crates/lean_compiler/zkDSL.md}) programs the six-instruction ISA. Two themes run through every pattern: \emph{write-once memory is an assertion mechanism} (a second write of a cell is an equality check, an unwritten cell is prover-chosen), and \emph{indices live in the exponent} (a logical index $i$ is the element $\gen^{i}$, so incrementing, offsetting, and address formation are single field multiplications).
 
+\begin{remark}[Write-once memory is no longer enforced]\label{rem:write-once}
+Every pattern of this section was designed for a write-once memory, and the machine's memory is now read-write (\S\ref{sec:vm}). A program written this way still runs, and its executions are still provable: the memory image in which all of its equalities hold is a fixed point of the read-write machine, every write rewriting the value already there, and the prover supplies that image as the initial memory. But the converse is lost. A second write now \emph{overwrites} where it used to \emph{assert}, so an \texttt{assert}, a back-solved division, a range check or a checked hint below no longer binds a malicious prover, who is free to start from another initial memory. Only the prover's own witness generation still refuses a conflicting write. The patterns are kept as the description of what the compiler emits; making them sound again needs instructions that assert rather than overwrite.
+\end{remark}
+
 \subsection{Hints}\label{sec:prog-hints}
 
 The prover's nondeterminism enters through write-once cells that are still unset when execution needs them. Some are explicit advice (a fresh allocation pointer $\gen^{\mathrm{base}}$, a witness stream, a computed-advice builtin); others are back-solved by an instruction whose remaining operands are known. In every case the resulting word is unconstrained except by the instructions and memory equalities that consume it, so a program must check all security-relevant advice.

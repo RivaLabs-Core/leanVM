@@ -1,28 +1,28 @@
-//! Filling every table to a power of two, so that no table has padding rows.
+//! Filling every table to a power of two with padding rows at clock zero.
 //!
 //! A table is proven over a power-of-two number of rows, so a run whose counts are not
-//! powers of two has to make up the difference, and it makes it up by executing more
-//! instructions. The bytecode carries, per table and per size in [`SIZES`], a *block*:
-//! that many dummy instructions of the table's opcode, then a `JUMP` back to the block's
-//! own first instruction, in the same frame (`lean_compiler::filler`).
+//! powers of two has to make up the difference. The bytecode carries, per table and per
+//! size in [`SIZES`], a *block*: that many dummy instructions of the table's opcode,
+//! then a `JUMP` back to the block's own first instruction ([`append_blocks`]).
 //!
-//! So a block is a **cycle**, and no program code jumps into it. That is what makes this
-//! work: the state channel's tuples are pushed and pulled around the cycle and cancel
-//! among themselves, for any number of traversals, so the fill is a closed loop running
-//! beside the program's chain rather than part of it (doc §Filling the tables). The
-//! prover picks how many times each block is traversed, and nothing has to be counted,
-//! tested, or entered.
+//! So a block is a **cycle**, and no program code jumps into it. Its rows carry the
+//! clock `ts = 0`, which is what makes it balance: `0·g^k = 0`, so the state tuples
+//! pushed and pulled around the cycle cancel among themselves for any number of
+//! traversals, where a real clock would have moved on. And zero is no power of `g`, so
+//! nothing such a row puts on the bus can meet a tuple of the run itself: its memory
+//! accesses are forced to the previous timestamp `0` as well, and each cancels against
+//! itself (doc §Filling the tables). The rows therefore touch no memory, and the prover
+//! writes them out rather than executing anything.
 //!
 //! A traversal of the size-`s` block costs exactly `s + 1` rows: `s` of its own table and
 //! one `JUMP`. Nothing else, and nothing on any other table. That is what makes the solve
-//! here exact, with no calibrated cost model and no residual to correct, and it is why
-//! one interpretation of the program suffices: the interpreter solves once the program
-//! has halted, by which point its row counts are final.
+//! here exact, with no calibrated cost model and no residual to correct.
 //!
 //! The sizes are powers of two so any fill is reachable exactly, while the bulk rides the
 //! largest block at one `JUMP` per 128 rows. A table already sitting on a power of two is
 //! never entered at all.
 
+use super::Op;
 use crate::tables::N_TABLES;
 
 /// Block sizes, largest first: a fill of `f` rows takes `f / 128` traversals of the
@@ -48,43 +48,56 @@ pub struct Block {
     pub table: u8,
 }
 
-/// A block's frame, as offsets from the frame pointer the interpreter gives it.
-///
-/// The three the interpreter writes are the closing jump's destination (`g^{pc}` of the
-/// block's own first instruction, which is a g-power and so doubles as the jump's nonzero
-/// condition), the frame to go there in (this frame), and the pointer the `DEREF` dummy
-/// follows. No instruction writes them, which is why a traversal costs its own rows and
-/// nothing more.
-///
-/// The rest is what the dummies use: two cells that are never written, so the `JUMP`
-/// table's dummy reads a zero condition and falls through instead of leaving the block,
-/// and the `BLAKE2s` dummy reads a zero metadata pair; the scratch run a dummy writes,
-/// which doubles as the `BLAKE2s` dummy's chaining value
-/// and so spans `SCRATCH..SCRATCH+4`; and the digest, placed clear of it so that a digest
-/// never becomes the next traversal's chaining value. `DIGEST+4..DIGEST+12` are the
-/// message cells, never written, so every traversal compresses the same input.
-pub mod frame {
-    /// Where the closing jump goes, and in which frame.
-    pub const DEST: u32 = 0;
-    pub const NEXT_FP: u32 = 1;
-    /// The pointer a `DEREF` dummy follows: `g^0`, memory cell `0`.
-    pub const PTR: u32 = 2;
-    /// Never written, so it and its successor read as zero.
-    pub const ZERO: u32 = 3;
-    /// What a dummy writes.
-    pub const SCRATCH: u32 = 5;
-    /// The `BLAKE2s` dummy's digest.
-    pub const DIGEST: u32 = 9;
-    /// Cells a block's frame occupies.
-    pub const CELLS: u32 = 21;
+/// The dummy instruction of table `t`: every operand names cell zero, which a
+/// padding row never touches for real.
+fn dummy(t: usize) -> Op {
+    match t {
+        0 => Op::Xor64 { a: 0, b: 0, c: 0 },
+        1 => Op::Mul64 { a: 0, b: 0, c: 0 },
+        2 => Op::Set {
+            o: 0,
+            k: primitives::field::F64::ZERO,
+        },
+        3 => Op::Deref {
+            o1: 0,
+            o2: 0,
+            o3: 0,
+            mode: super::DerefMode::Cell,
+        },
+        4 => Op::Jump { oc: 0, od: 0, of: 0 },
+        5 => Op::Blake2s {
+            ins: [0; 4],
+            cv: 0,
+            out: 0,
+            md: 0,
+        },
+        _ => unreachable!("table {t}"),
+    }
+}
+
+/// Append every table's blocks to `prog`, returning where each one landed.
+pub fn append_blocks(prog: &mut Vec<Op>) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    for t in 0..N_TABLES {
+        for size in SIZES {
+            blocks.push(Block {
+                pc: prog.len() as u32,
+                size: size as u32,
+                table: t as u8,
+            });
+            prog.extend(std::iter::repeat_n(dummy(t), size));
+            // The closing jump, which a padding row takes back to the block's top.
+            prog.push(dummy(JUMP));
+        }
+    }
+    blocks
 }
 
 /// Traversals per block: `plan[t][k]` is how many times the size-`SIZES[k]` block of
 /// table `t` is traversed.
 pub type Plan = [[usize; SIZES.len()]; N_TABLES];
 
-/// Traversals in total, which is both the number of `JUMP` rows the fill costs and the
-/// number of frames it needs.
+/// Traversals in total, which is the number of `JUMP` rows the fill costs.
 pub fn traversals(plan: &Plan) -> usize {
     plan.iter().flatten().sum()
 }

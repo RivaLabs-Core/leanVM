@@ -36,7 +36,6 @@ use primitives::{
 };
 
 mod ast;
-pub mod filler;
 mod ir;
 mod lower;
 mod parser;
@@ -49,13 +48,13 @@ pub use parser::{parse, parse_const, parse_file_with_replacements, parse_with_re
 /// Compile an [`Ast`] to a provable [`Program`]. Panics on a malformed program
 /// (unbound variable, missing `main`, address overflow).
 pub fn compile(ast: &Ast) -> Program {
-    // Every program carries, past `main`'s halt, the fill blocks that bring each table's
-    // row count up to a power of two, so that no table needs padding rows (see `filler`).
+    // Every program carries, past its code, the blocks whose padding rows bring each
+    // table's row count up to a power of two (`lean_vm::cpu::filler`).
     compile_inner(ast, true)
 }
 
-/// [`compile`] without the fill blocks, so the program's own instruction mix is what
-/// runs. Used by tests of instruction selection and execution.
+/// [`compile`] without the padding blocks, so the program's own instruction mix is
+/// what runs. Used by tests of instruction selection and execution.
 pub fn compile_without_filler(ast: &Ast) -> Program {
     compile_inner(ast, false)
 }
@@ -100,15 +99,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
             continue;
         }
         let f = f.clone();
-        let low = lower_func(
-            &f,
-            &mut queue,
-            &mut loop_ctr,
-            &defs,
-            &const_arrays,
-            with_filler,
-            &mut loop_bounds,
-        );
+        let low = lower_func(&f, &mut queue, &mut loop_ctr, &defs, &const_arrays, &mut loop_bounds);
         if dbg_lower {
             eprintln!("== fn {} (frame {}) ==", low.name, pretty_integer(low.frame_size));
             for (i, ins) in low.code.iter().enumerate() {
@@ -132,10 +123,20 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
     // sentinel pc `g^{B-1}` (last slot) is known before resolving: `main`'s
     // `EndSentinel` jump dest resolves to it, and the program halts there.
     let total: usize = lowered.iter().map(|l| l.code.len()).sum();
+    // The padding blocks sit past every function, so no program code reaches them.
+    let mut fill: Vec<Op> = Vec::new();
+    let mut blocks = if with_filler {
+        lean_vm::cpu::filler::append_blocks(&mut fill)
+    } else {
+        Vec::new()
+    };
+    for block in &mut blocks {
+        block.pc += total as u32;
+    }
     // The sentinel needs a slot of its own PAST all real code: pad from
     // total + 1, so a program of exactly 2^k instructions doesn't collide
     // its last instruction with the halt pc.
-    let bytecode_size = (total + 1).next_power_of_two();
+    let bytecode_size = (total + fill.len() + 1).next_power_of_two();
     let sentinel = (bytecode_size - 1) as u32;
 
     // Resolve to bytecode + a hint map keyed by global pc.
@@ -190,6 +191,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
         }
     }
 
+    prog.extend(fill);
     // Pad the bytecode to `B` (the sentinel slot g^{B-1} must exist for execution).
     prog.resize(bytecode_size, Op::Set { o: 0, k: F64::ZERO });
     let mut program = Program::assemble(prog, hints, frame_size["main"]);
@@ -198,9 +200,7 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
         .iter()
         .map(|l| (l.name.clone(), entry[&l.name], l.code.len() as u32))
         .collect();
-    // The blocks are `main`'s, and `main` is lowered first, so its entry pc is 0 and the
-    // block pcs are already the global ones.
-    program.filler = std::mem::take(&mut lowered[0].filler);
+    program.filler = blocks;
     program
 }
 

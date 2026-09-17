@@ -18,7 +18,7 @@
   </tr>
   <tr>
     <td><a href="#fibonacci">cheap cycles</a></td>
-    <td align="right"><b>5.4M/s</b></td>
+    <td align="right"><b>4.0M/s</b></td>
   </tr>
 </table>
 
@@ -38,7 +38,7 @@ leanVM is designed for security:
 Expect leanVM to change significantly:
 
 * **hash**: BLAKE2s is a placeholder. SHA2, SHA3, BLAKE3 are actively considered.
-* **ISA**: A migration from leanISA to RISC-V (rv64im) is planned.
+* **ISA**: A migration from leanISA to RISC-V (rv64im) is planned. Memory is already read-write; the zkDSL still assumes write-once memory, so the programs it compiles run and prove but are not sound yet.
 * **zk**: Support for zero-knowledge is planned.
 
 **note**: Prior to binary fields leanVM used [KoalaBear](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458). The historical design is in [this branch](https://github.com/leanEthereum/leanVM/tree/koalabear).
@@ -78,11 +78,11 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
-  cycles (VM steps)           : 2,127,882
-    details                   : MUL64 2^20.944 (98.9%)  SET 2^13.288 (0.5%)  DEREF 2^12.967 (0.4%)  JUMP 2^10.968 (0.1%)  XOR64 2^10.966 (0.1%)  MEMORY 2^20.96  TOTAL_COMMITTED 2^24.716
-  proof size                  : 299.3 KiB
-  proving                     : 0.272 s ± 10.7%   7,813,917 cycles/s      peak memory 3.418 GiB
-  verifying                   : 2.3 ms
+  cycles (VM steps)           : 2,127,880
+    details                   : MUL64 2^20.944 (98.9%)  SET 2^13.288 (0.5%)  DEREF 2^12.967 (0.4%)  JUMP 2^10.968 (0.1%)  XOR64 2^10.966 (0.1%)  MEMORY 2^20.959  TOTAL_COMMITTED 2^25.825
+  proof size                  : 321.8 KiB
+  proving                     : 0.534 s ± 2.8%   3,982,409 cycles/s      peak memory 8.604 GiB
+  verifying                   : 2.705 ms
 ```
 
 ## SNARK machinery

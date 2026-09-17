@@ -21,32 +21,30 @@ LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Mach
   \item the frame pointer $\fp \xleftarrow{} 1_\K$
 \end{itemize}
 
-Then, initialize the write-once memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed \textit{in the exponent} of $\gen$ (64 bits). The first memory word is $\mem[\gen^0] \in \K$, the second is $\mem[\gen^1]$, the third is $\mem[\gen^2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\gen^{\nmem - 1}$ (resp. $\gen^{\nprog - 1}$ for the bytecode) is invalid.
+Then, initialize the read-write memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed \textit{in the exponent} of $\gen$ (64 bits). The first memory word is $\mem[\gen^0] \in \K$, the second is $\mem[\gen^1]$, the third is $\mem[\gen^2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\gen^{\nmem - 1}$ (resp. $\gen^{\nprog - 1}$ for the bytecode) is invalid.
 
-The public input fixes the first four memory words, $\mem[\gen^i] = \textsf{input}_i \in \K$ for $i<4$.
+The public input fixes the first four memory words, $\mem[\gen^i] = \textsf{input}_i \in \K$ for $i<4$, both when the execution starts and when it ends: an execution that leaves another value in one of them is invalid. The same four words therefore serve as public input, which the program reads, and as public output, which the program writes.
 
 The Virtual Machine execution loop is the following:
 \begin{enumerate}
   \item fetch the instruction $\mathsf{inst}$ at address $\pc$.
   \item execute $\mathsf{inst}$:
     \begin{itemize}
-      \item assert the memory constraints (e.g. $\loc{o_C}=\loc{o_A}+\loc{o_B}$ for \texttt{XOR64})
+      \item read its source cells, then write its destination cell (e.g. $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ for \texttt{XOR64}). All the reads of an instruction come before its writes, so a destination may be one of the sources.
       \item update $\pc$ and $\fp$ (all instructions except \texttt{JUMP} set $\pc \xleftarrow{} \pc \cdot \gen$, advancing to the next instruction, and leave $\fp \xleftarrow{} \fp$ unchanged)
     \end{itemize}
   \item if $\pc$ equals $\pc_{\textsf{final}} := \gen^{\nprog - 1}$, exit the loop (successful execution). Otherwise go back to $1.$
 \end{enumerate}
 
-\paragraph{Write-once memory}
+\paragraph{Read-write memory}
 
-The first time a memory word is set defines its value for the rest of the execution, i.e. it cannot be modified again in the future.
-
-When proving the VM execution via a snark, the memory is committed (by an untrusted prover) at the beginning of the execution (with all the values already filled): every instruction then simply consists in reading a bunch of memory cells, and asserting constraints on them (\textit{write-once memory} is also sometimes called \textit{read-only memory}).
+A memory word may be written any number of times, and a read returns the last value written, or the initial value if there was none. When proving the VM execution via a snark, the prover commits to the memory as it stands before the execution and as it stands after it, and every access in between is ordered by a clock (\S\ref{sec:memchan}).
 
 \paragraph{Non determinism}
 
 For a given pair of bytecode and public input, there is more than one valid execution.
 
-In particular, the memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$.
+The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$. So is the initial content of the memory, the four public words aside: the prover chooses what every other cell holds when the execution starts. This is how advice reaches a program, which therefore has to check whatever it reads before having written it.
 
 \paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
 \[
@@ -59,10 +57,10 @@ In particular, the memory log-size $\kmem$ is a non deterministic parameter, fre
 \hline
 Instruction & Operands & Semantics\\
 \hline
-\texttt{XOR64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}+\loc{o_B}$ \quad(addition in $\K$)\\
-\texttt{MUL64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}=\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\K$)\\
-\texttt{SET\_CONSTANT} & $[o,k]$ & $\loc{o}=k$\\
-\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]=\srcsel{\dmode}$ (see below)\\
+\texttt{XOR64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ \quad(addition in $\K$)\\
+\texttt{MUL64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\K$)\\
+\texttt{SET\_CONSTANT} & $[o,k]$ & $\loc{o}\gets k$\\
+\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]\gets\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
 \hline
@@ -70,7 +68,7 @@ Instruction & Operands & Semantics\\
 \end{center}
 
 
-\texttt{DEREF} stores, at the dereferenced address $\loc{o_1}\cdot o_2$, a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
+\texttt{DEREF} reads the pointer $\loc{o_1}$ and the local cell $\loc{o_3}$, then writes, at the dereferenced address $\loc{o_1}\cdot o_2$, a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
   \srcsel{\dmode}\;=\;
   \begin{cases}
@@ -87,7 +85,7 @@ Instruction & Operands & Semantics\\
 
 \vspace{5mm}
 
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{\gen\cdot o_{m_i}}$. The chaining value is read from the four \emph{consecutive} cells $\loc{\gen^{k}\cdot o_{\mathit{cv}}}$, $k<4$, and the result is written to the four consecutive cells $\loc{\gen^{k}\cdot o_{\mathit{out}}}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{\gen\cdot o_{\md}}$, little-endian:
+\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{\gen\cdot o_{m_i}}$. The chaining value is read from the four \emph{consecutive} cells $\loc{\gen^{k}\cdot o_{\mathit{cv}}}$, $k<4$, and the result is written to the four consecutive cells $\loc{\gen^{k}\cdot o_{\mathit{out}}}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen: fourteen reads, then the four writes of the result, which may land on cells the compression read. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{\gen\cdot o_{\md}}$, little-endian:
 \[
   \md_0=\mathit{counter}_{64},\qquad \md_1=\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]

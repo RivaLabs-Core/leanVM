@@ -108,9 +108,6 @@ pub(crate) struct Lowered {
     pub(crate) name: String,
     pub(crate) code: Vec<LInstr>,
     pub(crate) frame_size: u32,
-    /// The fill blocks this function carries, with `code`-relative pcs; only `main` has
-    /// any ([`crate::lower::FnLower::lower_filler_blocks`]).
-    pub(crate) filler: Vec<lean_vm::cpu::filler::Block>,
 }
 
 /// A resolved run of consecutive cells ([`crate::lower::FnLower::cell_run`]): a

@@ -26,20 +26,17 @@ So $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand,
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first four memory cells $\mem[\gen^{0}],\dots,\mem[\gen^{3}]$, four words both parties know. The verifier samples $r=(r_0,r_1)\in\E^{2}$ and, with nothing sent, pools the claim
+The public input is the first four memory cells $\mem[\gen^{0}],\dots,\mem[\gen^{3}]$, four words both parties know, which hold the same values before the run and after it (\S\ref{sec:vm}). The verifier samples $r=(r_0,r_1)\in\E^{2}$ and, with nothing sent, pools the two claims
 \[
-  \mle{\mem}(r_0,r_1,0,\dots,0)\;\qeq\;\sum_{b\in\cube{2}}\eq(r,b)\,\mem[\gen^{\,b_0+2b_1}],
+  \mle{\meminit}(r_0,r_1,0,\dots,0)\;\qeq\;\sum_{b\in\cube{2}}\eq(r,b)\,\mem[\gen^{\,b_0+2b_1}]\;\qeq\;\mle{\memfin}(r_0,r_1,0,\dots,0),
 \]
-whose right side, the multilinear extension of the four public words at $r$ ($r_0$ on the low bit), the verifier computes itself. By Fact~\ref{fact:eq} the left side is the same sum over the four committed cells, so a mismatch leaves a nonzero multilinear polynomial in $r$, of total degree at most two, and the claim holds with probability at most $2/|\E|$ (Lemma~\ref{lem:sz}). The PCS opening binds the claim to the committed memory.
+whose middle term, the multilinear extension of the four public words at $r$ ($r_0$ on the low bit), the verifier computes itself. By Fact~\ref{fact:eq} each side is the same sum over the four committed cells, so a mismatch leaves a nonzero multilinear polynomial in $r$, of total degree at most two, and each claim holds with probability at most $2/|\E|$ (Lemma~\ref{lem:sz}). The PCS opening binds the claims to the committed memories. The one on $\meminit$ is what makes the four words an input; the one on $\memfin$, an output. Every other cell of $\meminit$ is the prover's to choose (\S\ref{sec:vm}).
 
 \subsection{Filling the tables}\label{sec:e2e-pad}
 
-A table is proven over a power-of-two number of rows. The prover reaches one by running extra instructions, in execution cycles disjoint from the program's own run. Proposition~\ref{prop:walk} about bus balance splits the rows into two groups:
-\begin{itemize}
-\item one walk from $(\pc_0,\fp_0)$ to $(\pc_{\mathrm{final}},\fp_{\mathrm{final}})$
-\item closed walks
-\end{itemize}
-The prover can thus leverage these \emph{closed walks} to fill every table to its next power of 2. (important for completeness, but not for soundness)
+A table is proven over a power-of-two number of rows. The prover reaches one with \emph{padding rows}, whose clock is $0$. The bytecode carries, for each table and each of a few sizes, a block of that many instructions of the table's opcode followed by a \texttt{JUMP} back to the block's first instruction, which no program code jumps into. A padding row is a row at one of those instructions. Since $0\cdot\gen^{s}=0$, the states pushed and pulled around a block cancel among themselves, for any number of traversals: these are the closed walks of Proposition~\ref{prop:walk}, and by Corollary~\ref{cor:clock} they are the only ones. A traversal of the block of size $n$ adds $n$ rows to its table and one to \texttt{JUMP}'s, so every table can be brought to its next power of two exactly.
+
+A padding row's memory accesses cost nothing either. The gap check \eqref{eq:gap} forces $\tsprev=0$ on them, so an access pulls $\tup{\dsep{MEM},a,0,v_{\mathrm{old}}}$ and pushes $\tup{\dsep{MEM},a,0,v_{\mathrm{new}}}$; the prover takes $v_{\mathrm{old}}=v_{\mathrm{new}}$ and the two cancel, whatever the address and the value. Its reads of the bytecode and of the range arrays are ordinary ones, with $\glo=\gen$ and $\ghi=1$, the two arrays' first entries. None of this bears on soundness: by Theorem~\ref{thm:rwmem} a tuple whose timestamp is zero meets no tuple of the run, so the padding rows constrain nothing and are constrained by nothing, which is what a padding row should be. The zero of $\K$, the one element that is not a power of $\gen$, plays the part of an \emph{is-real} selector, at the cost of no column and no constraint.
 
 \subsection{Fiat Shamir instantiation}\label{sec:e2e-fiat-shamir}
 
@@ -52,12 +49,12 @@ Each reduction below adds evaluation claims on columns to a shared \emph{claim p
 \paragraph{Setup.}
 
 
-The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the public input, the bytecode and Flock's BLAKE2s R1CS matrices. The prover sends the memory log-size $\kmem$ and the eight table log-heights $\tau_j$; the verifier checks them against the caps (\S\ref{sec:lookup}) and derives the layout of every stack (PCS and GKR leaves).
+The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the public input, the bytecode and Flock's BLAKE2s R1CS matrices. The prover sends the memory log-size $\kmem$, the six table log-heights $\tau_j$, the PCS rate and the final clock $\tsfinal\in\K$ (\S\ref{sec:state}); the verifier checks the sizes against the caps (\S\ref{sec:lookup}) and derives the layout of every stack (PCS and GKR leaves).
 
 \paragraph{Commitment.}
 
 \begin{enumerate}
-\item \textbf{Prover.} Stack (\S\ref{sec:stacking}) every column, the memory $\mem$, the two finalize (memory / bytecode) counts, and Flock's packed witness $\qflock$ (\S\ref{sec:tab-blake2s}), into $q$ and sends its commitment (Annex~\ref{annex:pcs}).
+\item \textbf{Prover.} Stack (\S\ref{sec:stacking}) every column, the two memories $\meminit$ and $\memfin$, the final timestamps $\tsfin$ (\S\ref{sec:memchan}), the three finalize counts (bytecode and the two range arrays, \S\ref{sec:rangecheck}), and Flock's packed witness $\qflock$ (\S\ref{sec:tab-blake2s}), into $q$ and sends its commitment (Annex~\ref{annex:pcs}).
 \item \textbf{Verifier.} Receives the commitment to $q$.
 \end{enumerate}
 
@@ -67,7 +64,7 @@ The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the pub
 \item \textbf{Verifier.} Samples and sends the fingerprint challenge $\alpha\in\E^{4}$ and the multiset challenge $\beta\in\E$ (\S\ref{sec:gp}).
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:lookup}), stacked into blocks and padded with $1$s. Sends one bus root $R$, then the count root $R_c$.
 \item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier checks each side's product against $R$; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:lookup}). The pass yields three leaf claims $\widetilde V^{s}_0(\zeta)$ at one shared $\zeta$.
-\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms every public part itself: the block selectors, the constant entries, the index column (\S\ref{sec:idxcol}), and the program's whole share of the two bytecode blocks, one evaluation at $(\zeta,\alpha)$ (\S\ref{sec:e2e-bc}). Three blocks per side belong to no table: the state boundary, plus each array's (memory / bytecode) seed (push side) or finalization (pull side). For their committed columns the prover sends one evaluation each, entering the claim pool. Every other block belongs to a table, and is discharged by the table sumcheck (\S\ref{sec:air}).
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms every public part itself: the block selectors, the constant entries, the index and geometric columns (\S\ref{sec:idxcol}), and the program's whole share of the two bytecode blocks, one evaluation at $(\zeta,\alpha)$ (\S\ref{sec:e2e-bc}). Five blocks per side belong to no table: the state boundary, plus each array's (memory, bytecode, the two range arrays) seed (push side) or finalization (pull side). For their committed columns the prover sends one evaluation each, entering the claim pool. Every other block belongs to a table, and is discharged by the table sumcheck (\S\ref{sec:air}).
 \end{enumerate}
 
 \paragraph{Table sumcheck.} One run proves the six tables' constraints together with their share of the bus (\S\ref{sec:air}).
@@ -81,7 +78,7 @@ The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the pub
 
 \begin{enumerate}
 \item \textbf{Verifier.} Sends $r=(r_0,r_1)\in\E^{2}$ and evaluates the multilinear extension of the four public words at $r$.
-\item \textbf{Prover \& Verifier.} Pool that value as a claim on $\mem$ at $(r_0,r_1,0,\dots,0)$; the prover sends nothing (\S\ref{sec:e2e-pi}).
+\item \textbf{Prover \& Verifier.} Pool that value as a claim on $\meminit$ and as a claim on $\memfin$, both at $(r_0,r_1,0,\dots,0)$; the prover sends nothing (\S\ref{sec:e2e-pi}).
 \end{enumerate}
 
 \paragraph{BLAKE2s validity.}

@@ -1,6 +1,6 @@
 //! leanVM: arithmetization of a minimal zkVM (see `doc/leanvm/main.tex`).
 //!
-//! Machine words, addresses, pc/fp, read counters, and logical indices live in
+//! Machine words, addresses, pc/fp, timestamps, read counters, and logical indices live in
 //! `K = GF(2^64)`; indices are powers of a fixed generator `g`, so incrementing
 //! one is a multiplication by `g`, a free virtual operation. Every physical
 //! witness column is K-valued and is committed directly by a dense multilinear PCS.

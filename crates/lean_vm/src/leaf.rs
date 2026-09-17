@@ -11,7 +11,7 @@ use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
-use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle};
+use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle, powers_mle};
 use primitives::multilinear::{eq_eval, eq_table_arena, mle_eval};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,6 +34,9 @@ pub enum Coord {
     Prod(usize, usize, u32),
     /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
     Index,
+    /// The geometric column `first·ratio^z`, free the same way: the addresses of a
+    /// range-check array (§sec:rangecheck).
+    Powers { first: F64, ratio: F64 },
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
     /// its MLE directly, so it raises no claim. Shared rather than owned: push and
     /// pull carry the same eight columns, tens of megabytes at production sizes.
@@ -76,7 +79,7 @@ pub struct ColumnClaim {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     Truncated,
-    /// A read count is zero, so a read self-cancels on the bus (§sec:memchan).
+    /// A lookup's read count is zero, so the read self-cancels on the bus (§sec:lookup).
     ZeroCount,
     Gkr(gkr::GkrError),
 }
@@ -166,20 +169,48 @@ enum Term<'a> {
     Public(&'a [F64], F192),
 }
 
+/// The values of each distinct [`Coord::Powers`] column, prover-side.
+pub type PowerTables = Vec<((F64, F64), Vec<F64>)>;
+
+fn power_tables(sides: [&[Block]; 3]) -> PowerTables {
+    let mut tables = PowerTables::new();
+    for blk in sides.into_iter().flatten() {
+        for c in &blk.coords {
+            if let Coord::Powers { first, ratio } = *c
+                && !tables.iter().any(|(k, _)| *k == (first, ratio))
+            {
+                tables.push((
+                    (first, ratio),
+                    primitives::field::geometric(first, ratio, 1 << blk.kappa),
+                ));
+            }
+        }
+    }
+    tables
+}
+
 /// Flatten one coordinate into leaf terms at coefficient `w`. A [`Coord::Sum`]
 /// spreads its children over the SAME `w`: they are one coordinate, so they share
 /// its `α`-power.
-fn push_terms<'a>(c: &'a Coord, w: F192, terms: &mut Vec<Term<'a>>, constant: &mut F192) {
+fn push_terms<'a>(c: &'a Coord, w: F192, powers: &'a PowerTables, terms: &mut Vec<Term<'a>>, constant: &mut F192) {
     match c {
         Coord::Const(v) => *constant += w.mul_base(*v),
         Coord::Col(i) => terms.push(Term::Col(*i, w)),
         Coord::GCol(i, k) => terms.push(Term::Col(*i, w.mul_base(g_pow(*k as usize)))),
         Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, w.mul_base(g_pow(*k as usize)))),
         Coord::Index => terms.push(Term::Index(w)),
+        Coord::Powers { first, ratio } => {
+            let table = &powers
+                .iter()
+                .find(|(k, _)| *k == (*first, *ratio))
+                .expect("every geometric column was tabulated")
+                .1;
+            terms.push(Term::Public(table, w));
+        }
         Coord::Public(vals) => terms.push(Term::Public(vals.as_slice(), w)),
         Coord::Sum(cs) => {
             for c in cs {
-                push_terms(c, w, terms, constant);
+                push_terms(c, w, powers, terms, constant);
             }
         }
     }
@@ -197,6 +228,7 @@ pub fn build_leaves(
     w: &[F192],
     beta: F192,
     gpow: &[F64],
+    powers: &PowerTables,
 ) -> ArenaVec<F192> {
     let explicit = blocks
         .iter()
@@ -228,7 +260,7 @@ pub fn build_leaves(
         let mut const_part = beta;
         let mut terms: Vec<Term> = Vec::with_capacity(blk.coords.len());
         for (i, c) in blk.coords.iter().enumerate() {
-            push_terms(c, w[i], &mut terms, &mut const_part);
+            push_terms(c, w[i], powers, &mut terms, &mut const_part);
         }
         let row = |z: usize| -> F192 {
             // The α-weighted coordinate sum defers its reductions: each mixed
@@ -381,7 +413,7 @@ fn accumulate_form(c: &Coord, w: F192, base: usize, form: &mut BusForm) {
                 accumulate_form(c, w, base, form);
             }
         }
-        Coord::Index | Coord::Public(_) => {
+        Coord::Index | Coord::Powers { .. } | Coord::Public(_) => {
             unreachable!("a table's bus block carries no virtual coordinate")
         }
     }
@@ -449,6 +481,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             let coord_val = match c {
                 Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
+                Coord::Powers { first, ratio } => powers_mle(*first, *ratio, zeta_lo),
                 Coord::Col(i) => col_val(*i)?,
                 Coord::GCol(i, k) => col_val(*i)?.mul_base(g_pow(*k as usize)),
                 Coord::Prod(..) | Coord::Sum(..) => {
@@ -675,14 +708,15 @@ pub fn prove_balance(
         .map(|b| b.kappa)
         .max();
     let gpow = index_k.map_or_else(Vec::new, |k| primitives::field::g_powers(1usize << k));
+    let powers = power_tables([push, pull, count]);
     // Three independent leaf vectors, built one after another: each `build_leaves`
     // already fans its own blocks out across the whole pool, so nesting a
     // three-way outer split on top would only add a barrier.
     let [push_leaves, pull_leaves, count_leaves] = crate::stage!("Bus leaves", || {
         [
-            build_leaves(push, &push_lay, cols, &w, beta, &gpow),
-            build_leaves(pull, &pull_lay, cols, &w, beta, &gpow),
-            build_leaves(count, &count_lay, cols, &count_w, F192::ZERO, &gpow),
+            build_leaves(push, &push_lay, cols, &w, beta, &gpow, &powers),
+            build_leaves(pull, &pull_lay, cols, &w, beta, &gpow, &powers),
+            build_leaves(count, &count_lay, cols, &count_w, F192::ZERO, &gpow, &powers),
         ]
     });
     // Leaf construction keeps the all-one padding implicit; decomposition uses the full logical depth.
@@ -867,7 +901,7 @@ pub fn verify_balance(
     let beta = vs.sample();
     let bus_gkr = gkr::verify_product_triple(push_lay.mu, vs, gkr::RootShape::FirstTwoShared).map_err(Error::Gkr)?;
     let count_root = bus_gkr.roots[2];
-    // Every read count is nonzero iff this product is (§sec:memchan); a zero would
+    // Every lookup's read count is nonzero iff this product is (§sec:lookup); a zero would
     // let a read self-cancel and free its value from memory.
     if count_root == F192::ZERO {
         return Err(Error::ZeroCount);
