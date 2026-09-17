@@ -48,7 +48,7 @@ fn the_cost_model_is_exact() {
     for src in PROGRAMS {
         let program = compile(&parse(src).expect("parse"));
         let stats = prove(&program, [F64::ZERO; 4], lean_vm::pcs::TEST_LOG_INV_RATE).1;
-        let plan = filler::solve(stats.base_counts, filler::NO_FLOORS).expect("solvable");
+        let plan = filler::solve(stats.base_counts).expect("solvable");
         assert_eq!(
             filler::filled(stats.base_counts, &plan),
             stats.counts,

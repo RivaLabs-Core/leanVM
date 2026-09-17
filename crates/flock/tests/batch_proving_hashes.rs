@@ -21,7 +21,6 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
 fn hash_batch_prove_verify() {
-    // The XMSS n=820 workload executes about 2^17 BLAKE2s compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -173,9 +172,5 @@ fn hash_batch_prove_verify() {
         "  throughput                      : {:>14} compressions/s{}",
         pretty_integer(compressions_per_second),
         prove.spread()
-    );
-    println!(
-        "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
-        n as f64 / prove_s / 146.0
     );
 }

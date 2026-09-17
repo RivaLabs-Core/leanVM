@@ -325,7 +325,7 @@ The one dispatch construct. It matches the **log** of a g-power scrutinee agains
 
 Arms produce VALUES: every arm writes its results into the same cells, which is sound under write-once because exactly one arm runs. A target may be a name, bound after the join, or a **`StackBuf` element**, which the arms write into directly and which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, the same reason `sb[i] = f(x)` never needed a temporary, so reach for the element form wherever a returned value's home is a buffer slot. A target index must be a compile-time integer inside the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells. Multiple targets take a multi-return call as the arm body. A run return binds a name, and crosses the join only through the fused dispatch below.
 
-A branch body with statements in it goes in a function, and the arm calls it: that is the idiom the recursion guest uses throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it. Where the arms only PRODUCE values, as there, this costs nothing. Where each arm's real work is a WRITE, it costs: the writer function needs a return value and the statement a target, both dead, so the natural translation costs more instructions than a body inlined into the dispatching frame. An arm may pass runs to its callee, but a run parameter is the callee's copy, so a store into it asserts against the caller's cells rather than filling them. If that shape matters to a program, dispatch on a value and write after the join.
+A branch body with statements in it goes in a function, and the arm calls it: that is the idiom to use throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it. Where the arms only PRODUCE values, as there, this costs nothing. Where each arm's real work is a WRITE, it costs: the writer function needs a return value and the statement a target, both dead, so the natural translation costs more instructions than a body inlined into the dispatching frame. An arm may pass runs to its callee, but a run parameter is the callee's copy, so a store into it asserts against the caller's cells rather than filling them. If that shape matters to a program, dispatch on a value and write after the join.
 
 **Lowering** is two jumps through a *trampoline table* in the bytecode: the dispatch jumps to `g^T · x²`, the j-th two-instruction slot (`SET` the arm's address, `JUMP` to it) of a table at base `T`, and the slot jumps to the arm, which can sit anywhere, unaligned and of any length. Cost is about 7 cycles, independent of the arm count.
 
@@ -427,7 +427,7 @@ def square(v: StackBuf(3)):
 - **A run and a scalar never stand in for each other.** A word where a run is expected, a run where a word is expected (`+`, `*`, `assert`, `print`), a run of the wrong width, and a 192-bit builtin used as a statement are compile errors naming the widths.
 - **Moving runs.** `buf[lo:hi] = value` stores one, an `x: StackBuf(3)` parameter takes one, a function returns one, and a fused `match` returns one. A copy between frame runs is one `XOR192` against the pooled zero run.
 
-A slice of a digest is a run like any other, so the recursion guest takes a transcript challenge as the first three words of its BLAKE2s state, `state[0:3]`.
+A slice of a digest is a run like any other, so a program can take the first three words of a BLAKE2s state as `state[0:3]`.
 
 ## BLAKE2s
 

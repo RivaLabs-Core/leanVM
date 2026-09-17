@@ -158,8 +158,7 @@ fn range_check_without_log_rejected() {
 
 /// A *runtime* bound, `assert log x < log n`: the same gadget with `g^{k-1}`
 /// derived as `n·g^{-1}` instead of pooled from a constant. The bound rides a
-/// hint here, as it does in the aggregation guest, where the signer count is
-/// prover-announced.
+/// hint here, as a prover-announced count would.
 #[test]
 fn range_check_runtime_bound() {
     let src = "\

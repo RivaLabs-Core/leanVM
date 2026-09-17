@@ -576,20 +576,6 @@ fn decompose_verify(
     })
 }
 
-/// One reduced claim on the bytecode polynomial. The eight public encoding
-/// columns (opcode plus seven operand/immediate slots), padded to sixteen slots
-/// along four selector bits, form one multilinear polynomial B̃ in `κ_bc + 4`
-/// variables. The native verifier combines its column evaluations at ζ with
-/// the bus weights `eq(α⃗, ·)`, giving `B̃(ζ_lo, α⃗)`. The recursive verifier
-/// defers this claim to its public input.
-#[derive(Clone, Debug)]
-pub struct BytecodeClaim {
-    /// `ζ_side_lo ++ s`, a point in `κ_bc + 4` variables.
-    pub point: Vec<F192>,
-    /// `B̃(point)`.
-    pub value: F192,
-}
-
 /// Selector bits of the stacked bytecode polynomial: the public encoding
 /// columns (opcode + seven operand/immediate slots = eight) stack along
 /// `2^N_BYTECODE_SELECTORS` slots. A column's slot is its bus tuple coordinate,
@@ -602,9 +588,8 @@ pub const N_BYTECODE_SELECTORS: usize = 4;
 pub const BYTECODE_PUBLIC_SLOT: usize = 3;
 
 /// The stacked bytecode polynomial as a dense table: eight public encoding
-/// columns at their tuple coordinates, padded to sixteen selector slots. This is
-/// the polynomial [`BytecodeClaim`]s are claims about; the outermost verifier
-/// evaluates it.
+/// columns at their tuple coordinates, padded to sixteen selector slots. The
+/// program's digest is taken over it ([`crate::cpu::Program`]).
 pub fn stacked_bytecode_table(blocks: &[Block]) -> Vec<F64> {
     let mut kbc = 0;
     let mut cols: Vec<&[F64]> = Vec::new();
@@ -642,33 +627,6 @@ fn sides<'a>(
         (blocks[1], lays[1], w, beta),
         (blocks[2], lays[2], count_w, F192::ZERO),
     ]
-}
-
-/// The program's whole share of a bus leaf, in ONE evaluation: a public column's
-/// slot is its tuple coordinate and the weights are `eq(α⃗, ·)`, so the weighted
-/// sum over the columns IS the stacked polynomial at `(ζ, α⃗)` (§sec:e2e-bc).
-fn bytecode_claim(blocks: &[Block], point: &[F192], alphas: &[F192], public: &mut PublicEvals) -> BytecodeClaim {
-    let weights = fingerprint_weights(alphas);
-    let mut kbc = 0;
-    let mut slot = BYTECODE_PUBLIC_SLOT;
-    let mut value = F192::ZERO;
-    for blk in blocks {
-        for c in &blk.coords {
-            if let Coord::Public(vals) = c {
-                if slot == BYTECODE_PUBLIC_SLOT {
-                    kbc = blk.kappa;
-                }
-                assert_eq!(vals.len(), 1 << kbc);
-                value += weights[slot] * public_eval(vals, &point[..kbc], public);
-                slot += 1;
-            }
-        }
-    }
-    let claim_point = [&point[..kbc], alphas].concat();
-    BytecodeClaim {
-        value,
-        point: claim_point,
-    }
 }
 
 /// Prove the bus balances; returns the per-column claims to open (§sec:leafstack). `alpha`/
@@ -873,12 +831,10 @@ fn tables_and_prods_at(
         .unzip()
 }
 
-/// What [`verify_balance`] establishes: the per-column claims to open, the
-/// reduced bytecode claim (push and pull share ζ),
-/// and the table forms with their claimed sums.
+/// What [`verify_balance`] establishes: the per-column claims to open and the
+/// table forms with their claimed sums.
 pub struct BusVerify {
     pub claims: Vec<ColumnClaim>,
-    pub bytecode_claim: BytecodeClaim,
     /// The GKR point ζ, reused as the table sumcheck's eq point.
     pub point: Vec<F192>,
     /// `forms[side][table]`, for the zerocheck to settle.
@@ -957,7 +913,6 @@ pub fn verify_balance(
 
     Ok(BusVerify {
         claims,
-        bytecode_claim: bytecode_claim(push, &bus_gkr.point, &alphas, &mut public),
         point: bus_gkr.point,
         forms,
         totals,
@@ -967,29 +922,6 @@ pub fn verify_balance(
 #[cfg(test)]
 mod tests {
     use super::soundness_bits;
-
-    #[test]
-    fn bytecode_claim_matches_dense_stacking() {
-        use super::*;
-
-        let columns: Vec<_> = (0..8)
-            .map(|col| Arc::new((0..32).map(|i| F64((i + 1) * (col + 1))).collect()))
-            .collect();
-        let blocks = [Block {
-            kappa: 5,
-            coords: columns.iter().cloned().map(Coord::Public).collect(),
-        }];
-        let point: Vec<_> = (0..5).map(|i| F192::new(i + 2, i + 17, i + 23)).collect();
-        let alphas: Vec<_> = (0..N_TUPLE_BITS).map(|i| F192::new(i as u64 + 5, 3, 7)).collect();
-        let table = stacked_bytecode_table(&blocks);
-        let mut public = PublicEvals::new();
-        for col in columns.iter().rev() {
-            public_eval(col, &point, &mut public);
-        }
-        let claim = bytecode_claim(&blocks, &point, &alphas, &mut public);
-        assert_eq!(claim.point, [point, alphas].concat());
-        assert_eq!(claim.value, mle_eval(&table, &claim.point));
-    }
 
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's

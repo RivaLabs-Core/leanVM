@@ -13,7 +13,7 @@ use crate::common::pi;
 /// A returned value that repeats a constant computed earlier in the same
 /// function. The return slot lives in the callee frame and is read by the
 /// CALLER, so eliminating that write leaves the caller reading an unwritten
-/// (prover-chosen) cell: `walk` in the XMSS guest returned a flag exactly this
+/// (prover-chosen) cell: a chain-walk helper once returned a flag exactly this
 /// way, and folding it produced a proof whose caller-side assert failed.
 #[test]
 fn duplicate_constant_in_a_return_slot_survives() {

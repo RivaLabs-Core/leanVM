@@ -8,7 +8,7 @@ use primitives::field::F64;
 pub type Off = u32;
 
 /// The `g^k` table paired with a reverse index `g^k ↦ k`, both grown on demand
-/// (recursion depth, and so the address range, is unbounded).
+/// (call depth, and so the address range, is unbounded).
 ///
 /// The interpreter needs both directions: a cell index becomes the address `g^k`,
 /// and a pointer word read back out of memory must be inverted to the index it

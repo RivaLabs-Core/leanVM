@@ -67,79 +67,6 @@ impl Program {
     /// first four memory cells (§sec:e2e-pi). Compilation yields the `Program`;
     /// executing it (here) and proving it are separate later phases.
     pub fn execute(&self, public_input: [F64; 4]) -> Execution {
-        self.execute_filled(public_input, super::filler::NO_FLOORS)
-    }
-
-    /// [`Self::execute`], then grow one table until the stacked witness reaches
-    /// [`Program::min_log_committed`].
-    ///
-    /// The height is solved for, not approached: the padded table is a small
-    /// share of the committed total, so doubling it moves `m` by much less than
-    /// a bit, and a geometric search would neither converge in a predictable
-    /// number of rounds nor be monotone in the request. `committed_log` is pure
-    /// and cheap, so the smallest height that reaches the floor is found without
-    /// executing anything; one re-run then realises it, and the loop only exists
-    /// because the fill's own closing jumps and frames feed back into the size.
-    /// Runs that already clear the floor (every one of consequence) execute once.
-    pub(crate) fn execute_to_floor(&self, public_input: [F64; 4]) -> Execution {
-        let mut exec = self.execute_filled(public_input, super::filler::NO_FLOORS);
-        if self.min_log_committed == 0 {
-            return exec;
-        }
-        let mut floors = super::filler::NO_FLOORS;
-        for _ in 0..3 {
-            if self.committed_log(&exec) >= self.min_log_committed {
-                return exec;
-            }
-            floors[super::filler::PAD_TABLE] = 1 << self.padded_height(&exec);
-            exec = self.execute_filled(public_input, floors);
-        }
-        assert!(
-            self.committed_log(&exec) >= self.min_log_committed,
-            "no fill reaches the requested 2^{} committed witness",
-            self.min_log_committed
-        );
-        exec
-    }
-
-    /// The smallest height for the padded table that takes this run's committed
-    /// witness to [`Program::min_log_committed`]. `m` is nondecreasing in every
-    /// table height, so the first one that reaches the floor is the smallest.
-    fn padded_height(&self, exec: &Execution) -> usize {
-        let mut taus = exec.trace.row_counts().map(crate::log2_strict_usize);
-        let log_bytecode = crate::log2_strict_usize(self.prog.len());
-        let log_mem = crate::log2_strict_usize(exec.mem.len());
-        let pad = super::filler::PAD_TABLE;
-        for height in taus[pad] + 1..=crate::cpu::MAX_LOG_ROWS {
-            taus[pad] = height;
-            if super::layout::committed_log(log_mem, log_bytecode, taus) >= self.min_log_committed {
-                return height;
-            }
-        }
-        panic!(
-            "even a full {} table cannot reach 2^{}",
-            crate::cpu::MAX_LOG_ROWS,
-            self.min_log_committed
-        )
-    }
-
-    /// The stacked witness this run commits to, as a log2.
-    fn committed_log(&self, exec: &Execution) -> usize {
-        super::layout::committed_log(
-            crate::log2_strict_usize(exec.mem.len()),
-            crate::log2_strict_usize(self.prog.len()),
-            exec.trace.row_counts().map(crate::log2_strict_usize),
-        )
-    }
-
-    /// [`Self::execute`] with a floor on some tables' row counts, which the fill
-    /// blocks buy on top of their natural powers of two
-    /// ([`Program::min_log_committed`]).
-    pub(crate) fn execute_filled(
-        &self,
-        public_input: [F64; 4],
-        fill_floors: [usize; crate::tables::N_TABLES],
-    ) -> Execution {
         // One interpretation of the program, then the fill. The blocks that bring every
         // table to a power of two are cycles no program code enters (`cpu::filler`), so
         // they run after the chain has halted, by which point the program's own row
@@ -324,7 +251,7 @@ impl Program {
         // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
         // with g^n = x, by baby-step giant-step (baby table g^j for j < 2^17,
         // built once per run; giant step ×g^(-2^17)). Prover-side only: the
-        // guest re-verifies the hinted bits in-circuit.
+        // program re-verifies the hinted bits itself.
         fn bounded_dlog(cache: &mut Option<(GPow, F64)>, x: F64, nbits: u32) -> u128 {
             const LOG_BABY: u32 = 17;
             let (baby, giant) = cache.get_or_insert_with(|| {
@@ -403,7 +330,7 @@ impl Program {
                     // powers of two by itself, which `Layout` checks.
                     if !self.filler.is_empty() {
                         let mut frame = (1u32 << crate::cpu::MIN_LOG_MEM).max(next_free);
-                        for (block_pc, size, n) in super::filler::cycles(&self.filler, counts, fill_floors) {
+                        for (block_pc, size, n) in super::filler::cycles(&self.filler, counts) {
                             g.grow_to(frame as usize);
                             g.note(frame as usize);
                             // What the closing jump reads: back to the block's own first

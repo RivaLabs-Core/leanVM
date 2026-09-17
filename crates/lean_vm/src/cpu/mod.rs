@@ -75,8 +75,7 @@ const MAX_LOG_BYTECODE: usize = 32;
 ///
 /// The IV IS the transcript's starting chaining value ([`fiat_shamir::FiatShamirState::new`]),
 /// so all challenges depend on the circuit version and the program before
-/// anything else; a recursion guest carries the INNER program's IV in its public
-/// input, pinning both with one digest.
+/// anything else.
 pub fn fs_seed(program: &Program) -> [F64; 4] {
     let mut h = primitives::hash::Hasher::new();
     h.update(b"leanvm");
@@ -139,8 +138,8 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) 
         || taus.iter().any(|&t| t > MAX_LOG_ROWS)
         // flock sizes its argument to at least `n_blocks_log(1)` instances, and the
         // BLAKE2s table's value columns share that instance cube, so a height below the
-        // floor describes a layout the arithmetization cannot express. The other two
-        // verifiers reject it here too (`python-verifier`, `guests/lean_ethereum.py`).
+        // floor describes a layout the arithmetization cannot express. `python-verifier`
+        // rejects it here too.
         || taus[tables::BLAKE2S_TABLE] < crate::hash_flock::n_blocks_log(1)
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
@@ -186,21 +185,10 @@ pub struct Program {
     /// diagnostic; empty for hand-assembled programs.
     pub fn_ranges: Vec<(String, u32, u32)>,
     /// Source line of the statement that emitted each pc. Prover-side only, and
-    /// outside `bytecode_hash`, so it costs nothing in the proof: a failed guest
+    /// outside `bytecode_hash`, so it costs nothing in the proof: a failed
     /// check reports a line rather than a pc to disassemble around. Empty for a
     /// hand-assembled program, and shorter than `prog`, which is padded.
     pub src_lines: Vec<u32>,
-    /// The smallest stacked witness this program's proofs may commit to, as a
-    /// log2. Zero (the default) asks for nothing.
-    ///
-    /// A consumer can need a proof to be no smaller than some size even when the
-    /// run is: the recursion guest holds one WHIR opening arm per committed size
-    /// it was compiled for, and has none below the first. A run that falls short
-    /// buys the difference in fill rows ([`crate::cpu::filler`]) rather than in a
-    /// padded commitment, which keeps the committed size a function of the
-    /// announced table heights, so neither the verifier nor the guest needs a new
-    /// parameter to certify. Prover-side only.
-    pub min_log_committed: usize,
 }
 
 /// The bytecode digest reinterprets the stacked table as bytes, which is its
@@ -229,7 +217,6 @@ impl Program {
             filler: Vec::new(),
             fn_ranges: Vec::new(),
             src_lines: Vec::new(),
-            min_log_committed: 0,
         }
     }
 
@@ -484,7 +471,7 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     // The returned `Proof` is system-allocated (`ps.into_proof()` builds `Vec`s),
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
-    let exec = crate::stage!("Execute program", || program.execute_to_floor(public_input));
+    let exec = crate::stage!("Execute program", || program.execute(public_input));
     // A live value that came from outside the constraint system means the emitted
     // bytecode asserts less than its source asked for, so the proof would be about a
     // weaker statement than the program text. That is a compiler bug and never a
@@ -623,33 +610,22 @@ fn bind_pi_claim(r: [F192; 2], placements: &[witness::Placement], pi: &[F64; 4])
     }
 }
 
-/// Everything a recursion harness needs from an accepting verify run, named
-/// and typed: the deferred bytecode claim, flock's
-/// reduction claims, and the stacked-opening summary (ring-switch challenges +
-/// WHIR fold/query data). The sub-proof scalars themselves live on
-/// `proof.stream`, ending at `flock_stream_end`. Ordinary callers just
-/// `?`-discard it.
-pub struct VerifySummary {
-    /// Transcript-bound inverse-rate logarithm used by this proof's PCS.
-    pub log_inv_rate: usize,
-    pub bytecode_claim: leaf::BytecodeClaim,
-    pub zc_claim: flock::zerocheck::ZerocheckClaim,
-    pub lc_claim: flock::lincheck::LincheckClaim,
-    /// Stream cursor just after flock's reduction, i.e. where the PCS opening's
-    /// own scalars start. The recursion harness reads flock's lincheck tail
-    /// from here rather than counting back from the end of the stream.
-    pub flock_stream_end: usize,
-    /// The proof this run just verified, in the unpruned form the recursion
-    /// guest and the Python verifier consume.
-    pub raw: fiat_shamir::transcript::RawProof,
-}
-
 /// Verify a proof against the public statement (program + public input): replay
 /// the transcript, reconstruct the public layout from the announced sizes, read
 /// every scalar the prover wrote and pull the PCS hints, then assert the stream
 /// was fully consumed. Takes only public inputs, never the prover's witness.
+pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Result<(), CpuError> {
+    verify_to_raw(program, public_input, proof).map(|_| ())
+}
+
+/// [`verify`], returning the proof it accepted with every query's Merkle path
+/// written out, the form `python-verifier` reads.
 #[tracing::instrument(name = "Verify", skip_all)]
-pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Result<VerifySummary, CpuError> {
+pub fn verify_to_raw(
+    program: &Program,
+    public_input: &[F64; 4],
+    proof: &Proof,
+) -> Result<fiat_shamir::transcript::RawProof, CpuError> {
     let mut vs = VerifierState::new(fs_seed(program), proof, *public_input);
     let (l, log_inv_rate) = read_public(&mut vs, program, public_input)?;
     let root = pcs::read_commitment(&mut vs).map_err(CpuError::Transcript)?;
@@ -694,18 +670,10 @@ pub fn verify(program: &Program, public_input: &[F64; 4], proof: &Proof) -> Resu
     let n_blocks = n_blake2s.max(1);
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(CpuError::Blake2s)?;
-    let flock_stream_end = vs.stream_offset();
     let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
     pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(CpuError::Open)?;
     vs.finish().map_err(CpuError::Transcript)?;
-    Ok(VerifySummary {
-        bytecode_claim: bus.bytecode_claim,
-        zc_claim: replay.zc_claim,
-        lc_claim: replay.lc_claim,
-        log_inv_rate,
-        flock_stream_end,
-        raw: vs.into_raw_proof(),
-    })
+    Ok(vs.into_raw_proof())
 }
 
 /// Lift `ColumnClaim`s to located PCS claims: a claim on column `c` lives in

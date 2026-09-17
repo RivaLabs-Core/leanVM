@@ -271,8 +271,7 @@ pub fn padding_block() -> Compression {
 /// commit that still had `build_matrices` and run `r1cs_digest_matches_baked`.
 ///
 /// The value is mirrored in `python-verifier/verifier.py`, which never could
-/// rebuild the matrices, and in the recursion guest, so a deliberate circuit
-/// change means bumping all three by hand.
+/// rebuild the matrices, so a deliberate circuit change means bumping both by hand.
 pub const R1CS_DIGEST: [u8; 32] = [
     0x53, 0x7a, 0xd2, 0x07, 0x90, 0x30, 0x8f, 0x8e, 0xb8, 0xc0, 0xe8, 0xbd, 0x3e, 0x6c, 0x58, 0xee, 0x64, 0x57, 0x33,
     0x71, 0xe3, 0xd5, 0x3c, 0x30, 0x61, 0x3d, 0xd0, 0x4d, 0x87, 0xc0, 0xb7, 0xea,

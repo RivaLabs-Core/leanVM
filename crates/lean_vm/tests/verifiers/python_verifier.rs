@@ -5,7 +5,7 @@
 
 use fiat_shamir::transcript::RawProof;
 use lean_compiler::{compile, parse_with_replacements};
-use lean_vm::cpu::{prove, verify};
+use lean_vm::cpu::{prove, verify, verify_to_raw};
 use primitives::field::{F64, g_pow};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -104,9 +104,7 @@ fn test_python_verifier() {
     // Python reads the RAW proof: same protocol, each query carrying its own
     // full Merkle path instead of one octopus over the batch. A Rust verify
     // expands the wire form, so the pruning is written once.
-    let raw = verify(&program, &public_input, &proof)
-        .expect("honest proof verifies")
-        .raw;
+    let raw = verify_to_raw(&program, &public_input, &proof).expect("honest proof verifies");
 
     let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-test-{}", std::process::id()));
     std::fs::create_dir_all(&directory).expect("create test directory");

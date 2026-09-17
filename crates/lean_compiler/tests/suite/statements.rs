@@ -608,8 +608,8 @@ fn a_match_target_binds_and_every_field_is_walked() {
 }
 
 /// The same construct in a VALUE position, for the same reason. `+` there is
-/// XOR, so `lvl + 1` with `lvl = 3` is 2 and not 4, silently: the SPHINCS guest
-/// could not write a Merkle level into a tweak and carried a generated table of
+/// XOR, so `lvl + 1` with `lvl = 3` is 2 and not 4, silently: a program could
+/// not write a Merkle level into a tweak and had to carry a generated table of
 /// one literal per level to get the integer reading instead.
 ///
 /// `const(e)` reads `e` with integer arithmetic and emits the literal, so one

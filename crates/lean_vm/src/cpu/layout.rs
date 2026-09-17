@@ -129,9 +129,7 @@ impl Witness {
     }
 }
 
-/// The committed columns' kappa SOURCES, for the recursion guest's
-/// in-circuit certification of the stacked size m = max(log2_ceil(sum of
-/// 2^kappa), MIN_MU). Per committed column: `Some((source, adj))` with
+/// The committed columns' kappa SOURCES. Per committed column: `Some((source, adj))` with
 /// kappa = value(source) + adj, where source 0 is the constant 0 (kappa =
 /// adj; used for the fixed-size columns and the program bytecode length,
 /// which the caller passes as `log_bytecode`), source 1 is log_mem, and
@@ -167,8 +165,7 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
 /// The bus flush blocks' kappa SOURCES, flattened in side order (push, pull,
 /// count) exactly as the blocks are constructed below: per block
 /// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
-/// 0, 1 = log_mem, 2 + t = tau_t. For the recursion guest's in-circuit pin
-/// of every hinted block kappa. Keep in lockstep with the block
+/// 0, 1 = log_mem, 2 + t = tau_t. Keep in lockstep with the block
 /// construction in [`fn@layout`].
 pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
     let mut push = vec![(0, 0), (1, 0), (0, log_bytecode)];
@@ -198,14 +195,6 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
         .iter()
         .map(|s| s.map(|(source, adj)| values[source] + adj))
         .collect()
-}
-
-/// `log2` of the stacked witness the announced sizes imply. The one part of
-/// [`layout`] a size floor needs, and far cheaper than the rest of it.
-pub(crate) fn committed_log(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLES]) -> usize {
-    crate::witness::placements_of(&col_kappas(log_mem, log_bytecode, taus))
-        .1
-        .mu
 }
 
 /// Build the public [`Layout`] from the program, the memory log-size `log_mem`, the
