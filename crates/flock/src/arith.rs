@@ -1,30 +1,17 @@
 //! u64 arithmetic as Flock R1CS circuits, one operation per block: wrapping
 //! addition ([`add`]), and multiplication ([`mul`]) wrapping or widening.
 //!
-//! ## Witness layout per block
-//!
-//! ```text
-//!   z[0         .. 64)        = a                  (free input)
-//!   z[64        .. 128)       = b                  (free input)
-//!   z[128       .. 128 + N)   = the N-bit result   (committed copies)
-//!   z[128 + N]                = 1                  (constant wire)
-//!   z[129 + N   .. useful)    = the circuit's products
-//!   z[useful    .. 2^k_log)   = padding (forced to 0 by empty rows)
-//! ```
-//!
-//! A circuit is one gate list, where a wire is the gate driving it and each
-//! committed wire is a row. As in [`crate::hash`], no matrix is ever built: the
-//! verifier walks the list forwards and the prover backwards (doc/leanvm, Annex
-//! C "Evaluating the matrices"). The witness is word arithmetic on the same
-//! structure the list is built from, one instance at a time.
+//! Each is a [`crate::circuit`] gate list over the ports `a`, `b` and the result, in
+//! that order ([`A_BASE`], [`B_BASE`], [`OUT_BASE`]), built from [`add::Adder`] and
+//! [`mul::Multiplier`], which take wires and return wires and so compose into
+//! larger circuits. Here the witness is not the generic walk of the gate list but
+//! word arithmetic on the structure the list is built from, one instance at a time.
 
 pub mod add;
 pub mod mul;
 
-use crate::lincheck::LincheckCircuit;
+use crate::circuit::{Builder, Circuit};
 use crate::reduction::Block;
-use crate::witness::drive_witness_packed_and_lincheck;
-use primitives::field::F192;
 use zk_alloc::ArenaVec;
 
 pub const A_BASE: usize = 0;
@@ -48,74 +35,6 @@ impl U64Op {
             Self::WrappingAdd | Self::WrappingMul => 64,
             Self::WideningMul => 128,
         }
-    }
-}
-
-/// A wire is the index of the gate driving it.
-#[derive(Clone, Copy)]
-enum Gate {
-    /// The committed free wire at `slot`: an input, or the constant. Row `z[slot]·1 = z[slot]`.
-    Free(u32),
-    /// `w_x ⊕ w_y`, uncommitted.
-    Xor(u32, u32),
-    /// Row `w_x · w_y = z[slot]`.
-    And(u32, u32, u32),
-    /// Row `w_x · 1 = z[slot]`: an affine wire committed, which is how the result leaves the circuit.
-    Copy(u32, u32),
-}
-
-/// A gate list under construction: the constant wire, `a` and `b` come first,
-/// and products take the slots after the constant in the order they are made.
-struct Builder {
-    gates: Vec<Gate>,
-    next_slot: usize,
-    one: Option<u32>,
-    a: [Option<u32>; 64],
-    b: [Option<u32>; 64],
-}
-
-impl Builder {
-    fn new(out_bits: usize) -> Self {
-        let const_pos = OUT_BASE + out_bits;
-        let mut c = Self {
-            gates: Vec::new(),
-            next_slot: const_pos + 1,
-            one: None,
-            a: [None; 64],
-            b: [None; 64],
-        };
-        c.one = Some(c.push(Gate::Free(const_pos as u32)));
-        let a = std::array::from_fn(|i| Some(c.push(Gate::Free((A_BASE + i) as u32))));
-        let b = std::array::from_fn(|i| Some(c.push(Gate::Free((B_BASE + i) as u32))));
-        (c.a, c.b) = (a, b);
-        c
-    }
-
-    fn push(&mut self, gate: Gate) -> u32 {
-        self.gates.push(gate);
-        (self.gates.len() - 1) as u32
-    }
-
-    /// `None` is a structural zero.
-    fn xor(&mut self, x: Option<u32>, y: Option<u32>) -> Option<u32> {
-        match (x, y) {
-            (Some(x), Some(y)) => Some(self.push(Gate::Xor(x, y))),
-            _ => x.or(y),
-        }
-    }
-
-    fn and(&mut self, x: Option<u32>, y: Option<u32>) -> u32 {
-        let slot = self.next_slot as u32;
-        self.next_slot += 1;
-        self.push(Gate::And(x.unwrap(), y.unwrap(), slot))
-    }
-
-    /// Commits `wire` as result bit `i`.
-    fn output(&mut self, i: usize, wire: Option<u32>) {
-        self.push(Gate::Copy(
-            wire.expect("every result bit has a wire"),
-            (OUT_BASE + i) as u32,
-        ));
     }
 }
 
@@ -168,46 +87,47 @@ enum Plan {
 
 pub struct U64Circuit {
     op: U64Op,
-    gates: Vec<Gate>,
+    circuit: Circuit,
     plan: Plan,
-    const_pos: usize,
-    k_log: usize,
-    useful_bits: usize,
 }
 
 impl U64Circuit {
     pub fn new(op: U64Op) -> Self {
         let n = op.out_bits();
-        let mut c = Builder::new(n);
-        let plan = match op {
-            U64Op::WrappingAdd => Plan::Add(add::Adder::build(&mut c)),
-            U64Op::WrappingMul | U64Op::WideningMul => Plan::Mul(mul::Multiplier::build(&mut c, n)),
+        let mut c = Builder::new(&[64, 64], &[n]);
+        let (a, b) = (c.input(0), c.input(1));
+        let (out, plan) = match op {
+            U64Op::WrappingAdd => {
+                let (out, adder) = add::Adder::build(&mut c, &a, &b);
+                (out, Plan::Add(adder))
+            }
+            U64Op::WrappingMul | U64Op::WideningMul => {
+                let (out, multiplier) = mul::Multiplier::build(&mut c, &a, &b, n);
+                (out, Plan::Mul(multiplier))
+            }
         };
-        let useful_bits = c.next_slot;
-        Self {
-            op,
-            gates: c.gates,
-            plan,
-            const_pos: OUT_BASE + n,
-            k_log: useful_bits.next_power_of_two().trailing_zeros() as usize,
-            useful_bits,
+        for (i, wire) in out.into_iter().enumerate() {
+            c.output(0, i, wire);
         }
+        let circuit = c.finish();
+        assert_eq!(circuit.const_pos(), OUT_BASE + n);
+        Self { op, circuit, plan }
+    }
+
+    pub fn circuit(&self) -> &Circuit {
+        &self.circuit
     }
 
     pub fn k_log(&self) -> usize {
-        self.k_log
+        self.circuit.k_log()
     }
 
     pub fn useful_bits(&self) -> usize {
-        self.useful_bits
+        self.circuit.useful_bits()
     }
 
     pub fn block(&self) -> Block<'_> {
-        Block {
-            k_log: self.k_log,
-            useful_bits: self.useful_bits,
-            circuit: self,
-        }
+        self.circuit.block()
     }
 
     /// `(z, a, b, z_lincheck)` for `pairs` padded with `(0, 0)` to
@@ -219,111 +139,27 @@ impl U64Circuit {
         n_blocks_log: usize,
     ) -> (ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u64>, ArenaVec<u8>) {
         let n = self.op.out_bits();
-        drive_witness_packed_and_lincheck(pairs, Some(&(0, 0)), n_blocks_log, self.k_log, |&(a, b), z, az, bz| {
-            let mut witness = Instance { z, az, bz };
-            let out = match &self.plan {
-                Plan::Add(adder) => adder.witness(a, b, &mut witness),
-                Plan::Mul(multiplier) => multiplier.witness(a, b, &mut witness),
-            };
-            witness.unit_rows(A_BASE, a as u128, 64);
-            witness.unit_rows(B_BASE, b as u128, 64);
-            witness.unit_rows(OUT_BASE, out, n);
-            witness.unit_rows(self.const_pos, 1, 1);
-        })
-    }
-
-    /// The matrix-vector products `(A_0 w, B_0 w)`, by one forward walk.
-    fn row_values(&self, w: &[F192]) -> (Vec<F192>, Vec<F192>) {
-        let k = self.n_cols();
-        assert_eq!(w.len(), k);
-        let wc = w[self.const_pos];
-        let mut ra = vec![F192::ZERO; k];
-        let mut rb = vec![F192::ZERO; k];
-        let mut wires: Vec<F192> = Vec::with_capacity(self.gates.len());
-        for &gate in &self.gates {
-            let v = match gate {
-                Gate::Free(s) => {
-                    let s = s as usize;
-                    (ra[s], rb[s]) = (w[s], wc);
-                    w[s]
-                }
-                Gate::Xor(x, y) => wires[x as usize] + wires[y as usize],
-                Gate::And(x, y, s) => {
-                    let s = s as usize;
-                    (ra[s], rb[s]) = (wires[x as usize], wires[y as usize]);
-                    w[s]
-                }
-                Gate::Copy(x, s) => {
-                    let s = s as usize;
-                    (ra[s], rb[s]) = (wires[x as usize], wc);
-                    w[s]
-                }
-            };
-            wires.push(v);
-        }
-        (ra, rb)
-    }
-}
-
-impl LincheckCircuit for U64Circuit {
-    fn n_cols(&self) -> usize {
-        1 << self.k_log
-    }
-
-    fn const_pin_col(&self) -> usize {
-        self.const_pos
-    }
-
-    /// `(A_0 + α B_0)ᵀ u`, by one backward walk: every gate, in reverse, hands
-    /// its wire's adjoint to its operands or deposits it on its slot.
-    fn fold_alpha_batched(&self, alpha: F192, u: &[F192]) -> Vec<F192> {
-        assert_eq!(u.len(), self.n_cols());
-        let c = self.const_pos;
-        let mut m = vec![F192::ZERO; u.len()];
-        let mut adj = vec![F192::ZERO; self.gates.len()];
-        for (i, &gate) in self.gates.iter().enumerate().rev() {
-            let g = adj[i];
-            match gate {
-                Gate::Free(s) => {
-                    let s = s as usize;
-                    m[s] += g + u[s];
-                    m[c] += alpha * u[s];
-                }
-                Gate::Xor(x, y) => {
-                    adj[x as usize] += g;
-                    adj[y as usize] += g;
-                }
-                Gate::And(x, y, s) => {
-                    let s = s as usize;
-                    m[s] += g;
-                    adj[x as usize] += u[s];
-                    adj[y as usize] += alpha * u[s];
-                }
-                Gate::Copy(x, s) => {
-                    let s = s as usize;
-                    m[s] += g;
-                    adj[x as usize] += u[s];
-                    m[c] += alpha * u[s];
-                }
-            }
-        }
-        m
-    }
-
-    fn bilinear_form(&self, alpha: F192, u: &[F192], w: &[F192]) -> Option<F192> {
-        let (ra, rb) = self.row_values(w);
-        Some(
-            u.iter()
-                .zip(ra.iter().zip(&rb))
-                .fold(F192::ZERO, |acc, (&u, (&a, &b))| acc + u * (a + alpha * b)),
-        )
+        self.circuit
+            .generate_witness_with(pairs, &(0, 0), n_blocks_log, |&(a, b), z, az, bz| {
+                let mut witness = Instance { z, az, bz };
+                let out = match &self.plan {
+                    Plan::Add(adder) => adder.witness(a, b, &mut witness),
+                    Plan::Mul(multiplier) => multiplier.witness(a, b, &mut witness),
+                };
+                witness.unit_rows(A_BASE, a as u128, 64);
+                witness.unit_rows(B_BASE, b as u128, 64);
+                witness.unit_rows(OUT_BASE, out, n);
+                witness.unit_rows(self.circuit.const_pos(), 1, 1);
+            })
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::lincheck::LincheckCircuit;
     use fiat_shamir::transcript::{ProverState, VerifierState};
+    use primitives::field::F192;
     use primitives::test_rng::Rng;
 
     const OPS: [U64Op; 3] = [U64Op::WrappingAdd, U64Op::WrappingMul, U64Op::WideningMul];
@@ -356,7 +192,7 @@ mod tests {
         let n_log = 6;
         for op in OPS {
             let circuit = U64Circuit::new(op);
-            let k = circuit.n_cols();
+            let k = circuit.circuit.n_cols();
             let pairs = pairs(1 << n_log, 0x3A11);
             let (z, _, _, _) = circuit.generate_witness(&pairs, n_log);
             for (t, &(x, y)) in pairs.iter().enumerate() {
@@ -372,9 +208,26 @@ mod tests {
                         }
                     })
                     .collect();
-                let (ra, rb) = circuit.row_values(&block);
+                let (ra, rb) = circuit.circuit.row_values(&block);
                 assert!((0..k).all(|i| ra[i] * rb[i] == block[i]), "{op:?} ({x}, {y})");
             }
+        }
+    }
+
+    /// The generic walk of the gate list writes the very tables the word arithmetic does.
+    #[test]
+    fn generic_witness_is_the_word_arithmetic() {
+        let n_log = 4;
+        for op in OPS {
+            let circuit = U64Circuit::new(op);
+            let pairs = pairs(1 << n_log, 0x3A13);
+            let rows: Vec<[u64; 2]> = pairs.iter().map(|&(a, b)| [a, b]).collect();
+            let fast = circuit.generate_witness(&pairs, n_log);
+            let generic = circuit.circuit.generate_witness(&rows, n_log);
+            assert!(fast.0[..] == generic.0[..], "{op:?}: z");
+            assert!(fast.1[..] == generic.1[..], "{op:?}: A·z");
+            assert!(fast.2[..] == generic.2[..], "{op:?}: B·z");
+            assert!(fast.3[..] == generic.3[..], "{op:?}: stripes");
         }
     }
 
@@ -404,7 +257,12 @@ mod tests {
                 block.verify(n_log, &mut vs).is_ok_and(|r| r.claim == claim) && vs.finish().is_ok()
             };
             assert!(run(None), "{op:?}");
-            for bit in [A_BASE + 3, OUT_BASE + 5, circuit.const_pos, circuit.useful_bits - 1] {
+            for bit in [
+                A_BASE + 3,
+                OUT_BASE + 5,
+                circuit.circuit.const_pos(),
+                circuit.useful_bits() - 1,
+            ] {
                 assert!(!run(Some(bit)), "{op:?}: flipping bit {bit} must reject");
             }
         }

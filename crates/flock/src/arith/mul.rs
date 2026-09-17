@@ -31,7 +31,8 @@
 //! Every step is word arithmetic on `u128` rows and its products are one run of
 //! slots, so an instance's witness is a few shifts and masks per step.
 
-use super::{Builder, Instance};
+use super::Instance;
+use crate::circuit::{Builder, Wire};
 
 /// The rows `(a_i ? b : ¬b)` for `i < 64`, then the `a` and `b` rows.
 const N_ROWS: usize = 66;
@@ -63,7 +64,7 @@ fn is_run(mask: u128) -> bool {
     run & run.wrapping_add(1) == 0
 }
 
-pub(super) struct Multiplier {
+pub struct Multiplier {
     g_slot: usize,
     steps: Vec<Csa>,
     /// The two rows the steps leave, and where adding them makes a product.
@@ -75,13 +76,14 @@ pub(super) struct Multiplier {
 }
 
 impl Multiplier {
-    pub(super) fn build(c: &mut Builder, n: usize) -> Self {
+    /// The low `n` bits of `a·b`, as wires.
+    pub fn build(c: &mut Builder, a: &[Wire], b: &[Wire], n: usize) -> (Vec<Wire>, Self) {
         let width = u128::MAX >> (128 - n);
-        let (one, a, b) = (c.one, c.a, c.b);
-        let not_a: [_; 64] = std::array::from_fn(|i| c.xor(a[i], one));
-        let not_b: [_; 64] = std::array::from_fn(|i| c.xor(b[i], one));
-        let g_slot = c.next_slot;
-        let g = Some(c.and(not_a[0], not_b[0]));
+        let one = c.one();
+        let not_a: [Wire; 64] = std::array::from_fn(|i| c.xor(a[i], one));
+        let not_b: [Wire; 64] = std::array::from_fn(|i| c.xor(b[i], one));
+        let g_slot = c.next_slot();
+        let g = c.and(not_a[0], not_b[0]);
 
         // Each row's wire per position, all shifted down a place: row 0's bit 0
         // is what `g` and the constant 1 replace.
@@ -94,7 +96,7 @@ impl Multiplier {
             }
         }
         // `(¬a ≫ 1) + a·2^63`, and the same for `b`.
-        for (row, low, high) in [(A_ROW, not_a, a), (B_ROW, not_b, b)] {
+        for (row, low, high) in [(A_ROW, &not_a, a), (B_ROW, &not_b, b)] {
             let len = 64.min(n - 63);
             rows[row][..63].copy_from_slice(&low[1..]);
             rows[row][63..63 + len].copy_from_slice(&high[..len]);
@@ -139,7 +141,7 @@ impl Multiplier {
                 products,
                 move_y: moves & !pz,
                 move_z: moves & pz,
-                slot: c.next_slot,
+                slot: c.next_slot(),
             };
 
             let (mut sum, mut carry) = (vec![None; n], vec![None; n]);
@@ -149,7 +151,7 @@ impl Multiplier {
                     let xz = c.xor(wx, wz);
                     let yz = c.xor(wy, wz);
                     let maj = c.and(xz, yz);
-                    carry[p + 1] = c.xor(Some(maj), wz);
+                    carry[p + 1] = c.xor(maj, wz);
                     sum[p] = c.xor(xz, wy);
                 } else if (step.move_z >> p) & 1 == 1 {
                     carry[p] = wz;
@@ -172,9 +174,10 @@ impl Multiplier {
         let &[x, y] = live.as_slice() else {
             unreachable!("the steps stop at two rows")
         };
-        let carry_slot = c.next_slot;
+        let carry_slot = c.next_slot();
         let mut carries = 0u128;
         let mut carry = None;
+        let mut product = Vec::with_capacity(n);
         for p in 0..n {
             let (wx, wy) = (rows[x][p], rows[y][p]);
             let out = if p + 1 < n && [wx, wy, carry].iter().flatten().count() >= 2 {
@@ -182,24 +185,25 @@ impl Multiplier {
                 let xc = c.xor(wx, carry);
                 let yc = c.xor(wy, carry);
                 let maj = c.and(xc, yc);
-                carry = c.xor(Some(maj), carry);
+                carry = c.xor(maj, carry);
                 c.xor(xc, wy)
             } else {
                 let xy = c.xor(wx, wy);
                 c.xor(xy, carry.take())
             };
-            c.output(p, out);
+            product.push(out);
         }
         assert!(is_run(carries), "the final carries must be one run of slots");
 
-        Self {
+        let multiplier = Self {
             g_slot,
             steps,
             last: (x, y),
             carries,
             carry_slot,
             width,
-        }
+        };
+        (product, multiplier)
     }
 
     /// Writes `g`'s row and every step's products, and returns the result.
