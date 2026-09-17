@@ -62,6 +62,9 @@ fn nop(class: Class) -> u32 {
         // A load and a store of the byte at address zero, which clock zero never checks.
         Class::Load => asm::i_type(0x03, 0, 0, 0, 0),
         Class::Store => asm::s_type(0x23, 0, 0, 0, 0),
+        Class::Shift => asm::i_type(0x13, 1, 0, 0, 0),
+        Class::Mul => asm::r_type(0x33, 0, 1, 0, 0, 0),
+        Class::Mulh => asm::r_type(0x33, 3, 1, 0, 0, 0),
         class => unreachable!("no fill block of {class:?}"),
     }
 }

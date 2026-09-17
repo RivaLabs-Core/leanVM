@@ -172,6 +172,41 @@ fn loads_and_stores_prove_and_verify() {
     proves_and_verifies("memory", &program, input, expected);
 }
 
+/// Every shift and every multiplication, registers and immediates, 64-bit and 32-bit
+/// forms, folded into the output.
+#[test]
+fn shifts_and_multiplications_prove_and_verify() {
+    let mut a = Asm::new();
+    a.li(S0, 0x8765_4321_fedc_ba98).li(S1, 0xffff_ffff_0000_0025);
+    for (i, op) in [
+        "sll", "srl", "sra", "sllw", "srlw", "sraw", "mul", "mulh", "mulhsu", "mulhu", "mulw",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        a.r(op, T0, S0, S1)
+            .r("xor", A0, A0, T0)
+            .i("addi", A1, A1, i as i32 + 1)
+            .r("add", A1, A1, T0);
+    }
+    for (op, amount) in [
+        ("slli", 63),
+        ("srli", 1),
+        ("srai", 40),
+        ("slliw", 31),
+        ("srliw", 0),
+        ("sraiw", 17),
+    ] {
+        a.i(op, T0, S0, amount).r("xor", A2, A2, T0).r("sub", A3, A3, T0);
+    }
+    let program = Program::new(&a.exit().finish(), TEXT_BASE, vec![], 2);
+    let expected = lean_vm::rv::Machine::new(&program.rv, [0; 4])
+        .run(1 << 20)
+        .expect("the run halts");
+    assert!(expected.iter().all(|&word| word != 0));
+    proves_and_verifies("shift-mul", &program, [0; 4], expected);
+}
+
 /// A run that traps has no proof, and says why.
 #[test]
 fn a_trap_is_reported() {

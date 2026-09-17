@@ -154,6 +154,80 @@ pub fn store() -> Circuit {
     c.finish()
 }
 
+/// [`super::semantics::shift`]: `(v1, v2, imm, flags) -> out`. One right shifter serves
+/// both directions, a left shift being a right shift of the reversed word.
+pub fn shift() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 64, 3], &[64]);
+    let (v1, v2, imm, f) = (c.input(0), c.input(1), c.input(2), c.input(3));
+    let flag = |bit: u64| f[bit.trailing_zeros() as usize];
+    use super::shift::*;
+    let (right, arith, word) = (flag(RIGHT), flag(ARITH), flag(WORD));
+
+    // The amount: six bits, five for a word shift.
+    let mut amount: Word = (0..6).map(|i| c.xor(v2[i], imm[i])).collect();
+    let not_word = c.not(word);
+    amount[5] = c.and(not_word, amount[5]);
+    // A word shift takes the low 32 bits, extended as the shift is: by the sign for an
+    // arithmetic one, by zero otherwise.
+    let low_sign = c.and(arith, v1[31]);
+    let x: Word = (0..64)
+        .map(|i| if i < 32 { v1[i] } else { c.mux(word, low_sign, v1[i]) })
+        .collect();
+    // What a right shift brings in from the top. `ARITH` comes with `RIGHT`.
+    let fill = c.and(arith, x[63]);
+
+    let reversed = |c: &mut Builder, x: &[Wire]| -> Word { (0..64).map(|i| c.mux(right, x[i], x[63 - i])).collect() };
+    let mut y = reversed(&mut c, &x);
+    for (stage, &bit) in amount.iter().enumerate() {
+        let by = 1 << stage;
+        y = (0..64)
+            .map(|i| c.mux(bit, if i + by < 64 { y[i + by] } else { fill }, y[i]))
+            .collect();
+    }
+    let y = reversed(&mut c, &y);
+    for (i, &wire) in sext32_if(&mut c, word, &y).iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    c.finish()
+}
+
+/// [`super::semantics::mul`]: `(v1, v2, flags) -> out`, the low word of the product.
+pub fn mul() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 1], &[64]);
+    let (v1, v2, f) = (c.input(0), c.input(1), c.input(2));
+    let (product, _) = flock::arith::mul::Multiplier::build(&mut c, &v1, &v2, 64);
+    for (i, &wire) in sext32_if(&mut c, f[0], &product).iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    c.finish()
+}
+
+/// [`super::semantics::mulh`]: `(v1, v2, flags) -> out`, the high word of the product.
+/// The unsigned product's high word, less `v2` if `v1` is signed and negative, less `v1`
+/// if `v2` is: a negative operand is its unsigned reading minus `2^64`.
+pub fn mulh() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 2], &[64]);
+    let (v1, v2, f) = (c.input(0), c.input(1), c.input(2));
+    let (product, _) = flock::arith::mul::Multiplier::build(&mut c, &v1, &v2, 128);
+    let mut high = product[64..].to_vec();
+    for (signed, operand, other) in [(f[0], &v1, &v2), (f[1], &v2, &v1)] {
+        let negative = c.and(signed, operand[63]);
+        // `high - other` is `high + !other + 1`.
+        let subtrahend: Word = other
+            .iter()
+            .map(|&bit| {
+                let inverted = c.not(bit);
+                c.and(negative, inverted)
+            })
+            .collect();
+        (high, _) = add_with_carry(&mut c, &high, &subtrahend, negative);
+    }
+    for (i, &wire) in high.iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    c.finish()
+}
+
 /// [`super::Class::Alu`]'s ports.
 pub mod alu_ports {
     /// Input words: the two register values, the immediate, the flags.
@@ -339,6 +413,42 @@ mod tests {
                         got[1],
                         semantics::store(cell, address, v2, flags),
                         "store {flags:#x} at {address:#x}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn shift_and_multiplications_are_their_references() {
+        let (shift, mul, mulh) = (shift(), mul(), mulh());
+        assert_eq!((shift.k_log(), mul.k_log(), mulh.k_log()), (10, 12, 13));
+        let mut rng = Rng(0xA4);
+        for round in 0..1500 {
+            let (v1, v2) = (rng.word(), rng.word());
+            for &flags in &crate::rv::shift::LEGAL {
+                // Every amount now and then, which a random word's low bits cover slowly.
+                let amount = if round % 3 == 0 { round as u64 % 64 } else { v2 };
+                let (v2, imm) = if round % 2 == 0 { (amount, 0) } else { (0, amount & 63) };
+                assert_eq!(
+                    run(&shift, &[v1, v2, imm, flags], 4..5),
+                    [semantics::shift(v1, v2, imm, flags)],
+                    "shift {flags:#x} of {v1:#x} by {v2:#x}, {imm:#x}"
+                );
+            }
+            if round % 10 == 0 {
+                for &flags in &crate::rv::mul::LEGAL {
+                    assert_eq!(
+                        run(&mul, &[v1, v2, flags], 3..4),
+                        [semantics::mul(v1, v2, flags)],
+                        "mul {flags:#x}"
+                    );
+                }
+                for &flags in &crate::rv::mulh::LEGAL {
+                    assert_eq!(
+                        run(&mulh, &[v1, v2, flags], 3..4),
+                        [semantics::mulh(v1, v2, flags)],
+                        "mulh {flags:#x} of {v1:#x}, {v2:#x}"
                     );
                 }
             }

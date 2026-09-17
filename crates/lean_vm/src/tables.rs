@@ -421,10 +421,41 @@ pub static STORE: ClassSpec = ClassSpec {
     n_inputs: 5,
 };
 
+pub static SHIFT: ClassSpec = ClassSpec {
+    class: Class::Shift,
+    name: "SHIFT",
+    control: false,
+    ram: Ram::None,
+    circuit: rv::circuits::shift,
+    k_log: 10,
+    ports: &[Word::V1, Word::V2, Word::Imm, Word::Flags, Word::Out],
+    n_inputs: 4,
+};
+pub static MUL: ClassSpec = ClassSpec {
+    class: Class::Mul,
+    name: "MUL",
+    control: false,
+    ram: Ram::None,
+    circuit: rv::circuits::mul,
+    k_log: 12,
+    ports: &[Word::V1, Word::V2, Word::Flags, Word::Out],
+    n_inputs: 3,
+};
+pub static MULH: ClassSpec = ClassSpec {
+    class: Class::Mulh,
+    name: "MULH",
+    control: false,
+    ram: Ram::None,
+    circuit: rv::circuits::mulh,
+    k_log: 13,
+    ports: &[Word::V1, Word::V2, Word::Flags, Word::Out],
+    n_inputs: 3,
+};
+
 /// The tables, in the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
 /// class tag in the bytecode is `g^t`.
-pub const N_TABLES: usize = 3;
-pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU, &LOAD, &STORE];
+pub const N_TABLES: usize = 6;
+pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU, &LOAD, &STORE, &SHIFT, &MUL, &MULH];
 
 /// The table running `class`, if it has one yet.
 pub fn table_of(class: Class) -> Option<usize> {

@@ -1386,11 +1386,148 @@ def _store() -> _GateList:
     return c
 
 
+def _add_with_carry(c: _GateList, x: Sequence[Wire], y: Sequence[Wire], carry: Wire) -> tuple[list[Wire], Wire]:
+    """`x + y + carry`, and the carry out of the top bit: one product per bit."""
+    total: list[Wire] = []
+    for wx, wy in zip(x, y, strict=True):
+        xc, yc = c.xor(wx, carry), c.xor(wy, carry)
+        total.append(c.xor(xc, wy))
+        carry = c.xor(c.product(xc, yc), carry)
+    return total, carry
+
+
+def _sext32_if(c: _GateList, word: Wire, x: Sequence[Wire]) -> list[Wire]:
+    """`x`, its bits from 32 up replaced by bit 31 when `word` is set."""
+    return list(x[:32]) + [c.mux(word, x[31], bit) for bit in x[32:]]
+
+
+def _shift() -> _GateList:
+    """(v1, v2, imm, flags) -> out. One right shifter serves both directions, a left shift being a right shift of the
+    reversed word. The flags: right, arithmetic (which comes with right), and the 32-bit form."""
+    c = _GateList((64, 64, 64, 3), (64,))
+    v1, v2, imm, (right, arith, word) = c.inputs
+    # The amount: six bits, five for a word shift.
+    amount = [c.xor(v2[i], imm[i]) for i in range(6)]
+    amount[5] = c.product(c.invert(word), amount[5])
+    # A word shift takes the low 32 bits, extended by the sign for an arithmetic one, by zero otherwise.
+    low_sign = c.product(arith, v1[31])
+    x = v1[:32] + [c.mux(word, low_sign, bit) for bit in v1[32:]]
+    fill = c.product(arith, x[63])  # what a right shift brings in from the top
+    y = [c.mux(right, x[i], x[63 - i]) for i in range(64)]
+    for stage, bit in enumerate(amount):
+        y = [c.mux(bit, y[i + (1 << stage)] if i + (1 << stage) < 64 else fill, y[i]) for i in range(64)]
+    y = [c.mux(right, y[i], y[63 - i]) for i in range(64)]
+    for i, wire in enumerate(_sext32_if(c, word, y)):
+        c.output(0, i, wire)
+    return c
+
+
+def _multiply(c: _GateList, a: Sequence[Wire], b: Sequence[Wire], n: int) -> list[Wire]:
+    """The low `n` bits of `a * b`. With `e_ij = not(a_i ^ b_j)`, `2 a_i b_j = a_i + b_j - 1 + e_ij`, so twice the product
+    is a sum of 66 rows of affine bits: `(a_i ? b : not b) << i`, then `not a + a 2^64` and the same for `b`.
+    Its column 0 is `2 + 2g` with `g = (not a_0)(not b_0)`, so after that one product the identity halves, `1` and `g`
+    taking the empty low bits of two rows. Carry-save steps then compress three rows into two, the three ending
+    lowest each time, and a ripple-carry addition finishes. Every product is a majority."""
+    width = (1 << n) - 1
+    not_a = [c.invert(wire) for wire in a]
+    not_b = [c.invert(wire) for wire in b]
+    g = c.product(not_a[0], not_b[0])
+
+    rows: list[list[Wire]] = [[None] * n for _ in range(66)]
+    for i in range(64):
+        for j in range(64):
+            if 0 <= i + j - 1 < n:
+                rows[i][i + j - 1] = c.xor(b[j], not_a[i])
+    for row, low, high in ((64, not_a, a), (65, not_b, b)):
+        length = min(64, n - 63)
+        rows[row][:63] = low[1:]
+        rows[row][63 : 63 + length] = high[:length]
+    rows[2][0], rows[3][0] = c.one, g
+    if n == 128:
+        rows[64][127] = c.one  # half of the constant 2^128, which survives only mod 2^128
+    present = [sum(1 << p for p in range(n) if row[p] is not None) for row in rows]
+
+    live = list(range(66))
+    while len(live) > 2:
+        # The three rows ending lowest: by highest position, then by lowest, ties in `live` order.
+        order = sorted(range(len(live)), key=lambda t: (present[live[t]].bit_length(), (present[live[t]] & -present[live[t]]).bit_length()))
+        x, y, z = (live[t] for t in order[:3])
+        live = [row for row in live if row not in (x, y, z)] + [x, y]
+        px, py, pz = present[x], present[y], present[z]
+        pairs = ((px & py) | (px & pz) | (py & pz)) & (width >> 1)
+        triples = px & py & pz
+        products = moves = 0
+        for p in range(n - 1):
+            if (pairs >> p) & 1:
+                # Where exactly two rows have a bit and the carry row is still free, one bit moves into it.
+                if not (triples >> p) & 1 and not ((products << 1) >> p) & 1:
+                    moves |= 1 << p
+                else:
+                    products |= 1 << p
+        total: list[Wire] = [None] * n
+        carry: list[Wire] = [None] * n
+        for p in range(n):
+            wx, wy, wz = rows[x][p], rows[y][p], rows[z][p]
+            if (products >> p) & 1:
+                xz, yz = c.xor(wx, wz), c.xor(wy, wz)
+                carry[p + 1] = c.xor(c.product(xz, yz), wz)
+                total[p] = c.xor(xz, wy)
+            elif ((moves & pz) >> p) & 1:
+                carry[p], total[p] = wz, c.xor(wx, wy)
+            elif ((moves & ~pz) >> p) & 1:
+                carry[p], total[p] = wy, wx
+            else:
+                total[p] = c.xor(c.xor(wx, wz), wy)
+        rows[x], rows[y] = total, carry
+        present[x], present[y] = px | py | pz, (products << 1) | moves
+
+    # The last two rows, by a ripple-carry addition: a carry is one product wherever two of the three are present.
+    out: list[Wire] = []
+    chain: Wire = None
+    for p, (wx, wy) in enumerate(zip(rows[live[0]], rows[live[1]], strict=True)):
+        if p + 1 < n and sum(wire is not None for wire in (wx, wy, chain)) >= 2:
+            xc, yc = c.xor(wx, chain), c.xor(wy, chain)
+            chain = c.xor(c.product(xc, yc), chain)
+            out.append(c.xor(xc, wy))
+        else:
+            out.append(c.xor(c.xor(wx, wy), chain))
+            chain = None
+    return out
+
+
+def _mul() -> _GateList:
+    """(v1, v2, flags) -> out: the low word of the product, its low 32 bits sign-extended for the 32-bit form."""
+    c = _GateList((64, 64, 1), (64,))
+    v1, v2, (word,) = c.inputs
+    for i, wire in enumerate(_sext32_if(c, word, _multiply(c, v1, v2, 64))):
+        c.output(0, i, wire)
+    return c
+
+
+def _mulh() -> _GateList:
+    """(v1, v2, flags) -> out: the high word of the product, each operand signed or not. The unsigned product's high
+    word, less `v2` if `v1` is signed and negative, less `v1` if `v2` is: a negative operand is its unsigned reading
+    minus 2^64. And `high - other` is `high + not(other) + 1`."""
+    c = _GateList((64, 64, 2), (64,))
+    v1, v2, flags = c.inputs
+    high = _multiply(c, v1, v2, 128)[64:]
+    for signed, operand, other in ((flags[0], v1, v2), (flags[1], v2, v1)):
+        negative = c.product(signed, operand[63])
+        high, _ = _add_with_carry(c, high, [c.product(negative, c.invert(bit)) for bit in other], negative)
+    for i, wire in enumerate(high):
+        c.output(0, i, wire)
+    return c
+
+
 TABLES = (
     Table("alu", 0, True, "none", _alu().circuit(), ("v1", "v2", "imm", "flags", "out", "taken"), ALU_LEGAL_FLAGS),
     # A load's flags are log2 of its width in bytes, then whether it sign-extends; a store's, log2 of its width.
     Table("load", 1, False, "read", _load().circuit(), ("v1", "imm", "flags", "cell", "address", "out"), frozenset(range(7))),
     Table("store", 2, False, "write", _store().circuit(), ("v1", "v2", "imm", "flags", "cell", "address", "cell_new", "out"), frozenset(range(4))),
+    # A shift's flags: right, arithmetic (with right), 32-bit. A product's: 32-bit; its high word's: which operands are signed.
+    Table("shift", 3, False, "none", _shift().circuit(), ("v1", "v2", "imm", "flags", "out"), frozenset((0, 1, 3, 4, 5, 7))),
+    Table("mul", 4, False, "none", _mul().circuit(), ("v1", "v2", "flags", "out"), frozenset((0, 1))),
+    Table("mulh", 5, False, "none", _mulh().circuit(), ("v1", "v2", "flags", "out"), frozenset((0, 1, 3))),
 )
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)
