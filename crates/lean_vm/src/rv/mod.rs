@@ -14,6 +14,7 @@
 //! A trap is the absence of a run: [`machine::Trap`].
 
 pub mod asm;
+pub mod circuits;
 pub mod decode;
 pub mod machine;
 pub mod semantics;
