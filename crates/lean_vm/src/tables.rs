@@ -4,8 +4,7 @@
 //! and its degree-2 constraint. Column indices here are *local* (`0..n_committed_columns`);
 //! `cpu`'s schema offsets them to global witness columns.
 //!
-//! Every column is `K`-valued (`F64`), and so is every memory cell: an `E`-valued
-//! operand of `XOR192`/`MUL192` is three consecutive cells, one read each. Nothing
+//! Every column is `K`-valued (`F64`), and so is every memory cell. Nothing
 //! a row DERIVES is a column at all: an operand address `fp·o`, an arithmetic
 //! result, the `DEREF` store, the `JUMP` successors are each written out as the
 //! degree-2 bus coordinate that carries them (§sec:m3), which leaves `JUMP`'s
@@ -23,23 +22,6 @@ use primitives::field::{F64, F192, mul_by_g};
 // Each is written ONCE, generic over the column type: `F64` in the round a table
 // joins the batch, `F192` afterwards (see [`ColVal`]). Products of two `K`
 // columns stay 64-bit and an `η`-power multiplies through `mul_e`.
-
-/// The tower product `x·y` in `E = K[y]/(y³+y+1)` as three lane sums: lane `i` is
-/// `Σ x_j·y_k` over `TOWER_LANES[i]`. The five partial sums of §sec:tab-mul192 fold
-/// into `c0 = p0+p3`, `c1 = p1+p3+p4`, `c2 = p2+p4`.
-const TOWER_LANES: [&[(usize, usize)]; 3] = [
-    &[(0, 0), (1, 2), (2, 1)],
-    &[(0, 1), (1, 0), (1, 2), (2, 1), (2, 2)],
-    &[(0, 2), (1, 1), (2, 0), (2, 2)],
-];
-
-/// One lane of the tower product, in the columns' own field. Only the test that
-/// checks [`TOWER_LANES`] against the field needs it: `MUL192`'s result rides the
-/// bus as a coordinate ([`arith192_result`]).
-#[cfg(test)]
-fn tower_lane<T: ColVal>(lane: usize, x: [T; 3], y: [T; 3]) -> T {
-    TOWER_LANES[lane].iter().fold(T::ZERO, |acc, &(j, k)| acc + x[j] * y[k])
-}
 
 /// `JUMP`'s two identities: `b = cond·w` and `cond·(b+1) = 0` (§sec:tab-jump).
 ///
@@ -82,8 +64,6 @@ pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE2S: F64 = g_pow(5);
-pub(crate) const OP_XOR192: F64 = g_pow(6);
-pub(crate) const OP_MUL192: F64 = g_pow(7);
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -195,9 +175,7 @@ impl<'a> FillCtx<'a> {
     /// rather than copied into every row (§the trace rows in `cpu::trace`).
     fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
         match self.prog[pc as usize] {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
-                (a, b, c)
-            }
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => (a, b, c),
             op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
         }
     }
@@ -312,10 +290,9 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR64, MUL64, SET, DEREF, JUMP, BLAKE2S, XOR192,
-/// MUL192]`, the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
+/// The tables in fixed order `[XOR64, MUL64, SET, DEREF, JUMP, BLAKE2S]`, the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
 /// opcode is `g^t`.
-pub const N_TABLES: usize = 8;
+pub const N_TABLES: usize = 6;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -325,8 +302,6 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &DerefTable,
         &JumpTable,
         &Blake2sTable,
-        &Arith192 { is_xor: true },
-        &Arith192 { is_xor: false },
     ]
 }
 
@@ -453,104 +428,6 @@ impl Table for Arith64 {
             ]
         });
         ctx.cols(out, rows, RA, |r| [r.ra, r.rb, r.rc]);
-        ctx.col(out, rows, RBC, |r| r.bytecode_read);
-    }
-}
-
-// ---- XOR192 / MUL192 ---------------------------------------------------------
-
-/// `XOR192` and `MUL192`: each operand is three consecutive cells `fp·o·g^i`, the
-/// limbs of one `E` element, read one at a time. The result's three lanes ride the
-/// bus as forms over the operand lanes: the lane-wise sum, or the tower product
-/// unrolled through [`TOWER_LANES`].
-struct Arith192 {
-    is_xor: bool,
-}
-
-mod arith192 {
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const VA: usize = 5; // three lanes
-    pub const VB: usize = 8; // three lanes
-    pub const RA: usize = 11; // one count per limb cell
-    pub const RB: usize = 14;
-    pub const RC: usize = 17;
-    pub const RBC: usize = 20;
-    pub const N: usize = 21;
-}
-
-/// The result word's three K-lanes as forms over the operand lanes.
-fn arith192_result(is_xor: bool) -> [Coord; 3] {
-    use arith192::*;
-    std::array::from_fn(|i| {
-        if is_xor {
-            Coord::Sum(vec![Col(VA + i), Col(VB + i)])
-        } else {
-            Coord::Sum(TOWER_LANES[i].iter().map(|&(j, k)| Prod(VA + j, VB + k, 0)).collect())
-        }
-    })
-}
-
-impl Table for Arith192 {
-    fn n_committed_columns(&self) -> usize {
-        arith192::N
-    }
-    fn count_columns(&self) -> &'static [usize] {
-        use arith192::*;
-        &[RA, RA + 1, RA + 2, RB, RB + 1, RB + 2, RC, RC + 1, RC + 2, RBC]
-    }
-    fn flushes(&self, f: &mut FlushBuilder) {
-        use arith192::*;
-        f.state_step(PC, FP);
-        f.bytecode(
-            PC,
-            RBC,
-            if self.is_xor { OP_XOR192 } else { OP_MUL192 },
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        // A limb's cell is a free ×g^i on the address product.
-        for i in 0..3 {
-            f.memory(Prod(FP, OA, i as u32), RA + i, Col(VA + i));
-        }
-        for i in 0..3 {
-            f.memory(Prod(FP, OB, i as u32), RB + i, Col(VB + i));
-        }
-        for (i, lane) in arith192_result(self.is_xor).into_iter().enumerate() {
-            f.memory(Prod(FP, OC, i as u32), RC + i, lane);
-        }
-    }
-    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
-        use arith192::*;
-        let rows = if self.is_xor {
-            &ctx.trace.xor192
-        } else {
-            &ctx.trace.mul192
-        };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        ctx.cols(out, rows, OA, |r| {
-            let (a, b, c) = ctx.ternary_operands(r.pc);
-            let (va, vb) = (r.fp + a, r.fp + b);
-            [
-                ctx.g_at(a),
-                ctx.g_at(b),
-                ctx.g_at(c),
-                ctx.cell(va),
-                ctx.cell(va + 1),
-                ctx.cell(va + 2),
-                ctx.cell(vb),
-                ctx.cell(vb + 1),
-                ctx.cell(vb + 2),
-            ]
-        });
-        ctx.cols(out, rows, RA, |r| {
-            [
-                r.ra[0], r.ra[1], r.ra[2], r.rb[0], r.rb[1], r.rb[2], r.rc[0], r.rc[1], r.rc[2],
-            ]
-        });
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -909,19 +786,6 @@ impl Table for Blake2sTable {
 mod tests {
     use super::*;
     use primitives::field::powers;
-
-    const C: F192 = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
-
-    /// The hand-unrolled tower product IS `E`'s multiplication, lane by lane.
-    /// `MUL192`'s result coordinate is written out from [`TOWER_LANES`] and cannot
-    /// be checked against the field at run time, so pin the unrolling here.
-    #[test]
-    fn unrolled_tower_product_matches_field_product() {
-        let lanes = |v: F192| [F64(v.c0), F64(v.c1), F64(v.c2)];
-        let (x, y) = (C, C * C + F192::ONE);
-        let got = [0, 1, 2].map(|i| tower_lane(i, lanes(x), lanes(y)).0);
-        assert_eq!(F192::new(got[0], got[1], got[2]), x * y);
-    }
 
     /// `JUMP`'s two identities vanish on an honest row, taken or not, and reject a
     /// wrong indicator or, for a taken jump, an inverse that is not `cond⁻¹`.

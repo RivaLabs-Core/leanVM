@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use super::*;
 use primitives::{
-    field::{F64, F192, mul_by_g},
+    field::{F64, mul_by_g},
     pretty_f64, pretty_integer,
 };
 
@@ -138,8 +138,6 @@ impl Program {
         // `Trace` once the run finishes (alongside the final count columns).
         let mut xor64: Vec<Xrow> = Vec::new();
         let mut mul64: Vec<Xrow> = Vec::new();
-        let mut xor192: Vec<X3row> = Vec::new();
-        let mut mul192: Vec<X3row> = Vec::new();
         let mut set: Vec<Srow> = Vec::new();
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
@@ -194,11 +192,6 @@ impl Program {
                     F64::ZERO
                 }
             }
-            // The `E` element in three consecutive cells.
-            #[inline(always)]
-            fn get3(&self, cell: u32) -> F192 {
-                F192::new(self.get(cell).0, self.get(cell + 1).0, self.get(cell + 2).0)
-            }
             // Write-once store: writing a different value to an already-set cell panics.
             #[inline(always)]
             fn put(&mut self, cell: u32, v: F64) {
@@ -222,12 +215,6 @@ impl Program {
                     self.written[c] = true;
                 }
             }
-            #[inline(always)]
-            fn put3(&mut self, cell: u32, v: F192) {
-                self.put(cell, F64(v.c0));
-                self.put(cell + 1, F64(v.c1));
-                self.put(cell + 2, F64(v.c2));
-            }
             // Read the running access count and advance it by ×g (the free increment).
             // ×g is ×x, i.e. `mul_by_g`, a shift+fold rather than a PMULL; this runs on every
             // memory access (several million per run), so the cheap form matters.
@@ -238,14 +225,6 @@ impl Program {
                 let count = self.count[cell_idx];
                 self.count[cell_idx] = mul_by_g(count);
                 count
-            }
-            #[inline(always)]
-            fn bump3(&mut self, cell: u32) -> [F64; 3] {
-                [
-                    self.bump_access_count(cell),
-                    self.bump_access_count(cell + 1),
-                    self.bump_access_count(cell + 2),
-                ]
             }
         }
         // Bounded discrete log for `hint_decompose_bits_exponent`: find n < 2^nbits
@@ -315,8 +294,6 @@ impl Program {
                         deref.len(),
                         jump.len(),
                         blake2s.len(),
-                        xor192.len(),
-                        mul192.len(),
                     ];
                     base_counts = Some(counts);
                     fill_base = (1usize << crate::cpu::MIN_LOG_MEM).max(next_free as usize);
@@ -381,7 +358,6 @@ impl Program {
                         RHint::BitDecompose { .. } => "BitDecompose",
                         RHint::BitDecomposeExp { .. } => "BitDecomposeExp",
                         RHint::Inverse { .. } => "Inverse",
-                        RHint::Inverse192 { .. } => "Inverse192",
                         RHint::Print { .. } => "Print",
                     });
                     match h {
@@ -528,10 +504,6 @@ impl Program {
                             let v = m.get(fp + value);
                             m.put(fp + dst, if v.is_zero() { F64::ZERO } else { v.inv() });
                         }
-                        RHint::Inverse192 { value, dst } => {
-                            let v = m.get3(fp + value);
-                            m.put3(fp + dst, if v.is_zero() { F192::ZERO } else { v.inv() });
-                        }
                     }
                     m.dbg_hint = None;
                 }
@@ -596,38 +568,6 @@ impl Program {
                         xor64.push(row);
                     } else {
                         mul64.push(row);
-                    }
-                    pc += 1;
-                }
-                Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
-                    let is_xor = matches!(op, Op::Xor192 { .. });
-                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
-                    let written = |m: &Mem, cell: u32| (0..3).filter(|&i| m.is_written(cell + i)).count();
-                    // The `MUL64` back-solve, `div192`'s quotient: an operand not fully
-                    // written is solved for when the other one is, its written limbs
-                    // checked like any store.
-                    if !is_xor && written(&m, ac) == 3 {
-                        let (wa, wb) = (written(&m, aa), written(&m, ab));
-                        if (wa == 3) != (wb == 3) {
-                            let vk = m.get3(if wa == 3 { aa } else { ab });
-                            assert!(!vk.is_zero(), "cannot back-solve MUL192 through a zero operand");
-                            m.put3(if wa == 3 { ab } else { aa }, m.get3(ac) * vk.inv());
-                        }
-                    }
-                    let (va, vb) = (m.get3(aa), m.get3(ab));
-                    m.put3(ac, if is_xor { va + vb } else { va * vb });
-                    let row = X3row {
-                        pc,
-                        fp,
-                        ra: m.bump3(aa),
-                        rb: m.bump3(ab),
-                        rc: m.bump3(ac),
-                        bytecode_read,
-                    };
-                    if is_xor {
-                        xor192.push(row);
-                    } else {
-                        mul192.push(row);
                     }
                     pc += 1;
                 }
@@ -876,8 +816,6 @@ impl Program {
             deref,
             jump,
             blake2s,
-            xor192,
-            mul192,
             mem_count: m.count,
             bytecode_count,
         };

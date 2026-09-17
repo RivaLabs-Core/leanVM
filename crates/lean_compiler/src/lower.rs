@@ -15,7 +15,7 @@
 //!   arity, because they place the return area from their own idea of it.
 //! - [`mod@builtins`] is the precompile and the hints: the two places a value
 //!   arrives without an instruction computing it.
-//! - [`mod@run`] is values spanning several cells: 192-bit elements and digests.
+//! - [`mod@run`] is values spanning several cells: digests and slices.
 //!
 //! [`Scope`] is what a name means HERE, and it reverts at a branch join, so a
 //! cell whose `SET` sits inside a branch is never trusted outside it.
@@ -87,13 +87,11 @@ impl Abi {
 const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 
 /// The pure operations worth interning. All are commutative, so operands are
-/// stored sorted. A 192-bit one names runs by their first cell.
+/// stored sorted.
 #[derive(Clone, Copy, PartialEq, Eq, Hash)]
 enum PureOp {
     Xor,
     Mul,
-    Xor192,
-    Mul192,
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -116,8 +114,6 @@ enum Binding {
     Stack(Off, u32),
     Gaddr(GAddr),
     FConst(F64),
-    /// A 192-bit constant, materialized as a pooled run only where a use needs cells.
-    Const192(F192),
 }
 
 /// What one name means: its value binding, plus an OPTIONAL compile-time integer
@@ -360,15 +356,10 @@ impl FnLower<'_> {
         if let Some(&o) = self.scope.pure_cells.get(&key) {
             return o;
         }
-        let o = match op {
-            PureOp::Xor | PureOp::Mul => self.fresh(),
-            PureOp::Xor192 | PureOp::Mul192 => self.alloc_stack(3),
-        };
+        let o = self.fresh();
         self.emit(match op {
             PureOp::Xor => LOp::Xor64 { a, b, c: o },
             PureOp::Mul => LOp::Mul64 { a, b, c: o },
-            PureOp::Xor192 => LOp::Xor192 { a, b, c: o },
-            PureOp::Mul192 => LOp::Mul192 { a, b, c: o },
         });
         self.scope.pure_cells.insert(key, o);
         o
@@ -476,16 +467,6 @@ impl FnLower<'_> {
                             c: scratch.2,
                         },
                         FillerOp::Mul64 => LOp::Mul64 {
-                            a: scratch.0,
-                            b: scratch.1,
-                            c: scratch.2,
-                        },
-                        FillerOp::Xor192 => LOp::Xor192 {
-                            a: scratch.0,
-                            b: scratch.1,
-                            c: scratch.2,
-                        },
-                        FillerOp::Mul192 => LOp::Mul192 {
                             a: scratch.0,
                             b: scratch.1,
                             c: scratch.2,
@@ -978,7 +959,6 @@ impl FnLower<'_> {
                 Some(Binding::Stack(..)) => {
                     self.fail(format!("StackBuf `{v}` used as a scalar; index it (`{v}[k]`) or pass it to blake2s"));
                 }
-                Some(Binding::Const192(_)) => self.fail(format!("the 192-bit constant `{v}` used as a scalar")),
                 Some(Binding::Gaddr(ga)) => self.materialize(ga),
                 Some(Binding::Scalar(o)) => o,
                 _ => {
@@ -1025,10 +1005,6 @@ impl FnLower<'_> {
                 self.emit(LOp::Mul64 { a: q, b: lb, c: la });
                 q
             }
-            Expr::Call(f, _) if parser::RUN192_BUILTINS.contains(&f.as_str()) => self.fail(format!(
-                "`{f}(...)` is a 192-bit value, a run of three cells, not a scalar: bind it or pass it \
-                 where a 192-bit value is expected"
-            )),
             // Folded above when it is what it claims to be, so reaching here means
             // it is not: name that, rather than reporting an unknown function.
             Expr::Call(f, args) if f == "const" => {
@@ -1216,11 +1192,6 @@ impl FnLower<'_> {
                     let base = self.alloc_stack(*n as u32);
                     self.rebind(name, Binding::Stack(base, *n as u32));
                 }
-                // `x = f192(..)`, or a 192-bit builtin over constants: folded, no cells.
-                _ if !matches!(e, Expr::ListLit(_)) && self.const192(e).is_some() => {
-                    let c = self.const192(e).expect("guarded above");
-                    self.rebind(name, Binding::Const192(c));
-                }
                 // `x = [a, b, …]`: an initialized StackBuf. Allocate the run and
                 // write each element in place, a run element over its cells.
                 // Elements are lowered before `name` rebinds, so they may read its
@@ -1232,11 +1203,8 @@ impl FnLower<'_> {
                     self.run_into(e, base, len);
                     self.rebind(name, Binding::Stack(base, len));
                 }
-                // `x = add192(a, b)` and the other 192-bit builtins, and `x = buf[lo:hi]`:
-                // the value's run, a heap slice copied onto the stack.
-                _ if matches!(e, Expr::Slice(..))
-                    || matches!(e, Expr::Call(f, _) if parser::RUN192_BUILTINS.contains(&f.as_str())) =>
-                {
+                // `x = buf[lo:hi]`: the value's run, a heap slice copied onto the stack.
+                _ if matches!(e, Expr::Slice(..)) => {
                     let len = self
                         .run_len(e)
                         .unwrap_or_else(|| self.fail(format!("a slice binding needs a known length, got `{e:?}`")));

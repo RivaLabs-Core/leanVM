@@ -14,8 +14,8 @@ use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
 use crate::pcs;
 use crate::tables::{
-    self, FillCtx, FlushBuilder, OP_BLAKE2S, OP_DEREF, OP_JUMP, OP_MUL64, OP_MUL192, OP_SET, OP_XOR64, OP_XOR192,
-    SEP_BYTECODE, SEP_MEM, SEP_STATE,
+    self, FillCtx, FlushBuilder, OP_BLAKE2S, OP_DEREF, OP_JUMP, OP_MUL64, OP_SET, OP_XOR64, SEP_BYTECODE, SEP_MEM,
+    SEP_STATE,
 };
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use crate::witness;
@@ -30,7 +30,7 @@ mod trace;
 pub use execute::Execution;
 pub use isa::{DerefMode, Op};
 pub use layout::*;
-pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, X3row, Xrow};
+pub(crate) use trace::{Brow, Drow, Jrow, Srow, Trace, Xrow};
 
 /// Witness-gen `BLAKE2s` compression: the eight message words laid out
 /// little-endian into 64 bytes, combined with the supplied chaining value and
@@ -420,8 +420,7 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] =
-        ["XOR64", "MUL64", "SET", "DEREF", "JUMP", "BLAKE2S", "XOR192", "MUL192"];
+    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR64", "MUL64", "SET", "DEREF", "JUMP", "BLAKE2S"];
 
     /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
     ///
@@ -783,25 +782,5 @@ mod tests {
     fn blake2s_self_hash_aliased_operands() {
         let exec = blake2s_program(A, B, [4, 6, 4, 6]).execute(PI);
         assert_eq!(exec.mem[14..18], blake2s_compress(A, A, PI, md()));
-    }
-
-    /// `MUL192` multiplies the elements its three-cell operands spell, in the tower.
-    #[test]
-    fn mul192_multiplies_in_the_tower() {
-        let x = F192::new(0x0123_4567_89ab_cdef, 0xfeed_face_dead_beef, 0x1111_2222_3333_4444);
-        let y = F192::new(0x9999_aaaa_bbbb_cccc, 0x1357_9bdf_2468_ace0, 0x5555_6666_7777_8888);
-        let prog: Vec<Op> = [x, y]
-            .iter()
-            .flat_map(|v| [v.c0, v.c1, v.c2])
-            .enumerate()
-            .map(|(i, limb)| Op::Set {
-                o: 4 + i as u32,
-                k: F64(limb),
-            })
-            .chain([Op::Mul192 { a: 4, b: 7, c: 10 }])
-            .collect();
-        let exec = padded(prog, 8, 13).execute(PI);
-        let p = x * y;
-        assert_eq!(exec.mem[10..13], [F64(p.c0), F64(p.c1), F64(p.c2)]);
     }
 }

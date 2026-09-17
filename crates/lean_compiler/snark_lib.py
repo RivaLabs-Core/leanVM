@@ -16,8 +16,7 @@ class _Elt:
     """A 64-bit machine word in K = GF(2^64). Indices and addresses are powers of
     GEN, i.e. "in the exponent": `GEN ** k` is the k-th index and `x * GEN` its
     successor. A heap pointer is a word too; `buf[i]` is the write-once cell at
-    `buf * i`. A 192-bit element of E = K[y]/(y^3 + y + 1) is not a word but a
-    run of three cells, limbs low first, computed with `add192`/`mul192`/`div192`."""
+    `buf * i`."""
 
     def __add__(self, other):  # field addition = XOR
         _ = other
@@ -47,44 +46,6 @@ class _Elt:
 
     def __setitem__(self, idx, value):  # heap store m[self · idx], or a run store (write-once)
         _ = idx, value
-
-
-def f192(c0: int, c1: int, c2: int) -> _Elt:
-    """A 192-bit constant `c0 + c1·y + c2·y^2`, a three-cell run. Each limb is a
-    compile-time unsigned 64-bit integer. Also valid as a global constant,
-    `ONE = f192(1, 0, 0)`."""
-    _ = c0, c1, c2
-    return _Elt()
-
-
-def add192(a, b) -> _Elt:
-    """The 192-bit sum of two three-cell runs: one XOR192."""
-    _ = a, b
-    return _Elt()
-
-
-def mul192(a, b) -> _Elt:
-    """The 192-bit product of two three-cell runs: one MUL192."""
-    _ = a, b
-    return _Elt()
-
-
-def div192(a, b) -> _Elt:
-    """The 192-bit quotient `a · b⁻¹`: one MUL192 whose unwritten operand is the
-    quotient, back-solved at witness generation. A zero divisor is rejected there."""
-    _ = a, b
-    return _Elt()
-
-
-def assert_eq192(a, b) -> None:
-    """Assert two three-cell runs are equal: one XOR192 into a zero run."""
-    _ = a, b
-
-
-def assert_ne192(a, b) -> None:
-    """Assert two three-cell runs differ: their sum times a hinted inverse, one
-    MUL192 into a one run. Sound whatever the hint, as for `assert a != b`."""
-    _ = a, b
 
 
 GEN = _Elt()
@@ -183,8 +144,8 @@ def HeapBuf(n) -> _Elt:
 
 
 def StackBuf(n: int) -> _Elt:
-    """Allocate `n` consecutive frame (stack) cells. A size-3 StackBuf holds a
-    192-bit value, and a size-4 one a 256-bit value, a valid `blake2s` operand."""
+    """Allocate `n` consecutive frame (stack) cells. A size-4 StackBuf holds a
+    256-bit value, a valid `blake2s` operand."""
     _ = n
     return _Elt()
 

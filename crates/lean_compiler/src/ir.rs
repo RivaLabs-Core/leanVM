@@ -56,17 +56,6 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
-    /// Operands and result are the first cells of three-cell runs.
-    Xor192 {
-        a: Off,
-        b: Off,
-        c: Off,
-    },
-    Mul192 {
-        a: Off,
-        b: Off,
-        c: Off,
-    },
     Deref {
         o1: Off,
         o2: Off,

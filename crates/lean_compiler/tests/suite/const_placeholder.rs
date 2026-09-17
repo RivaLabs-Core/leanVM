@@ -76,8 +76,7 @@ def main():
 /// A global constant may be a g-power, which is how the ISA writes every
 /// address and index.
 ///
-/// The scalar path tried an `f192` literal, then an integer expression, and
-/// stopped, so `GEN ** 2` was rejected as "not a compile-time integer constant
+/// The scalar path tried an integer expression and stopped, so `GEN ** 2` was rejected as "not a compile-time integer constant
 /// expression". It now falls back to the field evaluator and renders the word as
 /// a decimal, so the constant still works in the positions that demand a literal
 /// rather than only as a value.

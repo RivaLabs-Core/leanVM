@@ -75,12 +75,12 @@ impl FnLower<'_> {
             }
             // Nothing by that name is going to be lowered, so the entry pc it
             // needs will not exist. Caught here, where there is a line: a typo, a
-            // statement-only builtin used as a value (`x = assert_eq192(a, b)`),
+            // statement-only builtin used as a value (`x = blake2s(a, b, c)`),
             // or an `@inline` callee reached where inlining did not happen, all
             // used to die later in `resolve` as a bare `no entry found for key`.
             None => self.fail(format!(
                 "no function named `{callee}`. A builtin that writes into a destination \
-                 (`blake2s`, `assert_eq192`, a `hint_*`) is a statement and returns nothing, so it \
+                 (`blake2s`, a `hint_*`) is a statement and returns nothing, so it \
                  cannot be called for a value"
             )),
             _ => {}

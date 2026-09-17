@@ -185,19 +185,6 @@ impl FnLower<'_> {
                 }));
             }
             "blake2s" => self.lower_blake2s(args),
-            "assert_eq192" | "assert_ne192" => {
-                let [a, b] = args else {
-                    self.fail(format!("{f}(a, b) takes two 192-bit values"))
-                };
-                if f == "assert_eq192" {
-                    self.lower_assert_eq192(a, b);
-                } else {
-                    self.lower_assert_ne192(a, b);
-                }
-            }
-            _ if parser::RUN192_BUILTINS.contains(&f) => self.fail(format!(
-                "`{f}(...)` is a 192-bit value, not a statement: bind it (`x = {f}(...)`) or store it"
-            )),
             _ => return false,
         }
         true

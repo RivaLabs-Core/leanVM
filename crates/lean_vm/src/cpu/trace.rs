@@ -20,15 +20,6 @@ pub(crate) struct Xrow {
     pub(crate) rc: F64,
     pub(crate) bytecode_read: F64,
 }
-/// `XOR192` or `MUL192` row: one count per limb cell of each operand.
-pub(crate) struct X3row {
-    pub(crate) pc: u32,
-    pub(crate) fp: u32,
-    pub(crate) ra: [F64; 3],
-    pub(crate) rb: [F64; 3],
-    pub(crate) rc: [F64; 3],
-    pub(crate) bytecode_read: F64,
-}
 pub(crate) struct Srow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,
@@ -68,8 +59,6 @@ pub(crate) struct Trace {
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake2s: Vec<Brow>,
-    pub(crate) xor192: Vec<X3row>,
-    pub(crate) mul192: Vec<X3row>,
     pub(crate) mem_count: Vec<F64>, // per-cell running access count g^{count}; final = g^{A[i]}
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
 }
@@ -84,8 +73,6 @@ impl Trace {
             self.deref.len(),
             self.jump.len(),
             self.blake2s.len(),
-            self.xor192.len(),
-            self.mul192.len(),
         ]
     }
 }

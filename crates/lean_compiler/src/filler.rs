@@ -44,21 +44,15 @@ pub enum FillerOp {
     /// One compression of message and chaining-value cells nothing ever writes, its
     /// digest placed clear of them, so every traversal compresses the same input.
     Blake2s,
-    /// `XOR192` over the three-cell scratch run, pinning it to zero.
-    Xor192,
-    /// `MUL192` over the same run.
-    Mul192,
 }
 
 /// The tables, in `lean_vm::cpu::Stats::TABLES` order, which is how the solver indexes
 /// them.
-pub const TABLES: [(u8, FillerOp); 8] = [
+pub const TABLES: [(u8, FillerOp); 6] = [
     (0, FillerOp::Xor64),
     (1, FillerOp::Mul64),
     (2, FillerOp::Set),
     (3, FillerOp::Deref),
     (4, FillerOp::Jump),
     (5, FillerOp::Blake2s),
-    (6, FillerOp::Xor192),
-    (7, FillerOp::Mul192),
 ];

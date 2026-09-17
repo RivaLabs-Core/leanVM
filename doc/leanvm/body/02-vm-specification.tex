@@ -52,12 +52,8 @@ In particular, the memory log-size $\kmem$ is a non deterministic parameter, fre
 \[
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
-A run of three consecutive cells spells one element of $\E$, its limbs low first:
-\[
-  \locE{o}\;=\;\loc{o}+\loc{\gen\cdot o}\,y+\loc{\gen^{2}\cdot o}\,y^{2}\;\in\;\E.
-\]
 
-\paragraph{Instruction set.} The machine implements eight instructions.
+\paragraph{Instruction set.} The machine implements six instructions.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -69,8 +65,6 @@ Instruction & Operands & Semantics\\
 \texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]=\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
-\texttt{XOR192}        & $[o_A,o_B,o_C]$ & $\locE{o_C}=\locE{o_A}+\locE{o_B}$ \quad(addition in $\E$)\\
-\texttt{MUL192}        & $[o_A,o_B,o_C]$ & $\locE{o_C}=\locE{o_A}\cdot\locE{o_B}$ (multiplication in $\E$)\\
 \hline
 \end{tabularx}
 \end{center}

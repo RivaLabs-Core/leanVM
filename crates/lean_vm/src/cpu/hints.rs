@@ -218,9 +218,6 @@ pub enum RHint {
     /// Untrusted: `assert a != b` multiplies the two back together and asserts
     /// `1`, which a zero value cannot satisfy (`FnLower::lower_assert_ne`).
     Inverse { value: Off, dst: Off },
-    /// [`RHint::Inverse`] in `E`: the three limb cells at `fp+dst` receive the
-    /// inverse of the element in the three at `fp+value`.
-    Inverse192 { value: Off, dst: Off },
     /// Prover-side debug print (`print(...)` in the zkDSL): display the value
     /// of `m[fp+cell]` at this program point. Witness generation only.
     Print { label: String, cell: Off },

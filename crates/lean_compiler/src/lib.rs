@@ -31,7 +31,7 @@ use std::fmt::Write;
 use lean_vm::cpu::hints::{BitsDest, RHint};
 use lean_vm::cpu::{DerefMode, Op, Program};
 use primitives::{
-    field::{F64, F192, g_pow},
+    field::{F64, g_pow},
     pretty_integer,
 };
 
@@ -227,8 +227,6 @@ pub fn disassemble(prog: &[Op]) -> String {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
             Op::Xor64 { a, b, c } => format!("XOR64  fp[{c}] = fp[{a}] ^ fp[{b}]"),
             Op::Mul64 { a, b, c } => format!("MUL64  fp[{c}] = fp[{a}] * fp[{b}]"),
-            Op::Xor192 { a, b, c } => format!("XOR192 fp[{c}..] = fp[{a}..] ^ fp[{b}..]"),
-            Op::Mul192 { a, b, c } => format!("MUL192 fp[{c}..] = fp[{a}..] * fp[{b}..]"),
             Op::Deref { o1, o2, o3, mode } => {
                 let src = match mode {
                     DerefMode::Cell => format!("fp[{o3}]"),
@@ -295,8 +293,6 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32, fra
         },
         LOp::Xor64 { a, b, c } => Op::Xor64 { a: *a, b: *b, c: *c },
         LOp::Mul64 { a, b, c } => Op::Mul64 { a: *a, b: *b, c: *c },
-        LOp::Xor192 { a, b, c } => Op::Xor192 { a: *a, b: *b, c: *c },
-        LOp::Mul192 { a, b, c } => Op::Mul192 { a: *a, b: *b, c: *c },
         LOp::Deref { o1, o2, o3, mode } => Op::Deref {
             o1: *o1,
             o2: *o2,

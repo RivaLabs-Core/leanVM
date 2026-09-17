@@ -214,9 +214,7 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
-                a.max(b).max(c)
-            }
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => a.max(b).max(c),
             Op::Set { o, .. } => o,
             Op::Deref { o1, o2, o3, .. } => o1.max(o2).max(o3),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
@@ -234,14 +232,10 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
         Op::Blake2s { .. } => OP_BLAKE2S,
-        Op::Xor192 { .. } => OP_XOR192,
-        Op::Mul192 { .. } => OP_MUL192,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::Xor192 { a, b, c } | Op::Mul192 { a, b, c } => {
-                (g_at(a), g_at(b), g_at(c))
-            }
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
             // The immediate rides the second operand slot.
             Op::Set { o, k } => (g_at(o), k, F64::ZERO),
             Op::Deref { o1, o2, o3, .. } => (g_at(o1), g_at(o2), g_at(o3)),

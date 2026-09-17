@@ -1,8 +1,8 @@
 # zkDSL Language Reference (leanVM)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM ISA: eight instructions (`XOR64`, `MUL64`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `XOR192`, `MUL192`) over 64-bit memory words in the binary field GF(2^64), the two 192-bit instructions acting on runs of three cells, with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM ISA: six instructions (`XOR64`, `MUL64`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`) over 64-bit memory words in the binary field GF(2^64), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
 
-Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `blake2s`, the 192-bit builtins (`f192`, `add192`, `mul192`, `div192`, `assert_eq192`, `assert_ne192`) and the other intrinsics, so editors and linters resolve the intrinsic names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
+Source files use the `.py` extension and are **Python-shaped**: they import the [`snark_lib`](snark_lib.py) stub, which defines `GEN`, `log`, `mul_range`, `HeapBuf`, `StackBuf`, `blake2s` and the other intrinsics, so editors and linters resolve the intrinsic names. The compiler skips the import. A program that uses placeholders is not a runnable Python file: its `*_PLACEHOLDER` identifiers are undefined until the host fills them in, so importing it raises `NameError`.
 
 Entry points: `lean_compiler::parse` / `parse_file_with_replacements` → `lean_compiler::compile` → `lean_vm::cpu::prove` / `verify`.
 
@@ -19,7 +19,7 @@ The fields are
 Machine **words** (the contents of a memory cell, an immediate, one word of a hashed value, the `JUMP` condition) are elements of the 64-bit field `K = GF(2^64)`, and so are addresses, the program counter, the frame pointer, read counters, operands, opcodes, and domain separators. An element of `E` is not a word but a **run** of three consecutive cells (see "192-bit values"). There are no runtime integers.
 
 - `+` is field addition = bitwise **XOR** (64-bit on words, so `x + x == 0`),
-- `*` is multiplication in `K`; arithmetic in `E` goes through the builtins `add192`, `mul192` and `div192`,
+- `*` is multiplication in `K`,
 - `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL64`: the compiler leaves the quotient cell unset and emits the checked relation `quotient · b == a`, which witness generation back-solves. Division by zero is undefined. This is distinct from `//`, compile-time integer floor division in sizes and indices,
 - an integer literal `n` is a 64-bit word whose bits are the coefficients of `x`: `5` is `1 + x^2`, not the integer five. A literal that does not fit in 64 bits is rejected in a value position, while compile-time integer arithmetic (a size, a bound, a keyword) reads it whole. Written `2 ** 64` in a value position it is not a literal: `**` there is a field power, so it is `x^64` reduced. A 192-bit constant is `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
 - `GEN` is the fixed generator `g = x` of the 64-bit field `K^×` (multiplicative order `2^64 − 1`),
@@ -50,7 +50,7 @@ def helper(a, b):         # other functions
 
 `import snark_lib` / `from snark_lib import *` are the only imports accepted; anything else is a compile error (no multi-file programs yet). Comments (`#`) and blank lines are free. Indentation is block structure, as in Python.
 
-Ordinary functions may return scalars, `HeapBuf` pointers, and runs (a `StackBuf`, a slice, a list literal, a 192-bit value), including mixtures in a tuple return. A returned run has a compile-time-known size: its `n` cells are copied through `n` consecutive return slots and the caller binds the result as a new `StackBuf(n)`. A `HeapBuf` return is just its one-cell pointer; the allocation hint already ran where the buffer was created, so no size metadata needs to cross the call.
+Ordinary functions may return scalars, `HeapBuf` pointers, and runs (a `StackBuf`, a slice, a list literal), including mixtures in a tuple return. A returned run has a compile-time-known size: its `n` cells are copied through `n` consecutive return slots and the caller binds the result as a new `StackBuf(n)`. A `HeapBuf` return is just its one-cell pointer; the allocation hint already ran where the buffer was created, so no size metadata needs to cross the call.
 
 ## Public input
 
@@ -82,7 +82,6 @@ N = 8                    # an integer size / value
 STEP = GEN ** 2          # a g-power constant (index carried in the exponent)
 WIDE = N + 1             # compile-time INTEGER arithmetic (`+ - * / **`);
                          # references to *earlier* constants are allowed
-ONE = f192(1, 0, 0)      # a 192-bit constant, a three-cell run wherever it appears
 
 def main():
     buf = StackBuf(N)    # a constant is a plain literal: usable as a size,
@@ -91,7 +90,7 @@ def main():
     return
 ```
 
-Each constant is **evaluated as a compile-time integer expression** (or an `f192` literal, or a field-valued one such as `GEN ** 2`) and substituted as a single literal everywhere its name appears below, so unlike a `Const` parameter it needs no call site and works in every literal position. Integer arithmetic is the point: it is what makes a derived size come out right, as in `N_TWEAK_WORDS = 2 + CHAIN_STEPS * V + LOG_LIFETIME`. Constants must precede the `def`s and are resolved *before* variables, so a constant name is **reserved**: do not reuse it as a parameter or local name. (Syntactically, `N = 8` is just a Python module global.)
+Each constant is **evaluated as a compile-time integer expression** (or a field-valued one such as `GEN ** 2`) and substituted as a single literal everywhere its name appears below, so unlike a `Const` parameter it needs no call site and works in every literal position. Integer arithmetic is the point: it is what makes a derived size come out right, as in `N_TWEAK_WORDS = 2 + CHAIN_STEPS * V + LOG_LIFETIME`. Constants must precede the `def`s and are resolved *before* variables, so a constant name is **reserved**: do not reuse it as a parameter or local name. (Syntactically, `N = 8` is just a Python module global.)
 
 **Placeholders** let a host fill values at compile time without editing the source. Any identifier may be mapped to replacement text before parsing (`parse_with_replacements` / `parse_file_with_replacements`, taking a `BTreeMap<String, String>`); the replacement is identifier-bounded (`FOO` does not touch `FOOBAR`). The idiom is a placeholder feeding a constant:
 
@@ -120,7 +119,7 @@ def main():
         ...
 ```
 
-`NAME[i]` yields the element (as a field value in value position, or as an integer where an index / slice bound / `unroll` count / `**` exponent is expected), and `len(NAME)` its length. The index `i` must be compile-time (a literal, a constant, or an `unroll` variable). This is what lets one source file adapt to a per-level config vector (query counts, fold factors, sizes) without Rust-side code generation. Nested lists are not (yet) supported: flatten a 2-D table into one array plus an offsets array. A table of 192-bit constants is flattened the same way, three limbs an entry, and read back with a compile-time `i` (a `Const` parameter, say) as `f192(T[3 * i], T[3 * i + 1], T[3 * i + 2])`.
+`NAME[i]` yields the element (as a field value in value position, or as an integer where an index / slice bound / `unroll` count / `**` exponent is expected), and `len(NAME)` its length. The index `i` must be compile-time (a literal, a constant, or an `unroll` variable). This is what lets one source file adapt to a per-level config vector (query counts, fold factors, sizes) without Rust-side code generation. Nested lists are not (yet) supported: flatten a 2-D table into one array plus an offsets array.
 
 ## Functions
 
@@ -144,11 +143,11 @@ def node(left: StackBuf(4), right: StackBuf(4)):
     return out
 ```
 
-`s: StackBuf(n)` marks a parameter as a **run of n cells**, passed whole. The caller passes any run value of exactly that size (a `StackBuf`, a stack or heap slice, a list literal, a 192-bit value), and the run is copied into the callee's frame, one `DEREF` a cell.
+`s: StackBuf(n)` marks a parameter as a **run of n cells**, passed whole. The caller passes any run value of exactly that size (a `StackBuf`, a stack or heap slice, a list literal), and the run is copied into the callee's frame, one `DEREF` a cell.
 
 Those cells arrive **already written**, unlike a local `StackBuf`'s, so a store into one is the write-once equality *assertion* rather than a fresh store. That is what makes a callee able to pin its caller's values: `s[k] = <checked value>` inside the callee asserts that the caller's cell already held it. It also means a run parameter initializes nothing, so passing a partly-written buffer passes its unwritten cells, which the prover then chooses, exactly as anywhere else.
 
-This is the same mechanism a `StackBuf` **return** uses, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. It is what lets a digest or a 192-bit value go into an ordinary function whole, rather than through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site. A `match` arm passes runs the same way.
+This is the same mechanism a `StackBuf` **return** uses, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. It is what lets a digest go into an ordinary function whole, rather than through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site. A `match` arm passes runs the same way.
 
 ### `Const` parameters
 
@@ -183,7 +182,7 @@ An `@inline` function is **expanded at each call site** instead of emitting a re
 
 An `@inline` function may also **return a run**: the caller's binding aliases the returned cell run (zero copies), and run arguments alias likewise.
 
-An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL64` for a shifted pointer). A multi-cell run return is not a scalar: bind it with `let`, or use it where a run is expected (a 192-bit operand, a slice store, a `StackBuf` argument), as a real call's run return may be too.
+An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL64` for a shifted pointer). A multi-cell run return is not a scalar: bind it with `let`, or use it where a run is expected (a slice store, a `StackBuf` argument), as a real call's run return may be too.
 
 An `@inline` function that also takes a `Const` parameter and is used as a `match` arm is specialized rather than expanded: the fused dispatch enters one real function, so `@inline` is simply not honoured there. One without a `Const` parameter has no entry to dispatch to and is rejected.
 
@@ -198,7 +197,7 @@ A name bound to an integer literal (`x = 2`) additionally acts as a **compile-ti
 Two families of binding are folded and carried **virtually**, costing no instruction until used as a value:
 
 - **g-powers and shifted pointers**: a cursor like `s = s * GEN` or a pointer view `p = buf * GEN ** k`. The offset folds into the `DEREF` address of each access; only a scalar use materializes it.
-- **field constants**: a value built from literals / `GEN ** k` by field `+` and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop. The arithmetic that advances it is compile-time (zero instructions); each use is one `SET` of the folded constant. A 192-bit constant (`a = f192(...)`, or a 192-bit builtin over constants) folds likewise, its three `SET`s emitted where a use needs cells.
+- **field constants**: a value built from literals / `GEN ** k` by field `+` and `*`, e.g. a running weight `w = w * CHAIN_LENGTH` in an unrolled loop. The arithmetic that advances it is compile-time (zero instructions); each use is one `SET` of the folded constant.
 A store into a stack cell is NOT virtual: `sa[k] = other` always emits. If the cell already holds a value the store is the write-once equality *assertion* below, which is what makes `s[k] = <checked value>` pin a hint and a pre-written `blake2s` output verify a digest; if it does not, the store is what gives the cell its value. The compiler tracks nothing to tell those apart, the machine's write-once memory being what distinguishes them.
 
 ## Debugging
@@ -234,7 +233,7 @@ v = sa[x + 1]         # indexes: literals, literal-bound names, and + * // % of 
 tg = [v, 7]           # list literal: an initialized StackBuf, one cell per element
 ```
 
-A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates one cell per scalar element and a run element's cells for each run element (so `[q, 7]` with `q` a 192-bit value is four cells), and writes each element in place, exactly the alloc-then-store idiom above, in one line. Elements are arbitrary runtime expressions; each write goes through the same stack-store path. Bound to a name it is the RHS of a plain assignment inside a function, and it is also a run value wherever a run is expected (a `blake2s` operand, a `StackBuf` argument, a 192-bit operand, a slice store); a *top-level* `NAME = [...]` is a constant array (see "Constant arrays"). The elements are lowered before the name rebinds, so `s = [s[1], s[0]]` swaps through the old binding.
+A **list literal** `x = [a, b, …]` is an initialized `StackBuf`: it allocates one cell per scalar element and a run element's cells for each run element (so `[q, 7]` with `q` a three-cell run is four cells), and writes each element in place, exactly the alloc-then-store idiom above, in one line. Elements are arbitrary runtime expressions; each write goes through the same stack-store path. Bound to a name it is the RHS of a plain assignment inside a function, and it is also a run value wherever a run is expected (a `blake2s` operand, a `StackBuf` argument, a slice store); a *top-level* `NAME = [...]` is a constant array (see "Constant arrays"). The elements are lowered before the name rebinds, so `s = [s[1], s[0]]` swaps through the old binding.
 
 Stack indexes and slice bounds are **compile-time integers**, and index arithmetic (`+ * // %`) is *integer* arithmetic (`x + 1` above is 2, `k // 2` floor-divides, `k % 2` is a remainder: index space, not the field, where XOR is what `+` means and `//`/`%` have no meaning at all: using one as a runtime field value is a compile error). Bounds are checked at compile time. A `StackBuf` name is a run of cells, not a scalar: using it as one is an error, and it cannot be captured into a `for` loop body (carry state through a `HeapBuf` instead).
 
@@ -244,7 +243,7 @@ A runtime index through such a pointer is unchecked, as on the heap, but it fail
 
 ### Slices: `buf[lo:hi]`
 
-`buf[lo:hi]` names a run of cells (`hi` exclusive). A `blake2s` operand spans four cells, a 192-bit value three, and `hint_witness` accepts any length. Two forms:
+`buf[lo:hi]` names a run of cells (`hi` exclusive). A `blake2s` operand spans four cells, and `hint_witness` accepts any length. Two forms:
 
 - **compile-time bounds** (integers, as for stack indexes): frame cells `base+lo .. base+hi` of a `StackBuf`, or heap cells `ptr·g^lo .. ptr·g^hi` of a `HeapBuf`, so `hb[2:4]` is the pair `g^2, g^3`;
 - **runtime start, heap only**: `buf[i:i + k]` with a runtime g-power index `i` (e.g. a loop counter) and literal length `k` names the cells `buf·i`, `buf·i·g`, and so on; one `MUL64` folds `i` into the pointer. The `hi` bound cannot be evaluated, only shape-checked: it must be syntactically `lo + k` (`buf[b * GEN ** 4:b * GEN ** 4 + 4]` is fine). A `StackBuf` slice cannot have a runtime start: frame offsets are baked into the bytecode operands.
@@ -394,38 +393,12 @@ Cost: **3 cycles** (leanVM's DEREF range-check trick, in the exponent) plus one 
 
 The two `DEREF` target cells are unconstrained touches, back-filled at the end of execution. A failing check surfaces at witness generation as the complement's `DEREF` panic ("not a small g-power … a failed range check").
 
-## 192-bit values
+## Runs
 
-A memory cell holds one 64-bit word, so an element `c0 + c1·y + c2·y^2` of `E = GF(2^192)` is a **run** of three consecutive cells, its limbs low first. `+` and `*` stay 64-bit; the 192-bit instructions `XOR192` and `MUL192`, each reading two three-cell operands and writing a three-cell result, are reached through builtins:
+A **run** is several consecutive cells read and written as one value: a `StackBuf(n)`, a slice of a `StackBuf` or a `HeapBuf` (a runtime heap start `buf[i:i + n]` included), a list literal (a run element flattens into its cells), or a call returning a `StackBuf(n)`. A name bound to one names its cells, so `q[0]` is an ordinary word.
 
-```python
-ONE = f192(1, 0, 0)                      # a global 192-bit constant
-
-
-def main():
-    a = f192(3, 5, 7)                    # 3 + 5·y + 7·y^2: folded, no cells yet
-    b = [GEN ** 9, 11, 13]               # three words written into a fresh run
-    x = StackBuf(3)
-    hint_witness(x, "x")                 # one entry of three words, limbs low first
-    heap = HeapBuf(6)
-    heap[0:3] = mul192(a, b)             # a run store into heap cells g^0..g^2
-    q = div192(add192(heap[0:3], x), a)  # back-solved, pinned by one MUL192
-    assert_eq192(add192(q, b), div192(x, a))
-    assert_ne192(q, ONE)
-    heap[3:6] = square(q)                # a run goes into a call and comes back out
-    return
-
-
-def square(v: StackBuf(3)):
-    return mul192(v, v)
-```
-
-- **A run is** a `StackBuf(3)`, a three-cell slice of a `StackBuf` or a `HeapBuf` (a runtime heap start `buf[i:i + 3]` included), a list literal of three words (a run element flattens into its cells), `f192(c0, c1, c2)`, a 192-bit builtin, or a call returning a `StackBuf(3)`. A name bound to a non-constant one names its cells, so `q[0]` is its low limb as an ordinary word.
-- `add192(a, b)` is one `XOR192` and `mul192(a, b)` one `MUL192`. `div192(a, b)` is one `MUL192` whose unwritten operand is the quotient: witness generation back-solves `q = a·b⁻¹` and the instruction pins `q·b == a`. A zero divisor has no quotient, and witness generation refuses it.
-- `assert_eq192(a, b)` is one `XOR192` into a pooled zero run, whose double write is the assertion. `assert_ne192(a, b)` is `x = a + b`, a hinted inverse, and one `MUL192 x·inv` into a pooled one run, sound for the reason `assert a != b` is.
-- **Constants fold.** A builtin over constants is computed while compiling, `add192(a, 0)`, `mul192(a, 1)` and `div192(a, 1)` reduce to `a`, and `mul192(a, 0)` to zero, all with no instruction. A constant run costs three pooled `SET`s where a use first needs cells.
-- **A run and a scalar never stand in for each other.** A word where a run is expected, a run where a word is expected (`+`, `*`, `assert`, `print`), a run of the wrong width, and a 192-bit builtin used as a statement are compile errors naming the widths.
-- **Moving runs.** `buf[lo:hi] = value` stores one, an `x: StackBuf(3)` parameter takes one, a function returns one, and a fused `match` returns one. A copy between frame runs is one `XOR192` against the pooled zero run.
+- **A run and a scalar never stand in for each other.** A word where a run is expected, a run where a word is expected (`+`, `*`, `assert`, `print`), and a run of the wrong width are compile errors naming the widths.
+- **Moving runs.** `buf[lo:hi] = value` stores one, an `x: StackBuf(n)` parameter takes one, a function returns one, and a fused `match` returns one. A copy between frame runs is one `MUL64` by one a cell.
 
 A slice of a digest is a run like any other, so a program can take the first three words of a BLAKE2s state as `state[0:3]`.
 
@@ -490,7 +463,7 @@ assert log m < 8             # still unconstrained: pin it
 
 which is the one-line form of allocating a `StackBuf(1)`, filling a slice of it, and reading the cell back out, and costs exactly the same (nothing). Everything below about a stream's entries applies to it: each such binding pops one entry, whose length must be 1.
 
-Prover-supplied data (leanVM's `hint_witness`): a stream is a sequence of **entries**, one slice of words per `hint_witness` call, and the same symbol may be hinted many times. Each call pops the stream's next entry (whose length must match the destination run) and writes it into `dest` through the hint mechanism, at **zero cycles**. The values are completely unconstrained; the program must constrain them itself (asserts, range checks, hashes): an unconstrained hint consumed by anything security-relevant is a critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a literal) work too. A 192-bit value is three words of an entry, limbs low first.
+Prover-supplied data (leanVM's `hint_witness`): a stream is a sequence of **entries**, one slice of words per `hint_witness` call, and the same symbol may be hinted many times. Each call pops the stream's next entry (whose length must match the destination run) and writes it into `dest` through the hint mechanism, at **zero cycles**. The values are completely unconstrained; the program must constrain them itself (asserts, range checks, hashes): an unconstrained hint consumed by anything security-relevant is a critical vulnerability. Runtime-start heap slices (`buf[i:i + k]`, `k` a literal) work too.
 
 The prover supplies streams with `program.set_witness("name", entries)` (`Vec<Vec<F64>>`); test programs declare them as annotations, one line per entry, and repeated lines with the same name are its successive entries:
 
@@ -519,14 +492,10 @@ Three builtins have the prover compute the values at witness generation instead 
 | `a / b` | 1 `MUL64` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL64` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
 | stack read `sa[k]` | 0 (direct cell addressing); a *store* is 1, like any other write |
-| `add192(a, b)` / `mul192(a, b)` / `div192(a, b)` | 1 `XOR192` / 1 `MUL192` / 1 `MUL192`; **0 when the operands fold** |
-| `f192(c0, c1, c2)` | 0 bound to a name; 3 pooled `SET`s where a use first needs cells |
 | heap run read / store `buf[lo:hi]` | 1 `DEREF` per cell (+1 `MUL64` for a runtime start) |
-| run copy between frame cells | 1 `XOR192` per three cells |
+| run copy between frame cells | 1 `MUL64` per cell |
 | `assert a == b` | 1 (+ 1 `SET` amortized per frame for the zero cell) |
 | `assert a != b` | 3 (`XOR64`, `MUL64`, `SET`), no branch, one hinted inverse |
-| `assert_eq192(a, b)` | 1 `XOR192` (+ 3 `SET`s amortized per frame for the zero run) |
-| `assert_ne192(a, b)` | 2 (`XOR192`, `MUL192`), one hinted inverse (+ 3 `SET`s amortized per frame for the one run) |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL64` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
 | `… = match(log(x), …)` | ≈ 7 for the dispatch + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
@@ -564,4 +533,4 @@ def main():
 
 ## Not (yet) supported
 
-Mutable variables; conditions other than field (in)equality of words; `match` default and non-contiguous arms; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; 192-bit arithmetic through `+` and `*`; precompiles beyond `BLAKE2s`.
+Mutable variables; conditions other than field (in)equality of words; `match` default and non-contiguous arms; multi-file imports; `Const` parameters as `mul_range` or range-check bounds (a substituted literal is a bit-pattern element, not the g-power a bound needs); runtime slice starts on a `StackBuf`; precompiles beyond `BLAKE2s`.

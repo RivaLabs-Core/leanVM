@@ -17,7 +17,7 @@ use lean_vm::cpu::filler;
 use lean_vm::cpu::{prove, verify};
 use primitives::field::F64;
 
-const PROGRAMS: [&str; 6] = [
+const PROGRAMS: [&str; 5] = [
     // Folds to nothing, so the fill is all there is.
     "def main():\n    x = GEN ** 5\n    y = x * x\n    return\n",
     "def main():\n    b = HeapBuf(4)\n    b[1] = GEN\n    y = b[1] * b[1]\n    return\n",
@@ -25,8 +25,6 @@ const PROGRAMS: [&str; 6] = [
     // A compression, so BLAKE2s is non-empty too.
     "def main():\n    a = [5, 0, 7, 0]\n    c = StackBuf(4)\n    blake2s(a, a, c)\n    return\n",
     "def main():\n    for i in mul_range(1, GEN ** 300):\n        z = i + GEN\n    return\n",
-    // The 192-bit tables, so their fill ops run too.
-    "def main():\n    a = f192(3, 5, 7)\n    b = mul192(a, a)\n    assert_eq192(add192(b, a), add192(a, b))\n    return\n",
 ];
 
 #[test]

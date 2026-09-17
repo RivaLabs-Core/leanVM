@@ -1,6 +1,5 @@
-//! `disassemble` must render every one of the eight opcodes without panicking,
-//! so it stays usable for the `DBG_DISASM` workflow (a failed guest `assert`
-//! surfaces as a write-once conflict, and the pc is all you get).
+//! `disassemble` must render every one of the six opcodes without panicking,
+//! so it stays usable when a failure names only a pc.
 
 use lean_compiler::{compile, disassemble, parse};
 use primitives::pretty_integer;
@@ -17,9 +16,8 @@ def main():
     h = [5, 0, 7, 0]
     d = StackBuf(4)
     blake2s(h, h, d)
-    e = mul192(add192(d[0:3], f192(1, 2, 3)), d[1:4])
     p = 1
-    p[1] = buff[GEN ** 4] + e[0]
+    p[1] = buff[GEN ** 4] + d[1]
     p[GEN] = d[0]
     return
 ";
@@ -34,7 +32,7 @@ def main():
     let text = disassemble(&program.prog);
     print!("{text}");
 
-    for mnemonic in ["SET", "XOR64", "MUL64", "DEREF", "JUMP", "BLAKE2S", "XOR192", "MUL192"] {
+    for mnemonic in ["SET", "XOR64", "MUL64", "DEREF", "JUMP", "BLAKE2S"] {
         assert!(text.contains(mnemonic), "disassembly is missing {mnemonic}");
     }
 }

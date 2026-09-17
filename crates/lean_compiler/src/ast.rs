@@ -3,7 +3,7 @@
 use primitives::field::F64;
 
 /// An expression. Arithmetic is the 64-bit field's own: `+` is `XOR64`, `*` is
-/// `MUL64`; the 192-bit operations are the `add192`/`mul192`/`div192` builtins.
+/// `MUL64`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Expr {
     /// Integer literal. Compile-time integer arithmetic reads all of it; as a
@@ -68,7 +68,7 @@ pub enum Expr {
     /// `base+lo..base+hi`) or of a [`Expr::HeapBuf`] (heap cells
     /// `ptr·g^lo..ptr·g^hi`), with compile-time integer bounds (`hi`
     /// exclusive), or a runtime heap start `buf[i:i + k]`. A run value: an
-    /// operand of `blake2s` or of a 192-bit builtin, a run binding or a run store.
+    /// operand of `blake2s`, a run binding or a run store.
     Slice(Box<Expr>, Box<Expr>, Box<Expr>),
     /// `[a, b, …]`: an initialized [`Expr::StackBuf`], so `x = [a, b]` allocates
     /// a StackBuf of the element count and writes each element in place, sugar
@@ -161,7 +161,7 @@ pub enum StmtKind {
     },
     /// `arr[idx] = value`: store into a heap cell (write-once).
     Store(Expr, Expr, Expr),
-    /// `buf[lo:hi] = value`: store a run value (a 192-bit element, a digest) into
+    /// `buf[lo:hi] = value`: store a run value (a digest) into
     /// the slice's cells, one write each.
     StoreRun(Expr, Expr),
     /// `for i in mul_range(GEN ** lo, stop)`: the counter rides the exponent as

@@ -415,15 +415,12 @@ fn a_program_names_what_it_means() {
 
     // A call to something that will never be lowered died in the assembler as a
     // bare `no entry found for key`, with no line.
-    for callee in ["nosuchfn(1)", "assert_eq192(f192(1, 0, 0), f192(1, 0, 0))"] {
-        let src = format!("def main():\n    x = {callee}\n{tail}");
-        let ast = parse(&src).expect("parses");
-        let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
-            panic!("`{callee}` was accepted");
-        };
-        let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
-        assert!(msg.contains("no function named"), "{callee}: got `{msg}`");
-    }
+    let ast = parse(&format!("def main():\n    x = nosuchfn(1)\n{tail}")).expect("parses");
+    let Err(err) = std::panic::catch_unwind(|| compile(&ast)) else {
+        panic!("a call to an unknown function was accepted");
+    };
+    let msg = err.downcast_ref::<String>().map(String::as_str).unwrap_or("");
+    assert!(msg.contains("no function named"), "got `{msg}`");
 
     // A compile-time constant is capturable into a `for` body: the body becomes
     // its own function, so the constant is not in scope there. Dropping it made
@@ -666,21 +663,10 @@ fn a_value_may_ask_for_the_integer_regime() {
 /// the body is never reached and its constraints silently disappear: `def const(x)`
 /// with an `assert` in it was skipped outright by `v = const(4)`, and skipped or
 /// not depending on whether the ARGUMENT folded, so one call site had two
-/// meanings. True of `f192` before `const` existed, so this is the class, not one
-/// name.
+/// meanings. This is the class, not one name.
 #[test]
 fn a_function_may_not_shadow_a_builtin() {
-    for name in [
-        "const",
-        "f192",
-        "add192",
-        "assert_ne192",
-        "addr",
-        "blake2s",
-        "len",
-        "hint_witness",
-        "StackBuf",
-    ] {
+    for name in ["const", "addr", "blake2s", "len", "hint_witness", "StackBuf"] {
         let src = format!("def {name}(x):\n    assert x == 99\n    return x\n\ndef main():\n    return\n");
         let err = parse(&src).expect_err(&format!("`def {name}` must be rejected"));
         assert!(err.contains("is a builtin"), "got `{err}`");

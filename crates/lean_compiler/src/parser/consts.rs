@@ -80,23 +80,6 @@ pub fn parse_const(s: &str) -> Result<F64, String> {
     eval(&parse_expr(s)?)
 }
 
-/// The three limbs of an `f192(c0, c1, c2)` literal, each a compile-time integer.
-pub(super) fn parse_f192_const(s: &str) -> Option<Result<[u64; 3], String>> {
-    let inner = s.trim().strip_prefix("f192(")?.strip_suffix(')')?;
-    let parts = split_top(inner, ',');
-    Some((|| {
-        if parts.len() != 3 {
-            return Err("f192 needs exactly three limbs".into());
-        }
-        let mut limbs = [0u64; 3];
-        for (i, p) in parts.iter().enumerate() {
-            limbs[i] =
-                u64::try_from(eval_const_int(p.trim())?).map_err(|_| "an f192 limb does not fit in u64".to_string())?;
-        }
-        Ok(limbs)
-    })())
-}
-
 /// A range bound (`mul_range` bounds and `assert log _ < log _` bounds): a
 /// compile-time power of the generator (`1` = `g^0`, `GEN` = `g^1`, or
 /// `GEN ** k`), returning the exponent `k`. Both uses walk/compare exponents,

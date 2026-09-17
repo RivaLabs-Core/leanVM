@@ -16,7 +16,7 @@
 \newcommand{\F}{\mathbb{F}}
 \newcommand{\Ftwo}{\mathbb{F}_2}
 \newcommand{\K}{K}            % F_{2^64}:  memory words, addresses, counters, committed columns
-\newcommand{\E}{E}            % F_{2^192} = K[y]/(y^3+y+1): XOR192/MUL192 operands and challenges
+\newcommand{\E}{E}            % F_{2^192} = K[y]/(y^3+y+1): challenges
 \newcommand{\gen}{\mathsf{g}} % generator of K^*, order 2^64 - 1
 
 % ---------- checked relations ----------
@@ -56,7 +56,6 @@
 
 % ---------- VM ----------
 \newcommand{\loc}[1]{\mem[\fp\cdot #1]}
-\newcommand{\locE}[1]{\mem_{\E}[\fp\cdot #1]}   % the E element in the three cells from fp.#1, limbs low first
 \newcommand{\dmode}{\mathsf{mode}}   % a DEREF store mode
 \newcommand{\pc}{\mathbf{pc}}
 \newcommand{\fp}{\mathbf{fp}}

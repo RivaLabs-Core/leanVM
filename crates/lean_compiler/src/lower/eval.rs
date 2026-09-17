@@ -139,7 +139,7 @@ impl FnLower<'_> {
                             run: None,
                         }),
                     },
-                    Binding::Stack(..) | Binding::Const192(_) => Known {
+                    Binding::Stack(..) => Known {
                         int,
                         ..Known::default()
                     },

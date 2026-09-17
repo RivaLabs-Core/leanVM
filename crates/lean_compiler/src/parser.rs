@@ -19,7 +19,7 @@ mod consts;
 mod expr;
 mod subst;
 pub use consts::parse_const;
-use consts::{apply_replacements, const_int_expr, eval_const_int, gpow_bound, parse_f192_const, parse_gpow_bound};
+use consts::{apply_replacements, const_int_expr, eval_const_int, gpow_bound, parse_gpow_bound};
 use expr::{
     binding_name, call_args, is_ident, parse_expr, split_assign, split_aug, split_once_top, split_top, string_lit,
     strip_comment, strip_const_wrapper, top_level_cmp,
@@ -37,7 +37,7 @@ pub fn parse(src: &str) -> Result<Ast, String> {
 /// identifier that is a key of `replacements` becomes its value everywhere it
 /// appears, which is how a host bakes sizes and flags into a program without
 /// editing it. The top level then peels off the **global constants**, each
-/// evaluated as a compile-time integer (or an `f192` literal / constant array)
+/// evaluated as a compile-time integer (or a constant array)
 /// and substituted into the `def`s below. See the "Placeholders" and "Global
 /// constants" sections of `zkDSL.md`.
 pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String>) -> Result<Ast, String> {
@@ -155,12 +155,8 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
             }
             const_arrays.push((name, elems));
         } else {
-            // A scalar constant: an `f192` literal (a 192-bit run constant), else a
-            // compile-time integer, else a field-valued expression.
-            if let Some(value) = parse_f192_const(rhs) {
-                let [c0, c1, c2] = value.map_err(|e| at(format!("global constant `{name}`: {e}")))?;
-                consts.insert(name, format!("f192({c0},{c1},{c2})"));
-            } else if let Ok(value) = eval_const_int(rhs) {
+            // A scalar constant: a compile-time integer, else a field-valued expression.
+            if let Ok(value) = eval_const_int(rhs) {
                 consts.insert(name, value.to_string());
             } else {
                 // `GEN ** 2` and friends. The ISA is written in g-powers, so this
@@ -228,27 +224,18 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
 /// may not take one of these, since the builtin would win and the body would be
 /// dead code that still looked live.
 const BUILTINS: &[&str] = &[
-    "add192",
     "addr",
-    "assert_eq192",
-    "assert_ne192",
     "blake2s",
     "const",
-    "div192",
-    "f192",
     "hint_decompose_bits",
     "hint_decompose_bits_exponent",
     "hint_log2_ceil",
     "hint_witness",
     "len",
     "match",
-    "mul192",
     "HeapBuf",
     "StackBuf",
 ];
-
-/// The builtins whose value is a three-cell 192-bit run.
-pub(crate) const RUN192_BUILTINS: &[&str] = &["add192", "mul192", "div192", "f192"];
 
 /// A slice's length when its bounds say it without running anything: two
 /// compile-time integers, or the runtime shape `i:i + k`.
@@ -291,7 +278,6 @@ fn infer_return_shapes(funcs: &mut [Func]) -> Result<(), String> {
                 Shape::StackBuf(fits(cells)?)
             }
             Expr::Slice(_, lo, hi) => slice_len(lo, hi).map_or(Shape::Scalar, Shape::StackBuf),
-            Expr::Call(f, _) if RUN192_BUILTINS.contains(&f.as_str()) => Shape::StackBuf(3),
             Expr::Call(f, _) => known
                 .get(f)
                 .filter(|r| r.len() == 1)

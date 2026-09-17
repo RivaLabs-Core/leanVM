@@ -11,8 +11,8 @@
 //! Every pair here is a promise `zkDSL.md` makes. When one fails, quote the
 //! promise in the bug report; the `why` field is there to be quoted.
 
-use super::{Pair, Trial, check_pair, g, k, limbs};
-use primitives::field::{F64, F192};
+use super::{Pair, Trial, check_pair, g, k};
+use primitives::field::F64;
 
 /// One hinted pair of cells, published so the trial's public input pins them.
 fn two(a: F64, b: F64) -> Trial {
@@ -49,45 +49,6 @@ def shift(x):
             two(g(3), g(5)), // rejected by both
             two(g(0), g(1)),
             two(g(7), g(7)),
-        ],
-    });
-}
-
-/// The same promise for a function taking and returning a 192-bit run: the plain
-/// call passes the run through its argument cells and copies the result back out
-/// of its return slots, while the inlined one binds both in place.
-#[test]
-fn inline_and_plain_run_calls_agree() {
-    let body = "\
-def main():
-    v = StackBuf(6)
-    hint_witness(v, \"w\")
-    assert_eq192(square(v[0:3]), v[3:6])
-    p = GEN ** 0
-    p[0:3] = v[0:3]
-    p[GEN ** 3] = v[3]
-    return
-
-
-@INLINE
-def square(x: StackBuf(3)):
-    return mul192(x, x)
-";
-    let x = F192::new(g(3).0, 5, 7);
-    let trial = |x: F192, y: F192| {
-        let [x0, x1, x2] = limbs(x);
-        Trial::new(&[x0, x1, x2, F64(y.c0)]).stream("w", vec![[limbs(x), limbs(y)].concat()])
-    };
-    check_pair(&Pair {
-        name: "inline_and_plain_run_calls_agree",
-        why: "zkDSL.md §`@inline`: inlining is a call-site expansion, not a change of meaning.",
-        a: &body.replace("@INLINE\n", "@inline\n"),
-        b: &body.replace("@INLINE\n", ""),
-        trials: vec![
-            trial(x, x * x),
-            trial(x, x * x + F192::Y),
-            trial(F192::ZERO, F192::ZERO),
-            trial(x, x),
         ],
     });
 }
@@ -174,52 +135,6 @@ def main():
 
 fn three(a: F64, b: F64, c: F64) -> Trial {
     Trial::new(&[a, c]).stream("w", vec![vec![a, b, c]])
-}
-
-/// `div192` is the same promise over 192-bit runs: the quotient run is left
-/// unset and `MUL192` checks `quotient · b == a`. So dividing and comparing must
-/// accept exactly what comparing the product accepts, for a nonzero divisor.
-#[test]
-fn division192_and_checked_product_agree() {
-    let trial = |divisor: F192, dividend: F192, claimed: F192| {
-        let [d0, d1, d2] = limbs(divisor);
-        Trial::new(&[d0, d1, d2, F64(claimed.c0)])
-            .stream("w", vec![[limbs(divisor), limbs(dividend), limbs(claimed)].concat()])
-    };
-    let x = F192::new(g(3).0, 5, 7);
-    let y = F192::new(11, g(9).0, 13);
-    check_pair(&Pair {
-        name: "division192_and_checked_product_agree",
-        why: "`div192(a, b)` emits exactly the relation `quotient · b == a`.",
-        a: "\
-def main():
-    v = StackBuf(9)
-    hint_witness(v, \"w\")
-    q = div192(v[3:6], v[0:3])
-    assert_eq192(q, v[6:9])
-    p = GEN ** 0
-    p[0:3] = v[0:3]
-    p[GEN ** 3] = v[6]
-    return
-",
-        b: "\
-def main():
-    v = StackBuf(9)
-    hint_witness(v, \"w\")
-    assert_eq192(mul192(v[6:9], v[0:3]), v[3:6])
-    p = GEN ** 0
-    p[0:3] = v[0:3]
-    p[GEN ** 3] = v[6]
-    return
-",
-        trials: vec![
-            trial(x, x * y, y),
-            trial(x, x * y, y + F192::Y),
-            trial(F192::ONE, y, y),
-            trial(x, x, F192::ONE),
-            trial(x, x * y, x),
-        ],
-    });
 }
 
 /// `unroll` is documented as compile-time unrolling, so a loop and its expansion
@@ -369,66 +284,6 @@ def main():
 /// accepts every hint.
 fn pinned(hint0: F64, hint1: F64) -> Trial {
     Trial::new(&[g(3), hint1]).stream("w", vec![vec![hint0, hint1]])
-}
-
-/// The run form of the pinning promise: a 192-bit value stored into a hinted run
-/// asserts equality exactly as `assert_eq192` does, whether the value lands in
-/// place (`s[0:3] = value`), through a bound copy (`t = value`, then
-/// `s[0:3] = t`), or through a heap run already holding the hint. A constant
-/// value and a computed one lower differently (limb `SET`s against an instruction
-/// writing its result), so both are compared.
-///
-/// As for [`pinned`], the trials publish the pin's input `x`, never the hint.
-#[test]
-fn a_run_store_pins_a_hint_like_assert_eq192() {
-    let body = "\
-def main():
-    s = StackBuf(3)
-    hint_witness(s, \"s\")
-    x = StackBuf(3)
-    hint_witness(x, \"x\")
-    STORE
-    p = GEN ** 0
-    p[0:3] = x
-    return
-";
-    let trial = |s: F192, x: F192| {
-        Trial::new(&limbs(x))
-            .stream("s", vec![limbs(s).to_vec()])
-            .stream("x", vec![limbs(x).to_vec()])
-    };
-    let c = F192::new(3, 5, 7);
-    let x = F192::new(g(4).0, 9, 1);
-    let computed = vec![
-        trial(x * c, x),
-        trial(x * c + F192::ONE, x),
-        trial(F192::ZERO, F192::ZERO),
-        trial(x, x),
-    ];
-    let constant = vec![
-        trial(c, x),
-        trial(c + F192::Y, x),
-        trial(c, F192::ZERO),
-        trial(F192::ZERO, x),
-    ];
-    for (value, trials) in [("mul192(x, f192(3, 5, 7))", computed), ("f192(3, 5, 7)", constant)] {
-        let spell = |store: &str| body.replace("STORE", &store.replace("VALUE", value));
-        let asserted = spell("assert_eq192(s, VALUE)");
-        for store in [
-            "s[0:3] = VALUE",
-            "t = VALUE\n    s[0:3] = t",
-            "h = HeapBuf(3)\n    h[0:3] = s\n    h[0:3] = VALUE",
-        ] {
-            check_pair(&Pair {
-                name: "a_run_store_pins_a_hint_like_assert_eq192",
-                why: "zkDSL.md §Memory: a store into already-written cells IS an equality assertion, \
-                      for a run as for one cell.",
-                a: &asserted,
-                b: &spell(store),
-                trials: trials.clone(),
-            });
-        }
-    }
 }
 
 /// `zkDSL.md` §BLAKE2s: "If `out` was already written, the statement *asserts*

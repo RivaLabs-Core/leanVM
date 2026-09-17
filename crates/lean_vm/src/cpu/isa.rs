@@ -42,18 +42,6 @@ pub enum Op {
         out: u32,
         md: u32,
     },
-    /// `m[c..c+3] = m[a..a+3] + m[b..b+3]` in `E`, each operand three consecutive cells.
-    Xor192 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
-    /// `m[c..c+3] = m[a..a+3] · m[b..b+3]` in `E = K[y]/(y³+y+1)`.
-    Mul192 {
-        a: u32,
-        b: u32,
-        c: u32,
-    },
 }
 
 /// The source `DEREF` stores at `mem[loc_o1·o2]`: a local cell, the return

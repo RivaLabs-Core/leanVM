@@ -10,9 +10,9 @@
 //! public words is all there is and because the streams are where a real guest's
 //! untrusted data actually enters.
 
-use super::{Case, Trial, check_case, g, k, limbs, pi, wit};
+use super::{Case, Trial, check_case, g, k, pi, wit};
 use lean_vm::vmhash::compress;
-use primitives::field::{F64, F192};
+use primitives::field::F64;
 
 /// `XOR64`/`MUL64` relations, both assert forms, and the division back-solve. The
 /// quotient cell is written by nothing but the back-solve, so this case also
@@ -47,59 +47,6 @@ def main():
             // Both published words.
             pi(0, g(9)),
             pi(1, g(3) + g(6)),
-        ],
-    });
-}
-
-/// The same relations over 192-bit runs: `MUL192`, both 192-bit assert forms, and
-/// the `div192` back-solve, whose quotient run is written by nothing else. A
-/// second quotient lands on a hinted run, so a claimed quotient is checked by the
-/// product rather than trusted: the pokes on `q` are a forged quotient.
-#[test]
-fn arithmetic192_and_asserts() {
-    let a = F192::new(g(3).0, 11, 13);
-    let b = F192::new(g(5).0, 11, 13);
-    let c = a * b;
-    let w: Vec<F64> = [limbs(a), limbs(b), limbs(c)].concat();
-    let sum = limbs(a + b);
-    let bump = |x: u64| F64(x) + F64::ONE;
-    check_case(&Case {
-        name: "arithmetic192_and_asserts",
-        src: "\
-def main():
-    v = StackBuf(9)
-    hint_witness(v, \"w\")
-    assert_eq192(mul192(v[0:3], v[3:6]), v[6:9])
-    assert_ne192(v[0:3], v[3:6])
-    q = div192(v[6:9], v[0:3])
-    assert_eq192(q, v[3:6])
-    claimed = StackBuf(3)
-    hint_witness(claimed, \"q\")
-    claimed[0:3] = div192(v[6:9], v[3:6])
-    p = GEN ** 0
-    p[0:3] = add192(v[0:3], v[3:6])
-    p[GEN ** 3] = v[6]
-    return
-",
-        valid: Trial::new(&[sum[0], sum[1], sum[2], F64(c.c0)])
-            .stream("w", vec![w])
-            .stream("q", vec![limbs(a).to_vec()]),
-        pokes: vec![
-            // Either factor, and the product's unpublished limbs.
-            wit("w", 1, bump(a.c1)),
-            wit("w", 5, bump(b.c2)),
-            wit("w", 7, bump(c.c1)),
-            wit("w", 8, bump(c.c2)),
-            // Equal operands, the poke `assert_ne192` exists for.
-            wit("w", 3, g(3)),
-            // A forged quotient, one limb at a time.
-            wit("q", 0, bump(a.c0)),
-            wit("q", 1, bump(a.c1)),
-            wit("q", 2, bump(a.c2)),
-            // The published sum and product limb.
-            pi(0, bump(sum[0].0)),
-            pi(2, bump(sum[2].0)),
-            pi(3, bump(c.c0)),
         ],
     });
 }

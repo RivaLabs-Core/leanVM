@@ -745,28 +745,6 @@ def _flushes_arith64(opcode: int, multiply: bool) -> Flushes:
     return flushes
 
 
-def _flushes_arith192(opcode: int, multiply: bool) -> Flushes:
-    """Each operand is three consecutive cells `fp*o*g^i`, the limbs of one E element, read one at a time."""
-    pc, fp, cnt_bc = _cols(ARITH192_COLUMNS, "pc", "fp", "cnt_bc")
-    va, vb = _cols(ARITH192_COLUMNS, "va_0", "va_1", "va_2"), _cols(ARITH192_COLUMNS, "vb_0", "vb_1", "vb_2")
-    operands = _cols(ARITH192_COLUMNS, "o_a", "o_b", "o_c")
-    flushes = Flushes()
-    flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, opcode, (*(_col(o) for o in operands), _const(ZERO), _const(ZERO)))
-    # The tower product's three lanes: lane i is the sum of va[j]*vb[k] over TOWER_LANES[i].
-    TOWER_LANES = (((0, 0), (1, 2), (2, 1)), ((0, 1), (1, 0), (1, 2), (2, 1), (2, 2)), ((0, 2), (1, 1), (2, 0), (2, 2)))
-    result = (
-        tuple(Form.sum(_prod(va[j], vb[k]) for j, k in lane) for lane in TOWER_LANES)
-        if multiply
-        else tuple(_col(va[i]) + _col(vb[i]) for i in range(3))
-    )
-    lanes = ((_col(v) for v in va), (_col(v) for v in vb), result)
-    for name, operand, values in zip("abc", operands, lanes, strict=True):
-        for limb, value in enumerate(values):
-            flushes.memory(_prod(fp, operand, limb), _cols(ARITH192_COLUMNS, f"cnt_{name}_{limb}")[0], value)
-    return flushes
-
-
 def _flushes_set() -> Flushes:
     pc, fp, o, k, cnt, cnt_bc = _cols(SET_COLUMNS, "pc", "fp", "o", "k", "cnt", "cnt_bc")
     flushes = Flushes()
@@ -820,13 +798,9 @@ def _flushes_blake2s() -> Flushes:
     return flushes
 
 
-OP_XOR64, OP_MUL64, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S, OP_XOR192, OP_MUL192 = range(8)
+OP_XOR64, OP_MUL64, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
 
 ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va", "vb", "cnt_a", "cnt_b", "cnt_c", "cnt_bc")
-ARITH192_COLUMNS = (
-    "pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2",
-    "cnt_a_0", "cnt_a_1", "cnt_a_2", "cnt_b_0", "cnt_b_1", "cnt_b_2", "cnt_c_0", "cnt_c_1", "cnt_c_2", "cnt_bc",
-)  # fmt: skip
 SET_COLUMNS = ("pc", "fp", "o", "k", "cnt", "cnt_bc")
 DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3", "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc")
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
@@ -854,8 +828,6 @@ TABLES = (
     Table("deref", OP_DEREF, DEREF_COLUMNS, _flushes_deref()),
     Table("jump", OP_JUMP, JUMP_COLUMNS, _flushes_jump(), _jump_constraints),
     Table("blake2s", OP_BLAKE2S, BLAKE2S_COLUMNS, _flushes_blake2s()),
-    Table("xor192", OP_XOR192, ARITH192_COLUMNS, _flushes_arith192(OP_XOR192, multiply=False)),
-    Table("mul192", OP_MUL192, ARITH192_COLUMNS, _flushes_arith192(OP_MUL192, multiply=True)),
 )
 
 # Where in the flock witness each BLAKE2s value lane lives: one 64-bit slot per lane, the chaining value first, then the

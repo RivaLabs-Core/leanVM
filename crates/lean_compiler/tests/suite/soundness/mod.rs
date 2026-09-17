@@ -31,7 +31,7 @@
 
 use lean_compiler::{compile_without_filler, parse};
 use lean_vm::cpu::Program;
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, g_pow};
 
 mod cases;
 mod pairs;
@@ -44,11 +44,6 @@ pub fn g(k: usize) -> F64 {
 /// A word given by its bits.
 pub fn k(x: u64) -> F64 {
     F64(x)
-}
-
-/// The three limb cells of a 192-bit element, low first.
-pub fn limbs(x: F192) -> [F64; 3] {
-    [F64(x.c0), F64(x.c1), F64(x.c2)]
 }
 
 /// One `hint_witness` stream: the name, then one entry per call naming it.
