@@ -98,6 +98,11 @@ pub enum Trap {
         syscall: u64,
     },
     CycleCap,
+    /// The run is sound but longer than one proof holds: its witness would be
+    /// `2^log_words` words.
+    TooLong {
+        log_words: usize,
+    },
 }
 
 impl std::fmt::Display for Trap {
@@ -108,6 +113,10 @@ impl std::fmt::Display for Trap {
             Self::Unmapped { pc, address } => write!(f, "access outside RAM, to {address:#x}, at pc {pc:#x}"),
             Self::NotAnExit { syscall } => write!(f, "ecall {syscall} is not exit"),
             Self::CycleCap => write!(f, "the run exceeds its cycle cap"),
+            Self::TooLong { log_words } => write!(
+                f,
+                "the run's witness is 2^{log_words} words, more than one proof holds (continuations are not implemented)"
+            ),
         }
     }
 }

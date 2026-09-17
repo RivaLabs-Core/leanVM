@@ -1,5 +1,6 @@
-//! leanVM: a minimal zkVM for RISC-V (rv64im). A [`Program`] is built from its text
-//! ([`Program::new`], with [`asm`] for writing one by hand), [`prove`] runs it and
+//! leanVM: a minimal zkVM for RISC-V (rv64im). A [`Program`] is a guest's ELF executable
+//! ([`Program::from_elf`], see `guests/`) or a text written by hand ([`Program::new`],
+//! with [`asm`]), [`prove`] runs it and
 //! proves the run on a public input, RAM's first four words, [`verify`] checks the proof
 //! against the program, that input and the output the run claims: `a0..a3` when it
 //! called `exit`.
@@ -9,6 +10,7 @@
 pub use lean_vm::{
     cpu::{CpuError, Program, Proof, Stats, prove, verify},
     pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE},
+    rv::ElfError,
     rv::{RAM_BASE, TEXT_BASE, Trap, asm},
 };
 

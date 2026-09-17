@@ -137,6 +137,12 @@ pub struct Program {
 const _: () = assert!(cfg!(target_endian = "little"));
 
 impl Program {
+    /// The program of a guest's ELF executable ([`rv::Guest::from_elf`]).
+    pub fn from_elf(elf: &[u8]) -> Result<Self, rv::ElfError> {
+        let guest = rv::Guest::from_elf(elf)?;
+        Ok(Self::new(&guest.text, guest.entry_pc, guest.image, guest.log_ram))
+    }
+
     /// A program from its text, whose first word sits at [`rv::TEXT_BASE`], where it
     /// starts, and RAM's first words. An illegal word and then the padding blocks
     /// ([`filler`]) follow the text.
@@ -391,6 +397,10 @@ pub fn prove(
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute(input))?;
+    let log_words = program.stack_log(exec.trace.row_counts());
+    if log_words > pcs::MAX_MU {
+        return Err(rv::Trap::TooLong { log_words });
+    }
     let (proof, stats) = prove_execution(program, &exec, &input, log_inv_rate);
     Ok((proof, exec.output, stats))
 }

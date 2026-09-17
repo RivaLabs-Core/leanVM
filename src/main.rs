@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 
 mod fibonacci;
+mod guest;
 
 #[derive(Parser)]
 struct Cli {
@@ -44,6 +45,14 @@ enum Command {
         #[arg(long, default_value = "2000000")]
         n: usize,
     },
+    /// Prove and verify a run of a RISC-V guest (see `guests/`).
+    Guest {
+        /// The guest's ELF executable.
+        elf: std::path::PathBuf,
+        /// The public input: up to four 64-bit words, decimal or 0x-prefixed.
+        #[arg(long, value_delimiter = ',', value_parser = guest::parse_word)]
+        input: Vec<u64>,
+    },
 }
 
 fn main() {
@@ -55,6 +64,7 @@ fn main() {
     }
     match cli.command {
         Command::Fibonacci { n } => fibonacci::run_fibonacci(n, cli.log_inv_rate, plan),
+        Command::Guest { elf, input } => guest::run_guest(&elf, &input, cli.log_inv_rate, plan),
     }
     if std::env::var_os("ZK_ALLOC_STATS").is_some() {
         eprintln!("{}", zk_alloc::stats());

@@ -16,10 +16,12 @@
 pub mod asm;
 pub mod circuits;
 pub mod decode;
+pub mod elf;
 pub mod machine;
 pub mod semantics;
 
 pub use decode::decode;
+pub use elf::{ElfError, Guest};
 pub use machine::{Machine, Program, Trap};
 
 /// Where the text sits. Nonzero (a function at 0 would be Rust's null), and a

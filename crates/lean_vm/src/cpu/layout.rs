@@ -379,6 +379,16 @@ pub fn layout(p: &rv::Program, input: &[u64; INPUT_WORDS], taus: [usize; tables:
 }
 
 impl Program {
+    /// `log2` of the stacked witness a run of these row counts commits: what one proof
+    /// can hold is capped ([`pcs::MAX_MU`]), so a run is checked before it is built.
+    pub(crate) fn stack_log(&self, row_counts: [usize; tables::N_TABLES]) -> usize {
+        let taus = row_counts.map(|rows| crate::log2_ceil_usize(rows.max(1)));
+        let log_bytecode = crate::log2_strict_usize(self.rv.entries.len());
+        witness::placements_of(&col_kappas(log_bytecode, self.rv.log_ram, taus))
+            .1
+            .mu
+    }
+
     pub(crate) fn build(&self, exec: &Execution, input: &[u64; INPUT_WORDS]) -> Witness {
         let p = &self.rv;
         // The trace was emitted in the same walk as the run (no re-walk).
