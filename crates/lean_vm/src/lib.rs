@@ -18,6 +18,7 @@
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
 //! - [`hash_flock`]: the `BLAKE2s` glue: flock's R1CS validity proof over the same commitment.
 //! - [`arith_flock`]: the same for `ADD_U64` and `MUL_U64`, one packed witness each.
+//! - [`rv`]: RISC-V (rv64im): the decoder, each instruction class's function, and the reference interpreter.
 //! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE2s slice hashing).
 
 pub mod arith_flock;
@@ -28,6 +29,7 @@ pub mod gkr;
 pub mod hash_flock;
 pub mod leaf;
 pub mod pcs;
+pub mod rv;
 pub mod tables;
 pub mod transcript;
 pub mod vmhash;
