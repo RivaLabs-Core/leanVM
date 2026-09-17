@@ -1,35 +1,33 @@
-//! Fibonacci in the exponent: the demo benchmark. Two cells hold `g^{F(k)}` and
-//! `g^{F(k+1)}`, and one `MUL64` onto either of them is one step of the recurrence.
+//! Fibonacci mod 2^64: the demo benchmark. Two registers hold `F(k)` and `F(k+1)`, and
+//! one `add` onto either of them is one step of the recurrence.
 
-use leanvm::{F64, Op, Program, g_pow, prove, verify};
+use leanvm::asm::*;
+use leanvm::{Program, TEXT_BASE, prove, verify};
 use primitives::{bench::Plan, pretty_f64, pretty_integer};
 
-/// Prove and verify `n` steps of Fibonacci in the exponent, binding `g^{F(n)}` as the
-/// public input. Prints the benchmark report. Proving runs one discarded warmup pass
+/// Prove and verify `n` steps of Fibonacci, binding `F(n) mod 2^64` as the output. Prints the benchmark report. Proving runs one discarded warmup pass
 /// followed by `plan.repeat` measured passes (see [`primitives::bench`]).
 pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let trace_span = tracing::info_span!("Fibonacci", n, log_inv_rate).entered();
 
-    let (program, pi) = fibonacci_program(n);
+    let (program, expected) = fibonacci_program(n);
 
     // Only the final measured pass of each stage is traced.
-    let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
+    let ((proof, output, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        prove(&program, pi, log_inv_rate)
+        prove(&program, log_inv_rate).expect("the run halts")
     });
+    assert_eq!(output, expected);
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        verify(&program, &pi, &proof).unwrap()
+        verify(&program, &output, &proof).unwrap()
     });
 
     // tracing-forest renders its tree only when the root span closes, so the
     // complete trace has to be flushed above the report.
     drop(trace_span);
 
-    println!(
-        "Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = {}",
-        pretty_integer(n)
-    );
+    println!("Fibonacci (modulo 2^64), N = {}", pretty_integer(n));
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     println!("    details                   : {}", stats.details());
     let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
@@ -48,60 +46,31 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     );
 }
 
-/// The demo program and its public input `[g^{F(n)}, 0, 0, 0]`: a loop whose body is
-/// `UNROLL` recurrence steps in place, `a ← a·b` then `b ← a·b`, so that a step is one
-/// instruction and the loop's own three are paid once per `UNROLL`.
-fn fibonacci_program(fib_n: usize) -> (Program, [F64; 4]) {
+/// The demo program and its output `[F(n) mod 2^64, 0, 0, 0]`: a loop whose body is
+/// `UNROLL` recurrence steps in place, `a <- a + b` then `b <- a + b`, so that a step is
+/// one instruction and the loop's own two are paid once per `UNROLL`.
+fn fibonacci_program(fib_n: usize) -> (Program, [u64; 4]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
         "fib_n must be a positive multiple of {UNROLL}"
     );
-    // The frame, past the four public words.
-    const A: u32 = 4;
-    const B: u32 = 5;
-    const I: u32 = 6;
-    const GEN: u32 = 7;
-    const END: u32 = 8;
-    const COND: u32 = 9;
-    const LOOP_PC: u32 = 10;
-    const FRAME: u32 = 11;
-    const ONE: u32 = 12;
-
-    let set = |o: u32, k: F64| Op::Set { o, k };
-    let mut body = vec![
-        set(A, F64::ONE),
-        set(B, g_pow(1)),
-        set(I, F64::ONE),
-        set(GEN, g_pow(1)),
-        set(END, g_pow(fib_n / UNROLL)),
-        set(FRAME, F64::ZERO),
-        set(ONE, F64::ONE),
-    ];
-    let top = body.len() + 1;
-    body.push(set(LOOP_PC, F64(top as u64)));
+    let mut text = Asm::new();
+    text.li(A0, 0).li(A1, 1).li(T0, (fib_n / UNROLL) as u64).label("loop");
     for _ in 0..UNROLL / 2 {
-        body.extend([Op::Mul64 { a: A, b: B, c: A }, Op::Mul64 { a: A, b: B, c: B }]);
+        text.r("add", A0, A0, A1).r("add", A1, A0, A1);
     }
-    body.extend([
-        // The loop counter lives in the exponent, stepped in place.
-        Op::Mul64 { a: I, b: GEN, c: I },
-        Op::Xor64 { a: I, b: END, c: COND },
-        Op::Jump {
-            oc: COND,
-            od: LOOP_PC,
-            of: FRAME,
-        },
-        // Publish `a` into the first public word.
-        Op::Mul64 { a: A, b: ONE, c: 0 },
-    ]);
+    text.i("addi", T0, T0, -1)
+        .branch("bne", T0, ZERO, "loop")
+        .li(A1, 0)
+        .exit();
 
-    let (mut a, mut b) = (F64::ONE, g_pow(1));
+    let (mut a, mut b) = (0u64, 1u64);
     for _ in 0..fib_n / 2 {
-        a *= b;
-        b *= a;
+        a = a.wrapping_add(b);
+        b = b.wrapping_add(a);
     }
-    (Program::from_body(body, 16), [a, F64::ZERO, F64::ZERO, F64::ZERO])
+    (Program::new(&text.finish(), TEXT_BASE, vec![], 0), [a, 0, 0, 0])
 }
 
 #[cfg(test)]

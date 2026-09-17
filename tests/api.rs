@@ -1,51 +1,51 @@
+use leanvm::asm::*;
 use leanvm::*;
 
-const STEPS: usize = 1000;
+const STEPS: u64 = 1000;
 
-/// Fibonacci in the exponent, in place: `(a, b) ← (a·b, a·b²)` is two steps of the
-/// recurrence, and `g^{F(STEPS)}` is published into `m[0]`.
-fn fibonacci() -> (Program, [F64; 4]) {
-    const A: u32 = 4;
-    const B: u32 = 5;
-    const ONE: u32 = 6;
-    let mut body = vec![
-        Op::Set { o: A, k: F64::ONE },
-        Op::Set { o: B, k: g_pow(1) },
-        Op::Set { o: ONE, k: F64::ONE },
-    ];
+/// Fibonacci mod 2^64, and the output it proves: `a0 = F(STEPS)`.
+fn fibonacci() -> (Program, [u64; 4]) {
+    let text = Asm::new()
+        .li(A0, 0)
+        .li(A1, 1)
+        .li(T0, STEPS / 2)
+        .label("loop")
+        .r("add", A0, A0, A1)
+        .r("add", A1, A0, A1)
+        .i("addi", T0, T0, -1)
+        .branch("bne", T0, ZERO, "loop")
+        .li(A1, 0)
+        .exit()
+        .finish();
+    let (mut a, mut b) = (0u64, 1u64);
     for _ in 0..STEPS / 2 {
-        body.extend([Op::Mul64 { a: A, b: B, c: A }, Op::Mul64 { a: A, b: B, c: B }]);
+        a = a.wrapping_add(b);
+        b = b.wrapping_add(a);
     }
-    body.push(Op::Mul64 { a: A, b: ONE, c: 0 });
-
-    let (mut a, mut b) = (F64::ONE, g_pow(1));
-    for _ in 0..STEPS / 2 {
-        a *= b;
-        b *= a;
-    }
-    (Program::from_body(body, 8), [a, F64::ZERO, F64::ZERO, F64::ZERO])
+    (Program::new(&text, TEXT_BASE, vec![], 0), [a, 0, 0, 0])
 }
 
 #[test]
 fn public_api_end_to_end() {
     setup_prover();
-    let (program, public_input) = fibonacci();
+    let (program, expected) = fibonacci();
 
     // 1. Prove, then onto the wire and back to a receiver.
-    let (proof, _) = prove(&program, public_input, MIN_LOG_INV_RATE);
+    let (proof, output, _) = prove(&program, MIN_LOG_INV_RATE).expect("the run halts");
+    assert_eq!(output, expected);
     let bytes = bincode::serialize(&proof).unwrap();
     let received: Proof = bincode::deserialize(&bytes).unwrap();
-    verify(&program, &public_input, &received).unwrap();
+    verify(&program, &output, &received).unwrap();
 
-    // 2. The proof is about this public input and no other.
-    let mut wrong_input = public_input;
-    wrong_input[0] += F64::ONE;
-    assert!(verify(&program, &wrong_input, &received).is_err());
+    // 2. The proof is about this output and no other.
+    let mut wrong_output = output;
+    wrong_output[0] += 1;
+    assert!(verify(&program, &wrong_output, &received).is_err());
 
     // 3. One proof is one arena phase: the first proof outlives the second's phase.
-    let (second, _) = prove(&program, public_input, MIN_LOG_INV_RATE);
-    verify(&program, &public_input, &second).unwrap();
-    verify(&program, &public_input, &received).unwrap();
+    let (second, _, _) = prove(&program, MIN_LOG_INV_RATE).expect("the run halts");
+    verify(&program, &output, &second).unwrap();
+    verify(&program, &output, &received).unwrap();
     let stats = zk_alloc::stats();
     assert!(stats.phases >= 2, "expected one phase per proof, got {stats:?}");
     assert!(stats.peak_bytes > 0, "no buffer reached the arena: {stats:?}");

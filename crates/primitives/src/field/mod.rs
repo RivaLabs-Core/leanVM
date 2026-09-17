@@ -106,13 +106,14 @@ pub fn index_mle(zeta: &[F192]) -> F192 {
     powers_mle(F64::ONE, G, zeta)
 }
 
-/// MLE of the integer column `[0, 1, …, 2^n − 1]`, entry `z` being the element whose
-/// bits are `z`'s: `Σ_k ζ_k·x^k`, linear, since bit `k` contributes the monomial `x^k`
-/// (§sec:idxcol). What addresses memory and the bytecode.
-pub fn int_index_mle(zeta: &[F192]) -> F192 {
-    zeta.iter()
-        .enumerate()
-        .fold(F192::ZERO, |acc, (k, z)| acc + z.mul_base(F64(1 << k)))
+/// MLE of the integer column `[base ^ (z << shift)]_z`, entry `z` being the element
+/// whose bits are that integer's: `base + Σ_k ζ_k·x^{k+shift}`, linear, since bit `k`
+/// contributes the monomial `x^k` (§sec:idxcol). What addresses the registers, RAM
+/// and the bytecode: with `base` a multiple of the region's size, the XOR is the sum.
+pub fn int_index_mle(base: F64, shift: u32, zeta: &[F192]) -> F192 {
+    zeta.iter().enumerate().fold(F192::from(base), |acc, (k, z)| {
+        acc + z.mul_base(F64(1 << (k as u32 + shift)))
+    })
 }
 
 /// MLE of the geometric column `[first·ratio^z]_z` over the `n`-variable cube:

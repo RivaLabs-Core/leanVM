@@ -59,6 +59,12 @@ impl Program {
         self.pc_of(self.entries.len() - 1)
     }
 
+    /// The bytecode's `dt` field: a taken entry's target, as a XOR against `pc + 4`.
+    pub fn dt_of(&self, index: usize) -> u64 {
+        self.target_of(index)
+            .map_or(0, |target| target ^ self.pc_of(index).wrapping_add(4))
+    }
+
     /// Where entry `index` goes when its class takes the jump.
     pub fn target_of(&self, index: usize) -> Option<u64> {
         match self.entries[index].target {

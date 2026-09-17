@@ -33,9 +33,10 @@ pub enum Coord {
     /// disagree with it and the binding constraint that used to say so is unnecessary
     /// (§sec:m3).
     Prod(usize, usize, u32),
-    /// The integer index column `z` (§sec:idxcol), the element whose bits are the
-    /// row's: what addresses memory and the bytecode. Free, its MLE being linear.
-    IntIndex,
+    /// The integer index column `base ^ (z << shift)` (§sec:idxcol), the element
+    /// whose bits are that integer's: what addresses a region whose cell `z` sits at
+    /// `base + (z << shift)`. Free, its MLE being linear.
+    IntIndex { base: F64, shift: u32 },
     /// The exponent column `g^z` (§sec:idxcol), free via the factored MLE: the
     /// values of the `EXP` array.
     Index,
@@ -171,7 +172,7 @@ enum Term<'a> {
     Col(usize, F192),
     Prod(usize, usize, F192),
     Index(F192),
-    IntIndex(F192),
+    IntIndex(F192, u32),
     Public(&'a [F64], F192),
 }
 
@@ -205,7 +206,10 @@ fn push_terms<'a>(c: &'a Coord, w: F192, powers: &'a PowerTables, terms: &mut Ve
         Coord::GCol(i, k) => terms.push(Term::Col(*i, w.mul_base(g_pow(*k as usize)))),
         Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, w.mul_base(g_pow(*k as usize)))),
         Coord::Index => terms.push(Term::Index(w)),
-        Coord::IntIndex => terms.push(Term::IntIndex(w)),
+        Coord::IntIndex { base, shift } => {
+            *constant += w.mul_base(*base);
+            terms.push(Term::IntIndex(w, *shift));
+        }
         Coord::Powers { first, ratio } => {
             let table = &powers
                 .iter()
@@ -280,7 +284,7 @@ pub fn build_leaves(
                     Term::Col(i, c) => c.mul_base_unreduced(cols[*i][z]),
                     Term::Prod(i, j, c) => c.mul_base_unreduced(cols[*i][z] * cols[*j][z]),
                     Term::Index(c) => c.mul_base_unreduced(gpow[z]),
-                    Term::IntIndex(c) => c.mul_base_unreduced(F64(z as u64)),
+                    Term::IntIndex(c, shift) => c.mul_base_unreduced(F64((z as u64) << shift)),
                     Term::Public(vals, c) => c.mul_base_unreduced(vals[z]),
                 };
             }
@@ -421,7 +425,7 @@ fn accumulate_form(c: &Coord, w: F192, base: usize, form: &mut BusForm) {
                 accumulate_form(c, w, base, form);
             }
         }
-        Coord::Index | Coord::IntIndex | Coord::Powers { .. } | Coord::Public(_) => {
+        Coord::Index | Coord::IntIndex { .. } | Coord::Powers { .. } | Coord::Public(_) => {
             unreachable!("a table's bus block carries no virtual coordinate")
         }
     }
@@ -489,7 +493,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             let coord_val = match c {
                 Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
-                Coord::IntIndex => int_index_mle(zeta_lo),
+                Coord::IntIndex { base, shift } => int_index_mle(*base, *shift, zeta_lo),
                 Coord::Powers { first, ratio } => powers_mle(*first, *ratio, zeta_lo),
                 Coord::Col(i) => col_val(*i)?,
                 Coord::GCol(i, k) => col_val(*i)?.mul_base(g_pow(*k as usize)),

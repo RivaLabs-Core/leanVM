@@ -38,7 +38,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Prove and verify Fibonacci in the exponent.
+    /// Prove and verify Fibonacci modulo 2^64.
     Fibonacci {
         /// Number of recurrence steps.
         #[arg(long, default_value = "2000000")]

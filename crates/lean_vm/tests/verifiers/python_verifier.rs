@@ -4,35 +4,41 @@
 
 use fiat_shamir::transcript::RawProof;
 use lean_vm::cpu::{prove, verify, verify_to_raw};
-use primitives::field::F64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Instant;
 
 /// One statement laid out the way the Python verifier takes it: the bytecode
-/// multilinear plus four public words, not a structured program.
+/// multilinear, then what else is public (where the run starts, RAM's size and first
+/// words, the output), not a structured program.
 pub struct PythonStatement {
     directory: PathBuf,
     bytecode: PathBuf,
-    public_input: PathBuf,
+    public: PathBuf,
 }
 
 impl PythonStatement {
-    pub fn new(tag: &str, program: &lean_vm::cpu::Program, public_input: &[F64; 4]) -> Self {
+    pub fn new(tag: &str, program: &lean_vm::cpu::Program, output: &[u64; 4]) -> Self {
         let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("create test directory");
         let statement = Self {
             bytecode: directory.join("bytecode.bin"),
-            public_input: directory.join("public_input.bin"),
+            public: directory.join("public.bin"),
             directory,
         };
-        let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(&program.prog)
+        let rv = &program.rv;
+        let table: Vec<u8> = lean_vm::cpu::layout::bytecode_table(rv)
             .iter()
             .flat_map(|w| w.0.to_le_bytes())
             .collect();
         std::fs::write(&statement.bytecode, &table).expect("write bytecode");
-        let pi: Vec<u8> = public_input.iter().flat_map(|w| w.0.to_le_bytes()).collect();
-        std::fs::write(&statement.public_input, &pi).expect("write public input");
+        let public: Vec<u8> = [rv.entry_pc, rv.log_ram as u64, rv.image.len() as u64]
+            .iter()
+            .chain(&rv.image)
+            .chain(output)
+            .flat_map(|w| w.to_le_bytes())
+            .collect();
+        std::fs::write(&statement.public, &public).expect("write the public words");
         statement
     }
 
@@ -64,7 +70,7 @@ impl PythonStatement {
         Command::new("python3")
             .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../python-verifier/verifier.py"))
             .arg(&self.bytecode)
-            .arg(&self.public_input)
+            .arg(&self.public)
             .arg(stream_path)
             .arg(openings_path)
             .output()
@@ -92,8 +98,8 @@ impl Drop for PythonStatement {
 /// canonical encoding, and agree on everything before that.
 #[test]
 fn test_python_verifier() {
-    let (program, public_input) = super::read_write::fibonacci();
-    let (proof, stats) = prove(&program, public_input, 1);
+    let (program, _) = super::programs::fibonacci();
+    let (proof, public_input, stats) = prove(&program, 1).expect("the run halts");
     // Python reads the RAW proof: same protocol, each query carrying its own
     // full Merkle path instead of one octopus over the batch. A Rust verify
     // expands the wire form, so the pruning is written once.
@@ -113,8 +119,8 @@ fn test_python_verifier() {
     assert!(!output.status.success(), "Python accepted a noncanonical announcement");
 
     let mut malformed_root = proof.clone();
-    // Past the announcement: the memory size, the table heights, the rate, the final clock.
-    let root_offset = lean_vm::tables::N_TABLES + 3;
+    // Past the announcement: the table heights, the rate, the final clock.
+    let root_offset = lean_vm::tables::N_TABLES + 2;
     malformed_root.stream[root_offset].c2 = 1;
     assert!(verify(&program, &public_input, &malformed_root).is_err());
     let mut raw_root = raw.clone();
@@ -125,9 +131,23 @@ fn test_python_verifier() {
         "Python accepted a noncanonical commitment root"
     );
 
+    // A decoded table is RISC-V only if it says so: one whose first entry writes `x0`
+    // is refused before anything is verified.
+    let table = std::fs::read(&statement.bytecode).expect("read bytecode");
+    let (ad_slot, entries) = (7, table.len() / 8 / 16);
+    let mut writes_x0 = table.clone();
+    writes_x0[8 * ad_slot * entries..][..8].copy_from_slice(&0u64.to_le_bytes());
+    std::fs::write(&statement.bytecode, writes_x0).expect("write bytecode");
+    let output = statement.verify(&raw);
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("misnames a register"),
+        "Python accepted a table that writes x0"
+    );
+    std::fs::write(&statement.bytecode, table).expect("restore bytecode");
+
     println!(
         "{} instructions; proved {} cycles in {} bytes; Python verified in {:.2?}",
-        program.prog.len(),
+        program.rv.entries.len(),
         stats.cycles,
         encoded.len(),
         verification_time,
