@@ -1,13 +1,11 @@
-//! leanVM: a minimal zkVM. A zkDSL program compiles to the ISA, [`prove`] runs it and
-//! proves the run, [`verify`] checks the proof against the program and its public input.
-//!
-//! Release only: the zkDSL compiler overflows the debug stack.
+//! leanVM: a minimal zkVM. A [`Program`] is assembled from its instructions
+//! ([`Program::from_body`]), [`prove`] runs it and proves the run, [`verify`] checks the
+//! proof against the program and its public input.
 //!
 //! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM/blob/main/tests/api.rs).
 
-pub use lean_compiler::{compile, parse};
 pub use lean_vm::{
-    cpu::{CpuError, Program, Proof, Stats, prove, verify},
+    cpu::{CpuError, DerefMode, Op, Program, Proof, Stats, prove, verify},
     pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE},
 };
 pub use primitives::field::{F64, g_pow};

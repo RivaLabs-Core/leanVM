@@ -13,7 +13,6 @@ workspace = true
 [dependencies]
 primitives.workspace = true
 lean_vm.workspace = true
-lean_compiler.workspace = true
 zk_alloc.workspace = true
 bincode.workspace = true
 tracing.workspace = true
@@ -37,7 +36,6 @@ fiat_shamir = { path = "crates/fiat_shamir" }
 pcs = { path = "crates/pcs" }
 flock = { path = "crates/flock" }
 lean_vm = { path = "crates/lean_vm" }
-lean_compiler = { path = "crates/lean_compiler" }
 zk_alloc = { path = "crates/zk_alloc" }
 parallel = { path = "crates/parallel" }
 libc = "0.2"

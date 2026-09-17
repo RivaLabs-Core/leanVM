@@ -3,44 +3,11 @@
 //! in both, and this is what catches the Python one drifting.
 
 use fiat_shamir::transcript::RawProof;
-use lean_compiler::{compile, parse_with_replacements};
 use lean_vm::cpu::{prove, verify, verify_to_raw};
-use primitives::field::{F64, g_pow};
-use std::collections::BTreeMap;
+use primitives::field::F64;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Instant;
-
-const SOURCE: &str = r#"
-from snark_lib import *
-
-LOOP_STEPS = LOOP_STEPS_PLACEHOLDER
-
-def mix(value, tag):
-    # The tag is a g-power, so the JUMP is always taken.
-    if tag == 0:
-        return value
-    return value * GEN + value
-
-def main():
-    seed = [5, 0, 7, 0]
-    digest = StackBuf(4)
-    blake2s(seed, seed, digest)
-
-    chain = HeapBuf(LOOP_STEPS + 1)
-    chain[1] = digest[0]
-    for index in mul_range(1, GEN ** LOOP_STEPS):
-        chain[index * GEN] = mix(chain[index] + index, index) + index
-
-    public = GEN ** 0
-    public[1] = chain[GEN ** LOOP_STEPS]
-    public[GEN] = mix(digest[1], GEN ** 0)
-    public[GEN ** 2] = digest[2]
-    public[GEN ** 3] = digest[3]
-    return
-"#;
-
-const LOOP_STEPS: usize = 16_384;
 
 /// One statement laid out the way the Python verifier takes it: the bytecode
 /// multilinear plus four public words, not a structured program.
@@ -121,36 +88,18 @@ impl Drop for PythonStatement {
     }
 }
 
-fn public_input() -> [F64; 4] {
-    use lean_vm::hash_flock::{FINAL_FLAG, IV, PINNED_T, compression, digest, metadata};
-
-    let seed = [F64(5), F64::ZERO, F64(7), F64::ZERO];
-    let digest = digest(&compression(seed, seed, IV, metadata(PINNED_T, FINAL_FLAG, 0)));
-    let generator = g_pow(1);
-    let mix = |value: F64| value * generator + value;
-    let mut value = digest[0];
-    let mut index = F64::ONE;
-    for _ in 0..LOOP_STEPS {
-        value = mix(value + index) + index;
-        index *= generator;
-    }
-    [value, mix(digest[1]), digest[2], digest[3]]
-}
-
+/// Both verifiers reject a proof whose announcement or commitment root is not a
+/// canonical encoding, and agree on everything before that.
 #[test]
 fn test_python_verifier() {
-    let replacements = BTreeMap::from([("LOOP_STEPS_PLACEHOLDER".to_string(), LOOP_STEPS.to_string())]);
-    let ast = parse_with_replacements(SOURCE, &replacements).expect("parse zkDSL program");
-    let program = compile(&ast);
-    let public_input = public_input();
+    let (program, public_input) = super::read_write::fibonacci();
     let (proof, stats) = prove(&program, public_input, 1);
     // Python reads the RAW proof: same protocol, each query carrying its own
     // full Merkle path instead of one octopus over the batch. A Rust verify
     // expands the wire form, so the pruning is written once.
     let raw = verify_to_raw(&program, &public_input, &proof).expect("honest proof verifies");
-
     let encoded = bincode::serialize(&proof).expect("serialize proof");
-    let statement = PythonStatement::new("zkdsl", &program, &public_input);
+    let statement = PythonStatement::new("tamper", &program, &public_input);
     let verification_started = Instant::now();
     statement.assert_accepts(&raw);
     let verification_time = verification_started.elapsed();
@@ -177,7 +126,7 @@ fn test_python_verifier() {
     );
 
     println!(
-        "zkDSL compiled to {} instructions; proved {} cycles in {} bytes; Python verified in {:.2?}",
+        "{} instructions; proved {} cycles in {} bytes; Python verified in {:.2?}",
         program.prog.len(),
         stats.cycles,
         encoded.len(),

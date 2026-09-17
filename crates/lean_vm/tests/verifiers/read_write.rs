@@ -76,14 +76,19 @@ fn program() -> Program {
     Program::from_body(body, FRAME_CELLS)
 }
 
-#[test]
-fn read_write_program_proves_and_verifies() {
-    let program = program();
+/// [`program`] with the public input it proves: `g^{F(STEPS)}`, then zeros.
+pub fn fibonacci() -> (Program, [F64; 4]) {
     let (mut a, mut b) = (F64::ONE, g_pow(1));
     for _ in 0..STEPS {
         (a, b) = (b, a * b);
     }
-    let public_input = [a, F64::ZERO, F64::ZERO, F64::ZERO];
+    (program(), [a, F64::ZERO, F64::ZERO, F64::ZERO])
+}
+
+#[test]
+fn read_write_program_proves_and_verifies() {
+    let (program, public_input) = fibonacci();
+    let a = public_input[0];
 
     let exec = program.execute(public_input);
     assert_eq!(exec.mem[HEAP as usize], a, "the heap store");

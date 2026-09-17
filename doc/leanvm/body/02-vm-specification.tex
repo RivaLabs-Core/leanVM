@@ -44,7 +44,7 @@ A memory word may be written any number of times, and a read returns the last va
 
 For a given pair of bytecode and public input, there is more than one valid execution.
 
-The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$. So is the initial content of the memory, the four public words aside: the prover chooses what every other cell holds when the execution starts. This is how advice reaches a program, which therefore has to check whatever it reads before having written it.
+The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$. So is the initial content of the memory, the four public words aside: the prover chooses what every other cell holds when the execution starts. A program therefore has to check whatever it reads before having written it, and this is the one channel through which advice can reach it.
 
 \paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
 \[

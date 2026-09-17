@@ -1,11 +1,6 @@
-//! Runtime hint machinery shared by the interpreter and the compiler: the
-//! resolved hint ops a [`super::Program`] carries ([`RHint`]), and the g-power
-//! table + reverse index the hint interpreter grows on demand.
+//! The g-power table and its reverse index, which the machine grows on demand.
 
 use primitives::field::F64;
-
-/// Frame-relative offset operand (matches the compiler's `ir::Off`).
-pub type Off = u32;
 
 /// The `g^k` table paired with a reverse index `g^k ↦ k`, both grown on demand
 /// (call depth, and so the address range, is unbounded).
@@ -165,60 +160,4 @@ impl GPow {
 #[inline(always)]
 fn slot_of(key: u64, mask: usize) -> usize {
     (key.wrapping_mul(0x9E37_79B9_7F4A_7C15) >> 32) as usize & mask
-}
-
-/// Where a computed-advice bit buffer lives. Frame cells are ordinary memory, so
-/// a run of them serves as well as a heap region and costs no `DEREF` to index at
-/// a compile-time offset; the heap form stays for a buffer indexed at run time.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BitsDest {
-    /// Frame cells `fp+base+k`.
-    Stack(Off),
-    /// Heap cells `m[fp+ptr]·g^k`, the pointer read at run time.
-    Heap(Off),
-}
-
-/// A hint resolved to concrete offsets/sizes, keyed by global program counter.
-#[derive(Clone, Debug)]
-pub enum RHint {
-    /// Resolve a previously constrained DEREF equality before reusing its frame cell.
-    ResolveDeref { ptr: Off, offset: u32, dst: Off },
-    /// Announce a pointer into a reserved run of frames.
-    FrameAddress { offset: Off },
-    /// Reserve `(log_g(m[end] * start_inverse) + 1)` consecutive frames.
-    AllocFrames {
-        ptr: Off,
-        size: u32,
-        end: Off,
-        start_inverse: F64,
-    },
-    /// Allocate a fresh region of `size` cells and write `g^{base}` to the cell.
-    Alloc { ptr: Off, size: u32 },
-    /// `Alloc` with the cell count read at runtime as the g-power exponent of
-    /// `m[fp+size]`.
-    AllocDyn { ptr: Off, size: Off },
-    /// Pop stream `name`'s next entry (`len` values) into frame cells `fp+base+k`.
-    WitnessStack { name: String, base: Off, len: u32 },
-    /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.
-    WitnessHeap { name: String, ptr: Off, lo: u32, len: u32 },
-    /// Write `g^max(log2_ceil(value), floor)` into `fp+dst`, where `value` is the
-    /// integer reconstructed from the `nbits` bits at `bits`.
-    Log2Ceil {
-        bits: BitsDest,
-        dst: Off,
-        nbits: u32,
-        floor: u32,
-    },
-    /// Write the `nbits` bits of `m[fp+value]` into `bits`.
-    BitDecompose { value: Off, bits: BitsDest, nbits: u32 },
-    /// Write the `nbits` bits of `n`, where `m[fp+value] = g^n` (a bounded
-    /// discrete log at witness generation), into `bits`.
-    BitDecomposeExp { value: Off, bits: BitsDest, nbits: u32 },
-    /// Write `m[fp+value]⁻¹` to `m[fp+dst]`, or `0` when the value is zero.
-    /// Untrusted: `assert a != b` multiplies the two back together and asserts
-    /// `1`, which a zero value cannot satisfy (`FnLower::lower_assert_ne`).
-    Inverse { value: Off, dst: Off },
-    /// Prover-side debug print (`print(...)` in the zkDSL): display the value
-    /// of `m[fp+cell]` at this program point. Witness generation only.
-    Print { label: String, cell: Off },
 }

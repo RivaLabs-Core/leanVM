@@ -1,18 +1,16 @@
-//! Fibonacci in the exponent: the demo benchmark (`buff[g^k] = g^{F(k)}`,
-//! recurrence `buff[i·g²] = buff[i·g] · buff[i]`).
+//! Fibonacci in the exponent: the demo benchmark. Two cells hold `g^{F(k)}` and
+//! `g^{F(k+1)}`, and one `MUL64` onto either of them is one step of the recurrence.
 
-use leanvm::{F64, compile, g_pow, parse, prove, verify};
+use leanvm::{F64, Op, Program, g_pow, prove, verify};
 use primitives::{bench::Plan, pretty_f64, pretty_integer};
 
-/// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
-/// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
-/// benchmark report. Proving runs one discarded warmup pass followed by
-/// `plan.repeat` measured passes (see [`primitives::bench`]).
+/// Prove and verify `n` steps of Fibonacci in the exponent, binding `g^{F(n)}` as the
+/// public input. Prints the benchmark report. Proving runs one discarded warmup pass
+/// followed by `plan.repeat` measured passes (see [`primitives::bench`]).
 pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let trace_span = tracing::info_span!("Fibonacci", n, log_inv_rate).entered();
 
-    let (src, pi) = fibonacci_program(n);
-    let program = compile(&parse(&src).unwrap());
+    let (program, pi) = fibonacci_program(n);
 
     // Only the final measured pass of each stage is traced.
     let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
@@ -50,55 +48,60 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     );
 }
 
-/// Build the demo program: Fibonacci in the exponent over `fib_n` steps (an
-/// unrolled `mul_range` loop over a `HeapBuf`), with the result `g^{F(N)}`
-/// published into cell `m[0]`. Returns the zkDSL source and the public input
-/// `[g^{F(N)}, 0, 0, 0]`.
-fn fibonacci_program(fib_n: usize) -> (String, [F64; 4]) {
+/// The demo program and its public input `[g^{F(n)}, 0, 0, 0]`: a loop whose body is
+/// `UNROLL` recurrence steps in place, `a ← a·b` then `b ← a·b`, so that a step is one
+/// instruction and the loop's own three are paid once per `UNROLL`.
+fn fibonacci_program(fib_n: usize) -> (Program, [F64; 4]) {
     const UNROLL: usize = 1000;
     assert!(
         fib_n >= UNROLL && fib_n.is_multiple_of(UNROLL),
         "fib_n must be a positive multiple of {UNROLL}"
     );
-    let blocks = fib_n / UNROLL;
+    // The frame, past the four public words.
+    const A: u32 = 4;
+    const B: u32 = 5;
+    const I: u32 = 6;
+    const GEN: u32 = 7;
+    const END: u32 = 8;
+    const COND: u32 = 9;
+    const LOOP_PC: u32 = 10;
+    const FRAME: u32 = 11;
+    const ONE: u32 = 12;
 
-    let (mut previous, mut current) = (F64::ONE, g_pow(1));
-    for _ in 1..=fib_n {
-        let next = previous * current;
-        previous = current;
-        current = next;
+    let set = |o: u32, k: F64| Op::Set { o, k };
+    let mut body = vec![
+        set(A, F64::ONE),
+        set(B, g_pow(1)),
+        set(I, F64::ONE),
+        set(GEN, g_pow(1)),
+        set(END, g_pow(fib_n / UNROLL)),
+        set(FRAME, F64::ONE),
+        set(ONE, F64::ONE),
+    ];
+    let top = body.len() + 1;
+    body.push(set(LOOP_PC, g_pow(top)));
+    for _ in 0..UNROLL / 2 {
+        body.extend([Op::Mul64 { a: A, b: B, c: A }, Op::Mul64 { a: A, b: B, c: B }]);
     }
-    let public_input = [previous, F64::ZERO, F64::ZERO, F64::ZERO];
+    body.extend([
+        // The loop counter lives in the exponent, stepped in place.
+        Op::Mul64 { a: I, b: GEN, c: I },
+        Op::Xor64 { a: I, b: END, c: COND },
+        Op::Jump {
+            oc: COND,
+            od: LOOP_PC,
+            of: FRAME,
+        },
+        // Publish `a` into the first public word.
+        Op::Mul64 { a: A, b: ONE, c: 0 },
+    ]);
 
-    // `K` blocks: each reads its boundary pair into locals, runs `UNROLL`
-    // Fibonacci `MUL`s in registers, and writes the next pair (4 DEREFs per
-    // block). The loop counter `x = gʲ` is the block index (×g each iteration);
-    // block `j`'s boundary pair lives at cells `g^{2j}, g^{2j+1}`, so its base is
-    // `b = x·x = g^{2j}`.
-    let mut body = String::from("        b = x * x\n        f0 = buff[b]\n        f1 = buff[b * GEN]\n");
-    for j in 2..=UNROLL + 1 {
-        body.push_str(&format!("        f{j} = f{} * f{}\n", j - 2, j - 1));
+    let (mut a, mut b) = (F64::ONE, g_pow(1));
+    for _ in 0..fib_n / 2 {
+        a *= b;
+        b *= a;
     }
-    body.push_str(&format!("        buff[b * GEN ** 2] = f{UNROLL}\n"));
-    body.push_str(&format!("        buff[b * GEN ** 3] = f{}\n", UNROLL + 1));
-
-    // Publish the result g^{F(N)} = buff[GEN ** {2K}] into cell m[0]: a pointer
-    // whose value is g^0 (`p = 1`) addresses m[0] (`p[1] = m[1·g^0] = m[g^0]`),
-    // and the final memory's m[0] is bound to the public input pi[0].
-    let publish = format!("    p = 1\n    p[1] = buff[GEN ** {}]\n", 2 * blocks);
-
-    let src = format!(
-        "def main():\n\
-        \x20   buff = HeapBuf({size})\n\
-        \x20   buff[1] = 1\n\
-        \x20   buff[GEN] = GEN\n\
-        \x20   for x in mul_range(1, GEN ** {blocks}):\n\
-        {body}\
-        {publish}\
-        \x20   return\n",
-        size = 2 * blocks + 2,
-    );
-    (src, public_input)
+    (Program::from_body(body, 16), [a, F64::ZERO, F64::ZERO, F64::ZERO])
 }
 
 #[cfg(test)]

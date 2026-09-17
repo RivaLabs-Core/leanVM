@@ -7,8 +7,6 @@
 //! 64→32-byte compression whose relation is discharged by flock (see
 //! [`crate::hash_flock`]). Challenges and transcript scalars live in `E`.
 
-use std::collections::HashMap;
-
 use crate::colval::ColVal;
 use crate::constraints;
 use crate::leaf::{self, Block, ColumnClaim, Coord};
@@ -23,7 +21,7 @@ use primitives::field::{F64, F192, g_pow};
 
 mod execute;
 pub mod filler;
-pub mod hints;
+mod gpow;
 mod isa;
 pub mod layout;
 mod trace;
@@ -42,10 +40,7 @@ fn blake2s_compress(va: [F64; 4], vb: [F64; 4], vcv: [F64; 4], metadata: [F64; 2
 
 /// Data-memory size bounds (doc §Memory): memory is `2^h` cells with
 /// `MIN_LOG_MEM ≤ h ≤ MAX_LOG_MEM`. The prover pads up to the minimum; the
-/// verifier rejects any announced `h` outside the range. `MIN_LOG_MEM` is also
-/// the static cap on range-check bounds (`compiler::Stmt::AssertLt`): a bound
-/// `≤ 2^MIN_LOG_MEM` keeps the complement argument sound for every memory size
-/// the prover may announce.
+/// verifier rejects any announced `h` outside the range.
 pub const MIN_LOG_MEM: usize = 16;
 const MAX_LOG_MEM: usize = 32;
 
@@ -178,39 +173,11 @@ pub struct Program {
     /// `prog`: always set by [`Program::assemble`] from the bytecode, so a
     /// `Program` cannot carry a hash inconsistent with its own `prog`.
     pub(crate) bytecode_hash: [u8; 32],
-    /// Prover-side frame/buffer allocation hints (keyed by global pc) and the
-    /// size of `main`'s frame: the nondeterminism [`Program::execute`] needs to
-    /// run the program. Public verification (§ `verify`) ignores them.
-    pub(crate) hints: HashMap<u32, Vec<hints::RHint>>,
-    pub(crate) main_frame: u32,
-    /// Named prover witness streams for the program's `hint_witness` calls
-    /// ([`Program::set_witness`]): a stream is a sequence of *entries* (one
-    /// slice of values per `hint_witness` call; the same symbol may be
-    /// hinted many times); each call pops the next entry, whose length must
-    /// match its destination. Prover-side only; verification ignores them.
-    pub(crate) witness: HashMap<String, Vec<Vec<F64>>>,
-    /// The fill blocks in the bytecode ([`filler`]): the cycles the interpreter
-    /// traverses, after the program halts, to bring every table's row count to a power
-    /// of two. Set by the compiler, prover-side only, and no program code reaches them,
-    /// so a missing or wrong entry costs the prover a run that does not fill rather than
-    /// anything a verifier would accept.
+    /// The padding blocks in the bytecode ([`filler`]), whose rows bring every
+    /// table's row count to a power of two. Prover-side only, and no program code
+    /// reaches them, so a missing or wrong entry costs the prover a run that does not
+    /// fill rather than anything a verifier would accept.
     pub filler: Vec<filler::Block>,
-    /// Function pc-ranges `(name, entry, len)` from the compiler, for the
-    /// `DBG_PROF=1` per-function cycle profile ([`Program::execute`]). Purely
-    /// diagnostic; empty for hand-assembled programs.
-    pub fn_ranges: Vec<(String, u32, u32)>,
-    /// Whether the program is written against write-once memory, as every zkDSL
-    /// program is: a cell nothing has written yet is prover-chosen, and a second
-    /// write must agree with the first. The machine's memory is read-write and the
-    /// proof enforces neither, so this only selects how [`Program::execute`] finds
-    /// the initial memory (`cpu::execute`), and makes a conflicting write a panic
-    /// there. Prover-side only.
-    pub write_once: bool,
-    /// Source line of the statement that emitted each pc. Prover-side only, and
-    /// outside `bytecode_hash`, so it costs nothing in the proof: a failed
-    /// check reports a line rather than a pc to disassemble around. Empty for a
-    /// hand-assembled program, and shorter than `prog`, which is padded.
-    pub src_lines: Vec<u32>,
 }
 
 /// The bytecode digest reinterprets the stacked table as bytes, which is its
@@ -218,10 +185,11 @@ pub struct Program {
 const _: () = assert!(cfg!(target_endian = "little"));
 
 impl Program {
-    /// Assemble a [`Program`], computing its bytecode digest
-    /// from `prog`. The single funnel for construction, so the digest is always
-    /// consistent with the bytecode.
-    pub fn assemble(prog: Vec<Op>, hints: HashMap<u32, Vec<hints::RHint>>, main_frame: u32) -> Self {
+    /// Assemble a [`Program`] from a whole bytecode, computing its digest. The
+    /// single funnel for construction, so the digest is always consistent with the
+    /// bytecode. `prog.len()` must be a power of two with a never-executed sentinel
+    /// in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
+    pub fn assemble(prog: Vec<Op>) -> Self {
         let bytecode_hash = {
             let table = layout::bytecode_table(&prog);
             // SAFETY: F64 is #[repr(transparent)] over u64, so the slice's byte image is
@@ -233,25 +201,19 @@ impl Program {
         Self {
             prog,
             bytecode_hash,
-            hints,
-            main_frame,
-            witness: HashMap::new(),
             filler: Vec::new(),
-            fn_ranges: Vec::new(),
-            write_once: true,
-            src_lines: Vec::new(),
         }
     }
 
-    /// Assemble a read-write program from its instructions alone, to be run in frame
-    /// 0 over `main_frame` cells, the first four of them the public words.
+    /// Assemble a program from its instructions alone, to be run in frame 0 over
+    /// `frame_cells` cells, the first four of them the public words.
     ///
     /// `body` runs from its first instruction and halts by falling off its end. What
     /// is appended takes it from there: a jump to the halt sentinel through two cells
     /// past the frame, the padding blocks ([`filler`]), and the fill up to a power of
     /// two that ends on the never-executed sentinel (§sec:state).
-    pub fn from_body(mut body: Vec<Op>, main_frame: u32) -> Self {
-        let (dest, frame) = (main_frame, main_frame + 1);
+    pub fn from_body(mut body: Vec<Op>, frame_cells: u32) -> Self {
+        let (dest, frame) = (frame_cells, frame_cells + 1);
         let halt = body.len();
         body.extend([Op::Set { o: 0, k: F64::ZERO }; 2]); // patched below
         body.push(Op::Jump {
@@ -267,49 +229,9 @@ impl Program {
             k: g_pow(len - 1),
         };
         body[halt + 1] = Op::Set { o: frame, k: F64::ONE };
-        let mut program = Self::assemble(body, HashMap::new(), main_frame + 2);
+        let mut program = Self::assemble(body);
         program.filler = blocks;
-        program.write_once = false;
         program
-    }
-
-    /// Where `pc` came from: `"verify_sub (line 2204)"` when the compiler left a
-    /// line for it, the function name alone otherwise (a hand-assembled program,
-    /// a fill block, or padding). This is what a run-time failure reports, so
-    /// the reader gets a line instead of a pc to disassemble around.
-    pub fn site_at(&self, pc: u32) -> String {
-        match self.src_lines.get(pc as usize) {
-            Some(&line) if line != 0 => format!("{} (line {line})", self.fn_at(pc)),
-            _ => self.fn_at(pc).to_string(),
-        }
-    }
-
-    /// The compiled function containing `pc`. [`Self::site_at`] wraps this with
-    /// the source line when one is known.
-    pub fn fn_at(&self, pc: u32) -> &str {
-        self.fn_ranges
-            .iter()
-            .find(|(_, entry, len)| pc >= *entry && pc < *entry + *len)
-            .map_or("<unknown fn>", |(name, _, _)| name.as_str())
-    }
-
-    /// Supply the entries of witness stream `name`: one slice of values per
-    /// `hint_witness(dest, "name")` call, popped in order (the same symbol
-    /// may be hinted many times). Prover-side data: entirely unconstrained,
-    /// invisible to verification.
-    pub fn set_witness(&mut self, name: impl Into<String>, entries: Vec<Vec<F64>>) {
-        self.witness.insert(name.into(), entries);
-    }
-
-    /// Assemble a program directly from a fixed bytecode vector, starting at
-    /// `(pc, fp) = (0, 0)` with no allocation hints. Suitable for straight-line
-    /// programs that never change the frame pointer and touch only the first
-    /// `main_frame` memory cells (so the prover needs no nondeterministic frame
-    /// allocation). `prog.len()` must be a power of two with a never-executed
-    /// sentinel in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
-    #[cfg(test)]
-    pub fn from_bytecode(prog: Vec<Op>, main_frame: u32) -> Self {
-        Self::assemble(prog, HashMap::new(), main_frame)
     }
 }
 
@@ -537,19 +459,6 @@ pub fn prove(program: &Program, public_input: [F64; 4], log_inv_rate: usize) -> 
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
     let exec = crate::stage!("Execute program", || program.execute(public_input));
-    // A write-once program that read a cell nothing wrote took a live value from
-    // outside the program, so the emitted bytecode computes less than its source
-    // asked for. That is a compiler bug and never a program one, so it is caught
-    // here, on the one path every proof takes, rather than left to whichever test
-    // happens to look. A hard assert, not a `debug_assert`: release is the only
-    // profile the VM is ever run in.
-    assert!(
-        exec.unconstrained_reads.is_empty(),
-        "the program read {} cell(s) nothing ever writes, first at {:?}: a constraint was \
-         dropped in lowering (see `Execution::unconstrained_reads`)",
-        exec.unconstrained_reads.len(),
-        &exec.unconstrained_reads[..exec.unconstrained_reads.len().min(8)]
-    );
     prove_execution(program, &exec, public_input, log_inv_rate)
 }
 
@@ -826,7 +735,7 @@ mod tests {
             next += 1;
         }
         prog.push(Op::Xor64 { a: 0, b: 0, c: 0 });
-        Program::from_bytecode(prog, next)
+        Program::assemble(prog)
     }
 
     /// One BLAKE2s row over hand-set cells: `a` at 4..8 and `b` at 8..12, the
@@ -862,9 +771,7 @@ mod tests {
     ];
 
     /// The opcode's execution semantics: the digest of the four message chunks under
-    /// the public input's chaining value lands in the four output cells. Proving a
-    /// program is exercised from `lean_compiler`'s tests, which can compile one whose
-    /// tables come out powers of two.
+    /// the public input's chaining value lands in the four output cells.
     #[test]
     fn blake2s_computes_the_compression() {
         let exec = blake2s_program(A, B, [4, 6, 8, 10]).execute(PI);

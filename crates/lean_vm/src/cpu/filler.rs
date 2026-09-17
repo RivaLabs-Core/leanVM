@@ -194,7 +194,7 @@ pub fn solve(base: [usize; N_TABLES]) -> Option<Plan> {
 
 /// The cycles a run needs, in the order the interpreter should walk them: for each, the
 /// block's first pc, its size, and how many times to traverse it. Panics if `blocks` is
-/// missing one the plan calls for, which can only mean bytecode the compiler did not emit.
+/// missing one the plan calls for, which can only mean bytecode that was assembled without them.
 pub fn cycles(blocks: &[Block], base: [usize; N_TABLES]) -> Vec<(u32, u32, usize)> {
     let plan = solve(base).unwrap_or_else(|| panic!("no fill plan from {base:?}"));
     let mut out = Vec::new();

@@ -182,23 +182,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
-name = "lean_compiler"
-version = "0.1.0"
-dependencies = [
- "bincode",
- "lean_vm",
- "primitives",
- "rand",
-]
-
-[[package]]
 name = "lean_vm"
 version = "0.1.0"
 dependencies = [
  "bincode",
  "fiat_shamir",
  "flock",
- "lean_compiler",
  "parallel",
  "pcs",
  "primitives",
@@ -212,7 +201,6 @@ version = "0.1.0"
 dependencies = [
  "bincode",
  "clap",
- "lean_compiler",
  "lean_vm",
  "primitives",
  "tracing",

@@ -2,29 +2,28 @@ use leanvm::*;
 
 const STEPS: usize = 1000;
 
-/// Fibonacci in the exponent: `fib[g^k] = g^{F_k}`, the result published into `m[0]`.
+/// Fibonacci in the exponent, in place: `(a, b) ← (a·b, a·b²)` is two steps of the
+/// recurrence, and `g^{F(STEPS)}` is published into `m[0]`.
 fn fibonacci() -> (Program, [F64; 4]) {
-    let source = format!(
-        "def main():\n\
-        \x20   fib = HeapBuf({size})\n\
-        \x20   fib[1] = 1\n\
-        \x20   fib[GEN] = GEN\n\
-        \x20   for i in mul_range(1, GEN ** {STEPS}):\n\
-        \x20       fib[i * GEN * GEN] = fib[i] * fib[i * GEN]\n\
-        \x20   p = 1\n\
-        \x20   p[1] = fib[GEN ** {last}]\n\
-        \x20   return\n",
-        size = STEPS + 2,
-        last = STEPS + 1,
-    );
-    let (mut previous, mut current) = (F64::ONE, g_pow(1));
-    for _ in 0..STEPS {
-        (previous, current) = (current, previous * current);
+    const A: u32 = 4;
+    const B: u32 = 5;
+    const ONE: u32 = 6;
+    let mut body = vec![
+        Op::Set { o: A, k: F64::ONE },
+        Op::Set { o: B, k: g_pow(1) },
+        Op::Set { o: ONE, k: F64::ONE },
+    ];
+    for _ in 0..STEPS / 2 {
+        body.extend([Op::Mul64 { a: A, b: B, c: A }, Op::Mul64 { a: A, b: B, c: B }]);
     }
-    (
-        compile(&parse(&source).unwrap()),
-        [current, F64::ZERO, F64::ZERO, F64::ZERO],
-    )
+    body.push(Op::Mul64 { a: A, b: ONE, c: 0 });
+
+    let (mut a, mut b) = (F64::ONE, g_pow(1));
+    for _ in 0..STEPS / 2 {
+        a *= b;
+        b *= a;
+    }
+    (Program::from_body(body, 8), [a, F64::ZERO, F64::ZERO, F64::ZERO])
 }
 
 #[test]

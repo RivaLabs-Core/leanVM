@@ -360,8 +360,8 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
-    // final pc is the bytecode's last cell g^{B-1} (the compiler emits a halt jump
-    // there), with fp returned to 0. The clock starts at cycle 1 and ends wherever
+    // final pc is the bytecode's last cell g^{B-1} (`Program::from_body` ends on a halt
+    // jump there), with fp returned to 0. The clock starts at cycle 1 and ends wherever
     // the prover announced (`ts_final`), which nothing has to check: a wrong one
     // unbalances the bus.
     let final_pc = (bytecode_size - 1) as u32;
