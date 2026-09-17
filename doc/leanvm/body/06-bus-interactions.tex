@@ -1,13 +1,19 @@
 % !TeX root = ../drafts/06-bus-interactions.tex
 \section{Bus interactions}\label{sec:omc}
 
-The machine runs five interactions on the bus, differentiated by their domain separators (\S\ref{sec:m3}): the VM state, the read-write memory, the public bytecode, and two range arrays. All but the first use offline memory checking~\cite{BEGKN94}: the memory in its read-write form, ordered by a clock (\S\ref{sec:memchan}), and the three read-only arrays in the simpler form of \S\ref{sec:lookup}.
+The machine runs six interactions on the bus, differentiated by their domain separators (\S\ref{sec:m3}): the VM state, the read-write memory, the public bytecode, two range arrays, and the exponentiation array. All but the first use offline memory checking~\cite{BEGKN94}: the memory in its read-write form, ordered by a clock (\S\ref{sec:memchan}), and the four read-only arrays in the simpler form of \S\ref{sec:lookup}.
+
+Two encodings of an integer $i$ coexist on the bus. What the machine indexes (a memory cell, an instruction) and what it holds (a register, a pointer) is the integer itself, $\intk{i}$ (\S\ref{sec:vm}). What the proof system only ever steps (a clock, a read count) is the power $\gen^{i}$, whose successor is a free multiplication by $\gen$. The exponentiation array (\S\ref{sec:exp}) translates the first into the second, which is how integers get added.
 
 \subsection{VM State}\label{sec:state}
 
-The state interaction uses domain separator $\dsep{ST} = \gen^{0}$, and carries the 2 registers, program counter and frame pointer, and a \emph{clock} $\ts\in\K$: $\tup{\dsep{ST},\pc,\fp,\ts}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\nxt{\pc},\nxt{\fp},\gen^{s}\cdot\ts}$, where the \emph{stride} $s$ is $4$ for every instruction but \texttt{BLAKE2S}, whose stride is $20$. An honest clock is therefore $\gen^{4c}$ at cycle $c$, \texttt{BLAKE2S} counting for five cycles, which leaves each of a row's memory accesses a timestamp of its own, $\gen^{4c+k}$ for the access in \emph{slot} $k<s$ (\S\ref{sec:memchan}).
+The state interaction uses domain separator $\dsep{ST} = \gen^{0}$, and carries the 2 registers, program counter and frame pointer, the frame pointer's $\gen$-power $\fpx$ (\S\ref{sec:exp}), and a \emph{clock} $\ts\in\K$: $\tup{\dsep{ST},\pc,\fp,\fpx,\ts}$. Each instruction row pulls its current state and pushes its successor $\tup{\dsep{ST},\nxt{\pc},\nxt{\fp},\nxt{\fpx},\gen^{s}\cdot\ts}$, where the \emph{stride} $s$ is $4$ for every instruction but \texttt{BLAKE2S}, whose stride is $20$. An honest clock is therefore $\gen^{4c}$ at cycle $c$, \texttt{BLAKE2S} counting for five cycles, which leaves each of a row's memory accesses a timestamp of its own, $\gen^{4c+k}$ for the access in \emph{slot} $k<s$ (\S\ref{sec:memchan}).
 
-The bus is preseeded by pushing the initial state $\tup{\dsep{ST},\pc_{\mathrm{initial}},\fp_{\mathrm{initial}},\ts_{\mathrm{initial}}} = \tup{\dsep{ST},\gen^0,\gen^0,\gen^{4}}$, which is cycle $1$, and pulling the final state $\tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}},\tsfinal} = \tup{\dsep{ST},\gen^{\nprog - 1},\gen^0,\tsfinal}$ (boundary conditions). The prover announces $\tsfinal\in\K$, and nothing checks it: a wrong value leaves the final state unmatched.
+The bus is preseeded by pushing the initial state, which is cycle $1$ in frame $0$, and pulling the final state (boundary conditions):
+\begin{align*}
+  \tup{\dsep{ST},\pc_{\mathrm{initial}},\fp_{\mathrm{initial}},\fpx_{\mathrm{initial}},\ts_{\mathrm{initial}}} &= \tup{\dsep{ST},\intk{0},\intk{0},\gen^{0},\gen^{4}},\\
+  \tup{\dsep{ST},\pc_{\mathrm{final}},\fp_{\mathrm{final}},\fpx_{\mathrm{final}},\tsfinal} &= \tup{\dsep{ST},\intk{\nprog - 1},\intk{0},\gen^{0},\tsfinal}.
+\end{align*} The prover announces $\tsfinal\in\K$, and nothing checks it: a wrong value leaves the final state unmatched.
 \begin{proposition}[Balance implies the existence of a valid execution]\label{prop:walk}
 Write $\sigma_{\mathrm{initial}}$ and $\sigma_{\mathrm{final}}$ for the two boundary states. Let $\mathcal R$ be a finite multiset of rows, each pulling a state $\bpull(r)$ and pushing a state $\bpush(r)$, and suppose the state channel balances:
 \[
@@ -45,18 +51,18 @@ A row maps a nonzero clock to a nonzero one, so the clocks along $r_1,\dots,r_L$
 
 We use a similar idea to~\cite[Protocol.~4.27]{DP23}.
 
-\paragraph{Setting.} A \emph{lookup array} $\lut$ is read-only and holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$, possibly none ($\ncomp=0$). Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. Entry $i$ sits at the address $\gen^{i}$, the range arrays of \S\ref{sec:rangecheck} being the one exception. A \emph{read} is a row of a table (\S\ref{sec:m3}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\gen^{i}$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
+\paragraph{Setting.} A \emph{lookup array} $\lut$ is read-only and holds $2^{\kappa}$ entries, entry $\lut[i]$ being a tuple of $\ncomp$ elements of $\K$, possibly none ($\ncomp=0$). Its \emph{components} $\lut_0,\dots,\lut_{\ncomp-1}$ are the multilinears of height $2^{\kappa}$ holding one coordinate of the entry each: they are either committed or public. Entry $i$ sits at a public address $\addr_i\in\K$, the $2^{\kappa}$ addresses pairwise distinct: the integer $\intk{i}$ for the bytecode (\S\ref{sec:bytecode}) and the exponentiation array (\S\ref{sec:exp}), a geometric sequence for the range arrays (\S\ref{sec:rangecheck}). A \emph{read} is a row of a table (\S\ref{sec:m3}) naming an address $a\in\K$ and a value $v\in\K^{\ncomp}$, and is correct when $a=\addr_i$ and $v=\lut[i]$ for some $i<2^{\kappa}$.
 
 \paragraph{Tuple and columns.} The bus interaction uses a tuple of the form $\tup{\sep,\addr,\cnt,\val}$: a domain separator naming the array, the address, the count, then the entry in coordinates $3,\dots,\ncomp+2$. Every higher coordinate is zero, so $\ncomp\le m-3$ for the bus width $m$ (\S\ref{sec:m3}). Take every part of a read to be a committed $\K$-valued column of the reading table: its address, its count, and the $\ncomp$ components of the value read. Committed on top of $\lut$ is one finalize-count $\K$-valued column $\cntfin$ of height $2^{\kappa}$.
 
-\paragraph{Flush rules.} With $A[i]$ the number of reads of address $\gen^{i}$:
+\paragraph{Flush rules.} With $A[i]$ the number of reads of address $\addr_i$:
 \begin{itemize}
-\item \textbf{Seed:} for each $i<2^{\kappa}$, \push\ $\tup{\sep,\gen^{i},1,\lut[i]}$. A boundary block owned by no table, its address coordinate the index column of \S\ref{sec:idxcol}.
+\item \textbf{Seed:} for each $i<2^{\kappa}$, \push\ $\tup{\sep,\addr_i,1,\lut[i]}$. A boundary block owned by no table, its address coordinate one of the index columns of \S\ref{sec:idxcol}.
 \item \textbf{Read} of $v$ at $a$ with count $\cnt$: \pull\ $\tup{\sep,a,\cnt,v}$ and \push\ $\tup{\sep,a,\gen\cdot\cnt,v}$, both flushes of the reading row.
-\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\sep,\gen^{i},\cntfin[i],\lut[i]}$. An honest prover commits $\cntfin[i]=\gen^{A[i]}$, the count the address has reached.
+\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\sep,\addr_i,\cntfin[i],\lut[i]}$. An honest prover commits $\cntfin[i]=\gen^{A[i]}$, the count the address has reached.
 \end{itemize}
 
-\paragraph{Completeness.} An honest prover gives the $t$-th read of $\gen^{i}$ the count $\gen^{t}$ and commits $\cntfin[i]=\gen^{A[i]}$: both sides then carry the counts $\gen^{0},\dots,\gen^{A[i]}$ at that address, so the bus balances.
+\paragraph{Completeness.} An honest prover gives the $t$-th read of $\addr_i$ the count $\gen^{t}$ and commits $\cntfin[i]=\gen^{A[i]}$: both sides then carry the counts $\gen^{0},\dots,\gen^{A[i]}$ at that address, so the bus balances.
 
 \begin{lemma}[Invariant count multisets]\label{lem:invcnt}
 Let $\rcnts$ be a finite multiset over $\K$ with $\gen\cdot\rcnts=\rcnts$. If $|\rcnts|<2^{64}-1$, every element of $\rcnts$ is $0$.
@@ -67,18 +73,18 @@ Let $\mathrm{mult}:\K\to\mathbb{N}$ be the multiplicity function of $\rcnts$ (De
 \end{proof}
 
 \begin{theorem}[Lookup correctness]\label{thm:omc}
-Let the flush rules above be the only flushes carrying $\lut$'s separator, and write $(a_j,c_j,v_j)$ for the address, count and value that read $j$ evaluates to. If the bus balances, every $c_j\neq0$, and there are fewer than $2^{64}-1$ reads, then every read is correct: $(a_j,v_j)=(\gen^{i},\lut[i])$ for some $i<2^{\kappa}$.
+Let the flush rules above be the only flushes carrying $\lut$'s separator, and write $(a_j,c_j,v_j)$ for the address, count and value that read $j$ evaluates to. If the bus balances, every $c_j\neq0$, and there are fewer than $2^{64}-1$ reads, then every read is correct: $(a_j,v_j)=(\addr_i,\lut[i])$ for some $i<2^{\kappa}$.
 \end{theorem}
 
 \begin{proof}
-Fix a read pair $(a,v)$ that is \emph{not} an entry of the array, so $(a,v)\neq(\gen^{i},\lut[i])$ for every $i<2^{\kappa}$. Balance equates the multiset of pushed tuples with the multiset of pulled ones; keep in each only the tuples carrying $\lut$'s separator, address $a$ and entry $v$, and the two are still equal. A seed and a finalization sit at the pairs $(\gen^{i},\lut[i])$, different from $(a,v)$, so neither survives. A read at $(a,v)$ does, on both sides at once: it pulls its count $c$ and pushes $\gen c$. So the survivors are exactly the reads at $(a,v)$.
+Fix a read pair $(a,v)$ that is \emph{not} an entry of the array, so $(a,v)\neq(\addr_i,\lut[i])$ for every $i<2^{\kappa}$. Balance equates the multiset of pushed tuples with the multiset of pulled ones; keep in each only the tuples carrying $\lut$'s separator, address $a$ and entry $v$, and the two are still equal. A seed and a finalization sit at the pairs $(\addr_i,\lut[i])$, different from $(a,v)$, so neither survives. A read at $(a,v)$ does, on both sides at once: it pulls its count $c$ and pushes $\gen c$. So the survivors are exactly the reads at $(a,v)$.
 
 Writing $\rcnts$ for the multiset of counts of the reads at $(a,v)$, balance therefore says $\gen\cdot\rcnts=\rcnts$. There are fewer than $2^{64}-1$ of them, so Lemma~\ref{lem:invcnt} makes every count in $\rcnts$ zero; every count is nonzero by hypothesis, so $\rcnts$ is empty. No read happens at such an invalid $(a,v)$.
 
 \end{proof}
 
 \begin{corollary}[Addresses are in range]\label{cor:addrrange}
-Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof (except with negligible soundness error).
+Under the same hypotheses every read address is an entry address $\addr_i$, $i<2^{\kappa}$: no read at any other address, $0$ included, occurs in an accepted proof (except with negligible soundness error).
 \end{corollary}
 
 \paragraph{Nothing checks the finalize counts.} $\cntfin$ appears nowhere in Theorem~\ref{thm:omc} or its proof. A wrong value (such as $0$ for instance) cannot make a bad read pass; it can only unbalance the bus at that entry, making the proof invalid.
@@ -87,21 +93,21 @@ Under the same hypotheses every read address is an entry address $\gen^{i}$, $i<
 
 \paragraph{The count product.} All counts are nonzero exactly when their product is. The prover therefore sends that product, one $\E$-element, and the verifier checks it is nonzero. It is proven like any other grand product, by GKR over the stacking of every count column (\S\ref{sec:leafstack}), batched with the two other GKRs of the bus (push / pull) (\S\ref{sec:gkr}).
 
-\paragraph{Instance caps.} The verifier checks the announced sizes against public caps (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, at most $2^{32}$ memory cells (\S\ref{sec:memchan}) and at most $2^{32}$ bytecode instructions (\S\ref{sec:bytecode}). A row reads a lookup array at most thirty-seven times (\texttt{BLAKE2S}: its bytecode entry, and two range reads for each of its eighteen memory accesses), so the eight tables flush $\nread\le37\cdot8\cdot2^{32}<2^{41}$ reads, far under the $2^{64}-1$ that Lemma~\ref{lem:invcnt} requires. The same caps keep every clock below $\gen^{2^{40}}$: eight tables of at most $2^{32}$ rows, each advancing it by at most $20$.
+\paragraph{Instance caps.} The verifier checks the announced sizes against public caps (\S\ref{sec:e2e-unrolled}): at most $2^{32}$ rows per table, at most $2^{32}$ memory cells (\S\ref{sec:memchan}) and at most $2^{32}$ bytecode instructions (\S\ref{sec:bytecode}). A row reads a lookup array at most fifty-five times (\texttt{BLAKE2S}: its bytecode entry, then one read of the exponentiation array and two range reads for each of its eighteen memory accesses), so the eight tables flush $\nread\le55\cdot8\cdot2^{32}<2^{41}$ reads, far under the $2^{64}-1$ that Lemma~\ref{lem:invcnt} requires. The same caps keep every clock below $\gen^{2^{40}}$: eight tables of at most $2^{32}$ rows, each advancing it by at most $20$.
 
-\paragraph{Relaxing the hypotheses.} A bus entry may be any polynomial of degree at most $d = 2$ in the row's columns (\S\ref{sec:m3}), so none of the three (address, count, value) need be committed. Example 1: we don't need to commit memory addresses of the form $\fp\cdot o$ (\S\ref{sec:memchan}) when $\fp$ and $o$ are already committed. Example 2: once the pull counter $\cnt$ is committed, no need to commit to the corresponding push counter $\gen\cdot\cnt$.
+\paragraph{Relaxing the hypotheses.} A bus entry may be any polynomial of degree at most $d = 2$ in the row's columns (\S\ref{sec:m3}), so none of the three (address, count, value) need be committed. Example 1: we don't need to commit the value $\fpx\cdot\gen^{o}$ an access reads off the exponentiation array (\S\ref{sec:exp}) when $\fpx$ and $\gen^{o}$ are already committed. Example 2: once the pull counter $\cnt$ is committed, no need to commit to the corresponding push counter $\gen\cdot\cnt$.
 
 \subsection{Memory}\label{sec:memchan}
 
 The memory is an array of $\nmem = 2^{\kmem}$ cells, $16\le\kmem\le32$ (\S\ref{sec:vm}), each one $\K$-element, and it is read-write: the lookup protocol of \S\ref{sec:lookup} does not apply, because what a cell holds depends on when it is read. The memory argument orders the accesses instead, by the timestamps the clock of \S\ref{sec:state} gives them. Bus interaction uses domain separation $\dsep{MEM} = \gen^{1}$ and the tuple $\tup{\dsep{MEM},\addr,\mathit{timestamp},\val}$.
 
-\paragraph{Columns.} Three $\K$-valued multilinears in $\kmem$ variables are committed for the memory itself: $\meminit$, the memory before the run; $\memfin$, the memory after it; and $\tsfin$, each cell's last timestamp. An access is part of a row of a table. Besides the row's clock $\ts$, it takes the committed columns $\tsprev$, the timestamp of the cell's previous access, and $\glo,\ghi$, two chunks measuring how far back that was; a write takes one more, the value $v_{\mathrm{old}}$ the cell held.
+\paragraph{Columns.} Three $\K$-valued multilinears in $\kmem$ variables are committed for the memory itself: $\meminit$, the memory before the run; $\memfin$, the memory after it; and $\tsfin$, each cell's last timestamp. An access is part of a row of a table. Besides the row's clock $\ts$, it takes the committed columns $\tsprev$, the timestamp of the cell's previous access, and $\glo,\ghi$, two chunks measuring how far back that was; a write takes one more, the value $v_{\mathrm{old}}$ the cell held. The address $a$ is a committed column too, an integer, tied to the frame pointer and the operand it is the sum of in \S\ref{sec:exp}.
 
 \paragraph{Flush rules.}
 \begin{itemize}
-\item \textbf{Seed:} for each $i<2^{\kmem}$, \push\ $\tup{\dsep{MEM},\gen^{i},\gen^{0},\meminit[i]}$.
+\item \textbf{Seed:} for each $i<2^{\kmem}$, \push\ $\tup{\dsep{MEM},\intk{i},\gen^{0},\meminit[i]}$.
 \item \textbf{Access} of the cell at $a$, in slot $k$ of a row with clock $\ts$: \pull\ $\tup{\dsep{MEM},a,\tsprev,v_{\mathrm{old}}}$ and \push\ $\tup{\dsep{MEM},a,\gen^{k}\cdot\ts,v_{\mathrm{new}}}$. A read is an access with $v_{\mathrm{new}}=v_{\mathrm{old}}$, one column serving as both.
-\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\dsep{MEM},\gen^{i},\tsfin[i],\memfin[i]}$.
+\item \textbf{Finalize:} for each $i$, \pull\ $\tup{\dsep{MEM},\intk{i},\tsfin[i],\memfin[i]}$.
 \end{itemize}
 
 \paragraph{The gap check.} Write $\genhi:=\gen^{2^{16}}$. Every access reads $\glo$ off the range array $\rlo$, whose addresses are $\gen^{j+1}$, and $\ghi$ off $\rhi$, whose addresses are $\genhi^{-j}$, $j<2^{16}$ (\S\ref{sec:rangecheck}), and its table carries the degree-$2$ constraint
@@ -113,7 +119,7 @@ With $\glo=\gen^{d_{\mathrm{lo}}+1}$ and $\ghi=\genhi^{-d_{\mathrm{hi}}}$ it rea
 \paragraph{Completeness.} An honest prover gives every access the timestamp its cell was last accessed at, $\gen^{0}$ for a first access, and commits $\tsfin$ and $\memfin$ accordingly. Slots are numbered in the order a row performs its accesses, reads first, so two accesses of one row to the same cell are in order too. What is required is that every gap be at most $2^{32}$: a cell's first access is measured from $\gen^{0}$, so a run is limited to $2^{32}$ ticks of the clock, about $2^{30}$ cycles.
 
 \begin{theorem}[Memory consistency]\label{thm:rwmem}
-Let the flush rules above be the only flushes carrying $\dsep{MEM}$, let the clocks be as in Corollary~\ref{cor:clock} with every timestamp's exponent below $2^{63}$, and let every access satisfy \eqref{eq:gap} with $\glo,\ghi$ addresses of $\rlo,\rhi$. If the bus balances, then every access of a row with nonzero clock is at an address $\gen^{i}$, $i<2^{\kmem}$, and, the accesses of such rows at $\gen^{i}$ being taken in the order of their timestamps: the first one's $v_{\mathrm{old}}$ is $\meminit[i]$, every other's $v_{\mathrm{old}}$ is its predecessor's $v_{\mathrm{new}}$, and $\memfin[i]$ is the last one's $v_{\mathrm{new}}$, or $\meminit[i]$ if there is none.
+Let the flush rules above be the only flushes carrying $\dsep{MEM}$, let the clocks be as in Corollary~\ref{cor:clock} with every timestamp's exponent below $2^{63}$, and let every access satisfy \eqref{eq:gap} with $\glo,\ghi$ addresses of $\rlo,\rhi$. If the bus balances, then every access of a row with nonzero clock is at an address $\intk{i}$, $i<2^{\kmem}$, and, the accesses of such rows at $\intk{i}$ being taken in the order of their timestamps: the first one's $v_{\mathrm{old}}$ is $\meminit[i]$, every other's $v_{\mathrm{old}}$ is its predecessor's $v_{\mathrm{new}}$, and $\memfin[i]$ is the last one's $v_{\mathrm{new}}$, or $\meminit[i]$ if there is none.
 \end{theorem}
 
 \begin{proof}
@@ -121,27 +127,49 @@ Call an access \emph{real} if its row's clock is nonzero. Its pushed timestamp $
 
 By Corollary~\ref{cor:clock} the real rows are the walk $r_1,\dots,r_L$, and a row's slots are fewer than its stride, so the real accesses have pairwise distinct timestamps $\gen^{y}$, $4\le y<2^{63}$. For one of them, \eqref{eq:gap} gives $\tsprev=\gen^{\,y-1-d}$ with $0\le d<2^{32}$. A pushed tuple matching its pull exists by balance, and carries the timestamp $\gen^{0}$ (a seed) or $\gen^{y'}$, $y'<2^{63}$. Were $y-1-d$ negative, $\tsprev$ would be $\gen^{e}$ with $2^{64}-2-2^{32}\le e<2^{64}-1$, which is none of those. Hence $\tsprev=\gen^{x}$ with $0\le x<y$.
 
-Fix an address $a$ and keep the tuples at $a$, which still balance. If some real access is at $a$, the one of smallest $y$ pulls a timestamp $x<y$, which no real access at $a$ pushed: the matching push is a seed, so $a=\gen^{i}$ with $i<2^{\kmem}$. At such an address, let the real accesses have timestamps $y_1<\dots<y_n$. With $y_0:=0$, the pushes carry the $n+1$ distinct timestamps $\gen^{y_0},\gen^{y_1},\dots,\gen^{y_n}$, so the pulls are $n+1$ as well, which puts the finalization in this class, and carry the same ones: $\gen^{x_1},\dots,\gen^{x_n}$ and $\tsfin[i]$ are those $n+1$ values in some order. By induction on $j$, the only $y_l$ below $y_j$ not already taken is $y_{j-1}$; so $x_j=y_{j-1}$, which leaves $\tsfin[i]=\gen^{y_n}$. A pull and the push it matches agree on the value, which is the claim.
+Fix an address $a$ and keep the tuples at $a$, which still balance. If some real access is at $a$, the one of smallest $y$ pulls a timestamp $x<y$, which no real access at $a$ pushed: the matching push is a seed, so $a=\intk{i}$ with $i<2^{\kmem}$. At such an address, let the real accesses have timestamps $y_1<\dots<y_n$. With $y_0:=0$, the pushes carry the $n+1$ distinct timestamps $\gen^{y_0},\gen^{y_1},\dots,\gen^{y_n}$, so the pulls are $n+1$ as well, which puts the finalization in this class, and carry the same ones: $\gen^{x_1},\dots,\gen^{x_n}$ and $\tsfin[i]$ are those $n+1$ values in some order. By induction on $j$, the only $y_l$ below $y_j$ not already taken is $y_{j-1}$; so $x_j=y_{j-1}$, which leaves $\tsfin[i]=\gen^{y_n}$. A pull and the push it matches agree on the value, which is the claim.
 \end{proof}
 
 \paragraph{Nothing checks the final columns.} As with $\cntfin$, a wrong $\tsfin$ or $\memfin$ cannot make a bad access pass: it can only unbalance the bus. The same holds for $\meminit$, which is the prover's to choose outside the public words (\S\ref{sec:e2e-pi}).
 
 \subsection{Range arrays}\label{sec:rangecheck}
 
-The gap check reads two lookup arrays with no component ($\ncomp=0$) and $2^{16}$ entries each: $\rlo$ under $\dsep{RLO}=\gen^{3}$, entry $j$ at the address $\gen^{j+1}$, and $\rhi$ under $\dsep{RHI}=\gen^{4}$, entry $j$ at the address $\genhi^{-j}$. They follow the lookup protocol of \S\ref{sec:lookup} with those addresses in place of $\gen^{j}$: a read is the pair \pull\ $\tup{\sep,a,\cnt}$, \push\ $\tup{\sep,a,\gen\cdot\cnt}$, and one finalize-count column is committed per array. The proof of Theorem~\ref{thm:omc} only uses that the seeds and the finalizations sit at the entries, so Corollary~\ref{cor:addrrange} carries over: an accepted read's address is one of the $2^{16}$ entry addresses. A read of an array without components is thus a range check on its address, which is all the gap check asks. Neither array is committed, its addresses being a geometric column (\S\ref{sec:idxcol}).
+The gap check reads two lookup arrays with no component ($\ncomp=0$) and $2^{16}$ entries each: $\rlo$ under $\dsep{RLO}=\gen^{3}$, entry $j$ at the address $\gen^{j+1}$, and $\rhi$ under $\dsep{RHI}=\gen^{4}$, entry $j$ at the address $\genhi^{-j}$. They follow the lookup protocol of \S\ref{sec:lookup} with those addresses as the $\addr_j$: a read is the pair \pull\ $\tup{\sep,a,\cnt}$, \push\ $\tup{\sep,a,\gen\cdot\cnt}$, and one finalize-count column is committed per array. By Corollary~\ref{cor:addrrange}, an accepted read's address is one of the $2^{16}$ entry addresses. A read of an array without components is thus a range check on its address, which is all the gap check asks. Neither array is committed, its addresses being a geometric column (\S\ref{sec:idxcol}).
 
 \subsection{Bytecode}\label{sec:bytecode}
 
-The bytecode is a lookup array (\S\ref{sec:lookup}) of $\nprog = 2^{\kbc}$ instructions, $\kbc \le 32$ (\S\ref{sec:e2e-bc}). Bus interaction uses domain separation $\sep=\dsep{BC} = \gen^{2}$. An instruction is an opcode plus seven operands, so $\ncomp=8$: with the separator, the address and the count ahead of them, this is the widest entry on the bus at $11$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. Coordinate $3$ is the opcode, naming the instruction:
+The bytecode is a lookup array (\S\ref{sec:lookup}) of $\nprog = 2^{\kbc}$ instructions, $\kbc \le 32$ (\S\ref{sec:e2e-bc}), instruction $i$ at the address $\intk{i}$. Bus interaction uses domain separation $\sep=\dsep{BC} = \gen^{2}$. An entry is an opcode, seven operands, and two integers the row could not derive from $\pc$ by a field operation: the successor $\intk{i+1}$, which every row but a taken \texttt{JUMP} pushes as its next $\pc$, and the return address $\intk{i+2}$ where the instruction is a \texttt{DEREF} in \texttt{deref\_pc} mode (zero elsewhere). So $\ncomp=10$: with the separator, the address and the count ahead of them, this is the widest entry on the bus at $13$ coordinates, which is what forces the four index bits, hence the $m=16$ slots of \S\ref{sec:m3}. A jump's target needs no check of its own: the row it leads to reads the bytecode there, and Corollary~\ref{cor:addrrange} makes it an instruction. Coordinate $3$ is the opcode, naming the instruction:
 \begin{gather*}
   \opc{XOR64}=\gen^{0},\quad \opc{MUL64}=\gen^{1},\quad \opc{SET}=\gen^{2},\quad \opc{DRF}=\gen^{3},\\
   \opc{JMP}=\gen^{4},\quad \opc{B2S}=\gen^{5},\quad \opc{ADDU}=\gen^{6},\quad \opc{MULU}=\gen^{7}.
 \end{gather*}
 The program is public, i.e. not committed, the verifier can evaluate it directly.
 
-\subsection{The index column}\label{sec:idxcol}
+\subsection{Integer addresses}\label{sec:exp}
 
-The seed and finalization blocks run over every address $\gen^{0},\dots,\gen^{2^{\kappa}-1}$, so the verifier needs the extension of that \emph{index column} $\mathrm{idx}$ at the point $\zeta$ (\S\ref{sec:leafstack}). Writing $w$ for the bits of $i$, $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$, whose $k$-th factor is $1+w_k(1+\gen^{\,2^{k}})$, which gives the efficient MLE formula:
+An address is a sum of integers, $\fp+o$, and integer addition is no low-degree operation of $\K$. Multiplication by a power of $\gen$ is, and it adds exponents. The \emph{exponentiation array} $\expa$ turns one into the other: a lookup array (\S\ref{sec:lookup}) of $2^{\kmem}$ entries under $\dsep{EXP}=\gen^{5}$, entry $i$ sitting at the address $\intk{i}$ and holding the one component $\gen^{i}$. Both are public (\S\ref{sec:idxcol}), so only its finalize counts are committed.
+
+\paragraph{An access.} The bytecode carries an offset $o$ as $\gen^{o}$ (\S\ref{sec:e2e-bc}), and the state carries the frame pointer twice, as $\fp$ and as $\fpx=\gen^{\fp}$ (\S\ref{sec:state}). A row accessing the cell $\loc{o}$ commits its address $a$ and reads $\tup{a,\;\fpx\cdot\gen^{o}}$ off $\expa$, the value being a product of two of its columns (\S\ref{sec:m3}); for the $k$-th cell past it, as \texttt{BLAKE2S} needs, the value is $\gen^{k}\cdot\fpx\cdot\gen^{o}$. The memory tuples of \S\ref{sec:memchan} then carry $a$.
+
+\begin{proposition}[Addition in the exponent]\label{prop:expadd}
+Let a correct read of $\expa$ name the address $a$ and the value $\gen^{f}\cdot\gen^{o}\cdot\gen^{k}$, with integers $f,o<2^{32}$ and $k<4$. Then $a=\intk{f+o+k}$ and $f+o+k<2^{\kmem}$.
+\end{proposition}
+
+\begin{proof}
+The read is correct, so $a=\intk{i}$ and $\gen^{i}=\gen^{f+o+k}$ for some $i<2^{\kmem}$. Both exponents are below $2^{64}-1$, the order of $\gen$, so $i=f+o+k$.
+\end{proof}
+
+\paragraph{The frame pointer.} Along the run $r_1,\dots,r_L$ of Proposition~\ref{prop:walk}, every state has $\fp=\intk{f}$ and $\fpx=\gen^{f}$ for one $f<2^{\kmem}$. The initial state does, with $f=0$. A row other than a taken \texttt{JUMP} pushes the pair it pulled. A taken \texttt{JUMP} pushes the word $v_{\fp}$ it read from memory and a column $e_{\fp}$, having read $\tup{v_{\fp},e_{\fp}}$ off $\expa$ (\S\ref{sec:tab-jump}): by Theorem~\ref{thm:omc}, $v_{\fp}=\intk{f'}$ and $e_{\fp}=\gen^{f'}$ with $f'<2^{\kmem}$. The hypothesis of Proposition~\ref{prop:expadd} on $f$ therefore holds for every access of the run, and the one on $o$ is the bytecode's. \texttt{DEREF} treats its pointer the same way: the word $p$ it read becomes a base through one read $\tup{p,e_p}$ of $\expa$, and its target's address is read at $e_p\cdot\gen^{o_2}$ (\S\ref{sec:tab-deref}). That read is also what makes a pointer, or a loaded frame, a valid address.
+
+\paragraph{Cost.} One committed column and one read per memory access, and one more of each for a pointer or a loaded frame. A row at clock $0$ (\S\ref{sec:e2e-pad}) need not satisfy the invariant, being on no run, but its reads of $\expa$ are correct like any other, and its memory tuples meet none of the run's (Theorem~\ref{thm:rwmem}).
+
+\subsection{The index columns}\label{sec:idxcol}
+
+The seed and finalization blocks run over every entry of their array, so the verifier needs the extensions of the columns $i\mapsto\intk{i}$ and $i\mapsto\gen^{i}$ at the point $\zeta$ (\S\ref{sec:leafstack}). Write $w$ for the bits of $i$. The \emph{integer index column} is linear in them, $\intk{i}=\sum_k w_k\,\intk{2^{k}}=\sum_k w_k\,x^{k}$, so its extension is that same sum at $\zeta$:
+\[
+  \sum_{k=0}^{\kappa-1}\zeta_k\,x^{k}.
+\]
+For the \emph{exponent column} $\mathrm{idx}$, $\gen^{\,i}=\prod_k(\gen^{\,2^{k}})^{w_k}$, whose $k$-th factor is $1+w_k(1+\gen^{\,2^{k}})$, which gives the efficient MLE formula:
 \[
   \mle{\mathrm{idx}}(\zeta)\;=\;\prod_{k=0}^{\kappa-1}\bigl(1+\zeta_k\,(1+\gen^{\,2^{k}})\bigr).
 \]

@@ -18,6 +18,8 @@ pub const BFCNT: usize = 3; // per-pc bytecode execution count, g^{A[pc]}
 // Per-entry read counts of the two range arrays (§sec:rangecheck).
 pub const RLO_CNT: usize = 4;
 pub const RHI_CNT: usize = 5;
+// Per-entry read counts of the `EXP` array, one entry per memory cell (§sec:exp).
+pub const EXP_CNT: usize = 6;
 // flock's packed BLAKE2s witness `q_flock`, committed in the SAME stack as every
 // other column (single PCS). Size `2^(K_LOG+n_log-6)` F64 words, always ≥ 1
 // instance (a no-BLAKE2s program commits one full padding instance). It is the
@@ -25,11 +27,11 @@ pub const RHI_CNT: usize = 5;
 // virtual and their memory-bus claims route to `q_flock` slots (§hash_flock), so
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
-pub const QFLOCK: usize = 6;
+pub const QFLOCK: usize = 7;
 // The packed witnesses of flock's two u64 circuits, committed the same way (§arith_flock).
-pub const QADD: usize = 7;
-pub const QMUL: usize = 8;
-pub const N_SHARED: usize = 9;
+pub const QADD: usize = 8;
+pub const QMUL: usize = 9;
+pub const N_SHARED: usize = 10;
 
 /// The committed column holding a u64 operation's packed witness.
 pub(crate) const fn u64_column(op: crate::arith_flock::Op) -> usize {
@@ -167,6 +169,7 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     k[BFCNT] = Some((0, log_bytecode));
     k[RLO_CNT] = Some((0, tables::RANGE_LOG));
     k[RHI_CNT] = Some((0, tables::RANGE_LOG));
+    k[EXP_CNT] = Some((1, 0));
     // q_flock is `2^(K_LOG + n_blocks_log - LOG_PACKING)` F64 words, always ≥ 1
     // instance (a no-BLAKE2s program commits one padding instance), and tau_5 IS
     // n_blocks_log (the announced-size certification uses the same floor), so this
@@ -209,6 +212,7 @@ pub fn block_kappa_sources(log_bytecode: usize) -> Vec<(usize, usize)> {
         (0, log_bytecode),
         (0, tables::RANGE_LOG),
         (0, tables::RANGE_LOG),
+        (1, 0),
     ];
     let mut push = framework.clone();
     let mut pull = framework;
@@ -248,11 +252,12 @@ fn col_kappas(log_mem: usize, log_bytecode: usize, taus: [usize; tables::N_TABLE
 /// A table's height is its row count: the fill blocks bring every count up to a power of
 /// two (`cpu::filler`), so `2^taus[t]` rows were all executed and no flush has padding
 /// tuples to divide back out of the bus.
-/// The eight PUBLIC bytecode columns over the program cube, in bytecode-slot
-/// order: the opcode, then seven operand/immediate slots. The program is not
-/// committed, so these ride the seed/finalize blocks as `Coord::Public` and
-/// stack into the polynomial [`bytecode_table`] returns.
-pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
+/// The ten PUBLIC bytecode columns over the program cube, in bytecode-slot
+/// order: the opcode, seven operand/immediate slots, then the successor `pc + 1` and
+/// the return address `pc + 2` a `DEREF` in `Pc` mode stores (zero elsewhere). The
+/// program is not committed, so these ride the seed/finalize blocks as
+/// `Coord::Public` and stack into the polynomial [`bytecode_table`] returns.
+pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 10] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
@@ -326,6 +331,12 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let prog_ffp: Vec<F64> = column(&ffp);
     let prog_extra0: Vec<F64> = column(&extra0);
     let prog_extra1: Vec<F64> = column(&extra1);
+    // Integer successors are no field operation on `pc`, so the program supplies them.
+    let prog_succ: Vec<F64> = parallel::map_collect(prog.len(), |i| F64(i as u64 + 1));
+    let prog_ret: Vec<F64> = parallel::map_collect(prog.len(), |i| match prog[i] {
+        Op::Deref { mode, .. } => mode.ret(i as u32),
+        _ => F64::ZERO,
+    });
     [
         prog_op,
         prog_o1,
@@ -335,10 +346,12 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
         prog_ffp,
         prog_extra0,
         prog_extra1,
+        prog_succ,
+        prog_ret,
     ]
 }
 
-/// The stacked bytecode polynomial: the eight columns at their bus tuple
+/// The stacked bytecode polynomial: the ten columns at their bus tuple
 /// coordinates, which is what makes the program's whole share of a bus leaf one
 /// evaluation at `(ζ, α⃗)` (see [`crate::leaf::stacked_bytecode_table`]).
 ///
@@ -360,11 +373,11 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     let log_bytecode = crate::log2_strict_usize(bytecode_size);
 
     // Derived boundary: the run starts at (pc,fp) = (0,0) and, by convention, the
-    // final pc is the bytecode's last cell g^{B-1} (`Program::from_body` ends on a halt
-    // jump there), with fp returned to 0. The clock starts at cycle 1 and ends wherever
+    // final pc is the bytecode's last cell (`Program::from_body` ends on a halt jump
+    // there), with fp returned to 0, whose g-power is 1. The clock starts at cycle 1 and ends wherever
     // the prover announced (`ts_final`), which nothing has to check: a wrong one
     // unbalances the bus.
-    let final_pc = (bytecode_size - 1) as u32;
+    let final_pc = F64(bytecode_size as u64 - 1);
 
     let one = F64::ONE;
     // The bytecode columns map operand *offsets* (small, ≤ frame size) to
@@ -372,10 +385,10 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
     // operand, an O(1) lookup each, rather than over the whole 2^log_mem memory.
     // Shared between the seed and finalize blocks: at kbc = 19 a copy is tens of
     // megabytes per column.
-    let prog_cols: [std::sync::Arc<Vec<F64>>; 8] = bytecode_columns(prog).map(std::sync::Arc::new);
+    let prog_cols: [std::sync::Arc<Vec<F64>>; 10] = bytecode_columns(prog).map(std::sync::Arc::new);
 
     // ---- bus blocks ----
-    use Coord::{Col, Const, Index, Powers, Public};
+    use Coord::{Col, Const, Index, IntIndex, Powers, Public};
     let blk = |kappa: usize, coords: Vec<Coord>| Block { kappa, coords };
 
     let mut push: Vec<Block> = Vec::new();
@@ -383,29 +396,37 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
 
     // Shared blocks (cross-instruction infra, not owned by any single table).
     // boundary state.
+    let zero = F64::ZERO;
     push.push(blk(
         0,
-        vec![Const(SEP_STATE), Const(one), Const(one), Const(tables::CLOCK_START)],
+        vec![
+            Const(SEP_STATE),
+            Const(zero),
+            Const(zero),
+            Const(one),
+            Const(tables::CLOCK_START),
+        ],
     ));
     pull.push(blk(
         0,
         vec![
             Const(SEP_STATE),
-            Const(g_pow(final_pc as usize)),
+            Const(final_pc),
+            Const(zero),
             Const(one),
             Const(ts_final),
         ],
     ));
     // memory seed + finalize: every cell starts at timestamp g^0 holding its initial
     // word, and ends at its last timestamp holding its final one (§sec:memchan).
-    push.push(blk(log_mem, vec![Const(SEP_MEM), Index, Const(one), Col(MEM_INIT)]));
-    pull.push(blk(log_mem, vec![Const(SEP_MEM), Index, Col(MFTS), Col(MEM_FIN)]));
+    push.push(blk(log_mem, vec![Const(SEP_MEM), IntIndex, Const(one), Col(MEM_INIT)]));
+    pull.push(blk(log_mem, vec![Const(SEP_MEM), IntIndex, Col(MFTS), Col(MEM_FIN)]));
     // bytecode seed + finalize (program columns are public; padding entries
     // self-cancel at count 1, so the whole 2^log_bytecode is "real").
     let bytecode_block = |count: Coord| {
         blk(
             log_bytecode,
-            [Const(SEP_BYTECODE), Index, count]
+            [Const(SEP_BYTECODE), IntIndex, count]
                 .into_iter()
                 .chain(prog_cols.iter().cloned().map(Public))
                 .collect(),
@@ -423,6 +444,18 @@ pub fn layout(prog: &[Op], log_mem: usize, taus: [usize; tables::N_TABLES], pi: 
         let addresses = Powers { first, ratio };
         push.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses.clone(), Const(one)]));
         pull.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses, Col(count)]));
+    }
+
+    // The `EXP` array (§sec:exp): entry `i` is `g^i`, one per memory cell, both
+    // coordinates public. A read of it is what adds integers: it ties an address
+    // column to the g-power the row forms from its terms.
+    for count in [Const(one), Col(EXP_CNT)] {
+        let side = if matches!(count, Const(_)) {
+            &mut push
+        } else {
+            &mut pull
+        };
+        side.push(blk(log_mem, vec![Const(tables::SEP_EXP), IntIndex, count, Index]));
     }
 
     // Per-table blocks: each table declares its flushes and read-count columns in
@@ -465,14 +498,12 @@ impl Program {
         // The trace was emitted in the same walk as the memory image (no re-walk).
         let tr = &exec.trace;
         let cells = exec.mem.len();
-        let bytecode_size = self.prog.len();
         let log_mem = crate::log2_strict_usize(cells);
 
         let sch = schema();
-        // Precompute g^0..g^{span-1} once so every address/pc/operand fill is an
-        // O(1) lookup instead of an O(log) power.
-        let span = cells.max(bytecode_size);
-        let gpow = primitives::field::g_powers(span);
+        // Precompute g^0..g^{cells-1} once so every frame, pointer and operand fill
+        // is an O(1) lookup instead of an O(log) power.
+        let gpow = primitives::field::g_powers(cells);
 
         // The public layout (flush/count blocks, placements, boundary, taus) is a pure
         // function of the program + announced sizes + public input, with no committed
@@ -557,17 +588,18 @@ impl Program {
                 let ctx = FillCtx::new(tr, &gpow, &range_lo, &range_hi, &self.prog, 1 << l.taus[t], n);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
-            // Shared columns. These six plus the three flock witnesses below are every shared
+            // Shared columns. These seven plus the three flock witnesses below are every shared
             // column, and each has to be written: the stack is uninitialized, so one
             // left out would be read as indeterminate bytes rather than caught by a
             // length mismatch.
-            const _: () = assert!(N_SHARED == 9, "a new shared column needs a fill here");
+            const _: () = assert!(N_SHARED == 10, "a new shared column needs a fill here");
             windows[MEM_INIT].copy_from_slice(&exec.init);
             windows[MEM_FIN].copy_from_slice(&exec.mem);
             windows[MFTS].copy_from_slice(&tr.mem_ts);
             windows[BFCNT].copy_from_slice(&tr.bytecode_count); // counts ended at g^{A[pc]}
             windows[RLO_CNT].copy_from_slice(&tr.range_lo_count);
             windows[RHI_CNT].copy_from_slice(&tr.range_hi_count);
+            windows[EXP_CNT].copy_from_slice(&tr.exp_count);
         });
         // flock's packed BLAKE2s witness q_flock, ALWAYS committed in this same stack:
         // built from the executed BLAKE2s rows in order (row j = flock instance j),
@@ -599,8 +631,8 @@ impl Program {
             })
         });
 
-        // (`execute` already asserts the run halts at the sentinel (pc, fp) =
-        // (g^{B-1}, 0), exactly the boundary the public layout derives.)
+        // (`execute` already asserts the run halts at the last pc in frame 0, exactly
+        // the boundary the public layout derives.)
         drop(windows); // release the borrow of `q` and of the virtual buffers
         Witness {
             q,

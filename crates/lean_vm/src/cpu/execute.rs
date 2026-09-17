@@ -31,6 +31,8 @@ struct Ram {
     /// Each cell's last access, as the clock's exponent and as its g-power.
     last: Vec<u32>,
     last_ts: Vec<F64>,
+    /// Running read counts `g^{count}` of the `EXP` array's entries, one per cell.
+    exp: Vec<F64>,
     /// Running read counts `g^{count}` of the two range arrays' entries.
     range_lo: Vec<F64>,
     range_hi: Vec<F64>,
@@ -43,6 +45,7 @@ impl Ram {
             cells: Vec::new(),
             last: Vec::new(),
             last_ts: Vec::new(),
+            exp: Vec::new(),
             range_lo: vec![F64::ONE; 1 << RANGE_LOG],
             range_hi: vec![F64::ONE; 1 << RANGE_LOG],
         };
@@ -57,6 +60,19 @@ impl Ram {
         self.cells.resize(n, F64::ZERO);
         self.last.resize(n, 0);
         self.last_ts.resize(n, F64::ONE);
+        self.exp.resize(n, F64::ONE);
+    }
+
+    /// One read of the `EXP` entry at `index`: every address is read there, and so
+    /// is every pointer and loaded frame, which therefore have to be addresses.
+    #[inline(always)]
+    fn exp_read(&mut self, index: u32) -> F64 {
+        if index as usize >= self.exp.len() {
+            self.resize(index as usize + 1);
+        }
+        let count = self.exp[index as usize];
+        self.exp[index as usize] = mul_by_g(count);
+        count
     }
 
     #[inline(always)]
@@ -99,19 +115,21 @@ impl Ram {
         Access {
             x: x_ts,
             gap,
+            count_exp: self.exp_read(cell),
             count_lo,
             count_hi,
         }
     }
 
     /// A padding row's access: clock zero on both sides, so the identity holds with
-    /// the first entry of each range array.
+    /// the first entry of each range array. Its address is still read off `EXP`.
     #[inline(always)]
-    fn padding_access(&mut self) -> Access {
+    fn padding_access(&mut self, cell: u32) -> Access {
         let (count_lo, count_hi) = self.range_reads(0);
         Access {
             x: F64::ZERO,
             gap: 0,
+            count_exp: self.exp_read(cell),
             count_lo,
             count_hi,
         }
@@ -123,8 +141,16 @@ impl Program {
     /// (§sec:e2e-pi), recording every row, then write out the padding rows that bring
     /// each table to a power of two ([`filler`]).
     pub fn execute(&self, public_input: [F64; 4]) -> Execution {
-        let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot, g^{B-1}
-        let mut g = super::gpow::GPow::new(self.prog.len() + 2);
+        let ending_pc = (self.prog.len() - 1) as u32; // last bytecode slot
+        // A word read as an address: a pointer, a jump target or a frame.
+        let index = |word: F64, bound: usize, what: &str, pc: u32| {
+            assert!(
+                (word.0 as usize) < bound,
+                "{what} 0x{:016x} at pc {pc} is out of range",
+                word.0
+            );
+            word.0 as u32
+        };
         let mut m = Ram::new(public_input.to_vec());
         // Per-pc bytecode execution count (g^{count}).
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; self.prog.len()];
@@ -155,11 +181,6 @@ impl Program {
                 tick < u32::MAX - BLAKE2S_STRIDE,
                 "the run exceeds 2^32 clock ticks, the largest gap the memory argument certifies"
             );
-            // Cover the g-powers this step may index (g²·pc return target, g^fp).
-            let need = (pc as usize + 2).max(fp as usize);
-            if g.covered() <= need {
-                g.grow_to(need);
-            }
             let bytecode_read = fetch(pc);
             let (ts1, ts2) = (mul_by_g(ts), mul_by_g(mul_by_g(ts)));
             let mut stride = CLOCK_STRIDE;
@@ -209,25 +230,16 @@ impl Program {
                 Op::Deref { o1, o2, o3, mode } => {
                     let (a1, a3) = (fp + o1, fp + o3);
                     let (p, v3) = (m.get(a1), m.get(a3));
-                    let base = g
-                        .log(p)
-                        .unwrap_or_else(|| panic!("DEREF pointer is not a small g-power at pc {pc}: 0x{:016x}", p.0));
-                    let a2 = base + o2;
+                    let a2 = index(p, 1 << MAX_LOG_MEM, "DEREF pointer", pc) + o2;
                     let v2_old = m.get(a2);
                     m.put(
                         a2,
                         match mode {
                             DerefMode::Cell => v3,
                             // The return target and the frame base are stored as
-                            // addresses, and JUMP reads them back.
-                            DerefMode::Pc => {
-                                g.note(pc as usize + 2);
-                                g.pow(pc as usize + 2)
-                            }
-                            DerefMode::Fp => {
-                                g.note(fp as usize);
-                                g.pow(fp as usize)
-                            }
+                            // integers, and JUMP reads them back.
+                            DerefMode::Pc => mode.ret(pc),
+                            DerefMode::Fp => F64(fp as u64),
                         },
                     );
                     deref.push(Drow {
@@ -242,6 +254,7 @@ impl Program {
                             m.access(a3, tick + 1, ts1),
                             m.access(a2, tick + 2, ts2),
                         ],
+                        count_px: m.exp_read(p.0 as u32),
                         bytecode_read,
                     });
                     pc += 1;
@@ -253,6 +266,14 @@ impl Program {
                     // flow, only recorded as a witness column, so it is not
                     // computed here at all: `JumpTable::fill` batch-inverts every
                     // row's condition at once.
+                    let next = if cond.is_zero() {
+                        (pc + 1, fp)
+                    } else {
+                        (
+                            index(dest, self.prog.len(), "JUMP target", pc),
+                            index(frame, 1 << MAX_LOG_MEM, "JUMP frame", pc),
+                        )
+                    };
                     jump.push(Jrow {
                         pc,
                         fp,
@@ -265,14 +286,11 @@ impl Program {
                             m.access(ad, tick + 1, ts1),
                             m.access(af, tick + 2, ts2),
                         ],
+                        // A jump not taken loads no frame, and reads entry 0.
+                        count_fpx: m.exp_read(if cond.is_zero() { 0 } else { next.1 }),
                         bytecode_read,
                     });
-                    if cond.is_zero() {
-                        pc += 1;
-                    } else {
-                        pc = g.log(dest).expect("JUMP target not a g-power");
-                        fp = g.log(frame).expect("JUMP fp not a g-power");
-                    }
+                    (pc, fp) = next;
                 }
                 Op::Blake2s { .. } => {
                     // Every cell the row touches, in value-lane order: the message
@@ -319,7 +337,7 @@ impl Program {
             }
             steps += 1;
         }
-        assert_eq!(fp, 0, "main must halt at the sentinel pc g^{{B-1}} in frame 0");
+        assert_eq!(fp, 0, "main must halt at the last pc in frame 0");
         let base_counts = [
             xor64.len(),
             mul64.len(),
@@ -335,12 +353,13 @@ impl Program {
         // and touch no memory, every read holding zero and every write rewriting what
         // was there (`filler`). Only a block's closing jump holds anything else: a
         // nonzero condition, and its own block's top as the destination, in frame 0.
+        // Their addresses are still read off `EXP`, which those reads count.
         // A hand-assembled program carries no blocks and has to land on powers of two
         // by itself, which `Layout` checks.
         if !self.filler.is_empty() {
             let zero_digest = blake2s_compress([F64::ZERO; 4], [F64::ZERO; 4], [F64::ZERO; 4], [F64::ZERO; 2]);
             for (block_pc, size, traversals) in super::filler::cycles(&self.filler, base_counts) {
-                let top = g.pow(block_pc as usize);
+                let top = F64(block_pc as u64);
                 for _ in 0..traversals {
                     for pc in block_pc..=block_pc + size {
                         let bytecode_read = fetch(pc);
@@ -348,7 +367,10 @@ impl Program {
                         let closing = pc == block_pc + size;
                         match self.prog[pc as usize] {
                             // Zero operands, and zero is the result of all four.
-                            op @ (Op::Xor64 { .. } | Op::Mul64 { .. } | Op::AddU64 { .. } | Op::MulU64 { .. }) => {
+                            op @ (Op::Xor64 { a, b, c }
+                            | Op::Mul64 { a, b, c }
+                            | Op::AddU64 { a, b, c }
+                            | Op::MulU64 { a, b, c }) => {
                                 let rows = match op {
                                     Op::Xor64 { .. } => &mut xor64,
                                     Op::Mul64 { .. } => &mut mul64,
@@ -362,40 +384,39 @@ impl Program {
                                     va: F64::ZERO,
                                     vb: F64::ZERO,
                                     vc_old: F64::ZERO,
-                                    acc: std::array::from_fn(|_| m.padding_access()),
+                                    acc: [a, b, c].map(|cell| m.padding_access(cell)),
                                     bytecode_read,
                                 });
                             }
-                            Op::Set { k, .. } => set.push(Srow {
+                            Op::Set { o, k } => set.push(Srow {
                                 pc,
                                 fp,
                                 ts,
                                 v_old: k,
-                                acc: [m.padding_access()],
+                                acc: [m.padding_access(o)],
                                 bytecode_read,
                             }),
-                            Op::Deref { mode, .. } => deref.push(Drow {
+                            // A null pointer, and the store rewrites what it stores.
+                            Op::Deref { o1, o2, o3, mode } => deref.push(Drow {
                                 pc,
                                 fp,
                                 ts,
                                 p: F64::ZERO,
                                 v3: F64::ZERO,
-                                v2_old: match mode {
-                                    DerefMode::Cell => F64::ZERO,
-                                    DerefMode::Pc => g.pow(pc as usize + 2),
-                                    DerefMode::Fp => F64::ONE,
-                                },
-                                acc: std::array::from_fn(|_| m.padding_access()),
+                                v2_old: mode.ret(pc),
+                                acc: [o1, o3, o2].map(|cell| m.padding_access(cell)),
+                                count_px: m.exp_read(0),
                                 bytecode_read,
                             }),
-                            Op::Jump { .. } => jump.push(Jrow {
+                            Op::Jump { oc, od, of } => jump.push(Jrow {
                                 pc,
                                 fp,
                                 ts,
-                                cond: if closing { top } else { F64::ZERO },
+                                cond: if closing { F64::ONE } else { F64::ZERO },
                                 dest: if closing { top } else { F64::ZERO },
-                                frame: if closing { F64::ONE } else { F64::ZERO },
-                                acc: std::array::from_fn(|_| m.padding_access()),
+                                frame: F64::ZERO,
+                                acc: [oc, od, of].map(|cell| m.padding_access(cell)),
+                                count_fpx: m.exp_read(0),
                                 bytecode_read,
                             }),
                             Op::Blake2s { .. } => {
@@ -407,7 +428,8 @@ impl Program {
                                     ts,
                                     w,
                                     out_old: zero_digest,
-                                    acc: std::array::from_fn(|_| m.padding_access()),
+                                    acc: crate::tables::blake2s_cells(&self.prog, pc, fp)
+                                        .map(|cell| m.padding_access(cell)),
                                     bytecode_read,
                                 });
                             }
@@ -435,6 +457,7 @@ impl Program {
             mul_u64,
             mem_ts: m.last_ts,
             bytecode_count,
+            exp_count: m.exp,
             range_lo_count: m.range_lo,
             range_hi_count: m.range_hi,
             ts_final: ts,

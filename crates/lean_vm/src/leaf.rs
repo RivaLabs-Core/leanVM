@@ -11,7 +11,7 @@ use crate::PAR_THRESHOLD;
 use crate::colval::ColVal;
 use crate::gkr;
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
-use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle, powers_mle};
+use primitives::field::{F64, F192, F192BaseUnreduced, g_pow, index_mle, int_index_mle, powers_mle};
 use primitives::multilinear::{eq_eval, eq_table_arena, mle_eval};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -27,19 +27,24 @@ pub enum Coord {
     /// The free increment `g^k · col[z]` (a virtual column, §sec:vm): `k = 1` for the
     /// count/state steps, `k ∈ {1,2,3}` for BLAKE2s's consecutive-word successors.
     GCol(usize, u32),
-    /// The product `g^k · col_a[z] · col_b[z]` of two committed columns. An address
-    /// is `fp·g^o`, so this carries one on the bus without committing it: the
-    /// coordinate IS the product, so no column can disagree with it and the binding
-    /// constraint that used to say so is unnecessary (§sec:m3).
+    /// The product `g^k · col_a[z] · col_b[z]` of two committed columns. The g-power
+    /// of an address `fp + o + k` is `g^fp·g^o·g^k`, so this carries one on the bus
+    /// without committing it: the coordinate IS the product, so no column can
+    /// disagree with it and the binding constraint that used to say so is unnecessary
+    /// (§sec:m3).
     Prod(usize, usize, u32),
-    /// The index column `g^z` (§sec:idxcol), free via the factored MLE.
+    /// The integer index column `z` (§sec:idxcol), the element whose bits are the
+    /// row's: what addresses memory and the bytecode. Free, its MLE being linear.
+    IntIndex,
+    /// The exponent column `g^z` (§sec:idxcol), free via the factored MLE: the
+    /// values of the `EXP` array.
     Index,
     /// The geometric column `first·ratio^z`, free the same way: the addresses of a
     /// range-check array (§sec:rangecheck).
     Powers { first: F64, ratio: F64 },
     /// A public column (the bytecode program, §sec:e2e-bc): not committed; both parties form
     /// its MLE directly, so it raises no claim. Shared rather than owned: push and
-    /// pull carry the same eight columns, tens of megabytes at production sizes.
+    /// pull carry the same ten columns, tens of megabytes at production sizes.
     Public(Arc<Vec<F64>>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
@@ -166,6 +171,7 @@ enum Term<'a> {
     Col(usize, F192),
     Prod(usize, usize, F192),
     Index(F192),
+    IntIndex(F192),
     Public(&'a [F64], F192),
 }
 
@@ -199,6 +205,7 @@ fn push_terms<'a>(c: &'a Coord, w: F192, powers: &'a PowerTables, terms: &mut Ve
         Coord::GCol(i, k) => terms.push(Term::Col(*i, w.mul_base(g_pow(*k as usize)))),
         Coord::Prod(i, j, k) => terms.push(Term::Prod(*i, *j, w.mul_base(g_pow(*k as usize)))),
         Coord::Index => terms.push(Term::Index(w)),
+        Coord::IntIndex => terms.push(Term::IntIndex(w)),
         Coord::Powers { first, ratio } => {
             let table = &powers
                 .iter()
@@ -273,6 +280,7 @@ pub fn build_leaves(
                     Term::Col(i, c) => c.mul_base_unreduced(cols[*i][z]),
                     Term::Prod(i, j, c) => c.mul_base_unreduced(cols[*i][z] * cols[*j][z]),
                     Term::Index(c) => c.mul_base_unreduced(gpow[z]),
+                    Term::IntIndex(c) => c.mul_base_unreduced(F64(z as u64)),
                     Term::Public(vals, c) => c.mul_base_unreduced(vals[z]),
                 };
             }
@@ -413,7 +421,7 @@ fn accumulate_form(c: &Coord, w: F192, base: usize, form: &mut BusForm) {
                 accumulate_form(c, w, base, form);
             }
         }
-        Coord::Index | Coord::Powers { .. } | Coord::Public(_) => {
+        Coord::Index | Coord::IntIndex | Coord::Powers { .. } | Coord::Public(_) => {
             unreachable!("a table's bus block carries no virtual coordinate")
         }
     }
@@ -481,6 +489,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
             let coord_val = match c {
                 Coord::Const(v) => F192::from(*v),
                 Coord::Index => index_mle(zeta_lo),
+                Coord::IntIndex => int_index_mle(zeta_lo),
                 Coord::Powers { first, ratio } => powers_mle(*first, *ratio, zeta_lo),
                 Coord::Col(i) => col_val(*i)?,
                 Coord::GCol(i, k) => col_val(*i)?.mul_base(g_pow(*k as usize)),

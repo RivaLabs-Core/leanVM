@@ -59,13 +59,22 @@ The benchmarks we care about:
 
 Memory is read-write, by timestamped offline memory checking (`doc/leanvm` §sec:memchan). What to keep in mind before touching it:
 
-- **The clock rides the state tuple**, `(pc, fp, ts)`, and is `g^(4·cycle)`: a row's access in slot `k` carries the timestamp `g^k·ts`, which is what lets one row touch the same cell twice (`MUL64 a a c`, an in-place counter). `BLAKE2S` makes eighteen accesses, so it advances the clock by 20. The run starts at cycle 1, because the memory seed is stamped `g^0` and an access must be strictly later than the one before.
+- **The clock rides the state tuple**, `(pc, fp, g^fp, ts)`, and is `g^(4·cycle)`: a row's access in slot `k` carries the timestamp `g^k·ts`, which is what lets one row touch the same cell twice (`MUL64 a a c`, an in-place counter). `BLAKE2S` makes eighteen accesses, so it advances the clock by 20. The run starts at cycle 1, because the memory seed is stamped `g^0` and an access must be strictly later than the one before.
 - **Strictness is the soundness.** An access pulls `(addr, prev, old)` and pushes `(addr, g^k·ts, new)`, with `prev·lo = g^k·ts·hi`, where `lo` and `hi` are read off two uncommitted range arrays (`{g^(j+1)}` and `{g^(-2^16·j)}`, 2^16 entries each). The `+1` in the low array is the strict `<`: with a gap of zero a read pulls the tuple it pushes and returns anything.
 - **Padding rows have clock zero**, and zero is no power of `g`: their state tuples close around a fill block (`0·g^s = 0`), their accesses are forced to `prev = 0` and cancel themselves, and nothing they flush can meet a tuple of the run. They are written out by `cpu::execute`, not executed, and touch no memory. Any new table has to keep this true: every memory tuple's timestamp must be `g^k·ts` or the committed `prev`, nothing else.
 - **Three memory columns**: the memory before the run, after it, and each cell's last timestamp. The four public words are bound in both the first and the second, so they are input and output at once and a run has to leave them as it found them.
 - **The initial memory is the prover's** in the protocol, the public words aside: only those four cells of the committed initial memory are bound. The executor starts every other cell at zero, there being no advice channel yet; a front end that wants one gets it by choosing initial cells, and its programs then have to check what they read before writing it.
 - **A gap is below 2^32**, and a cell's first access is measured from zero, so a run is capped near 2^30 cycles. The executor asserts it.
 - `a_stale_read_unbalances_the_bus` is the soundness regression test (a forged run that serves an overwritten value), `lean_vm/tests/verifiers/read_write.rs` the program that only read-write memory can run, checked by both verifiers.
+
+## Integer addresses
+
+Memory cells and bytecode slots are numbered `0, 1, 2, ...`: `pc`, `fp`, every address and every pointer held in memory is the integer, stored as the field element with those bits (`F64(i)`). Timestamps, read counts, opcodes and operands stay g-powers, where a step is a free multiplication by `g`. `doc/leanvm` §sec:exp is the argument; in short:
+
+- **Integer addition is no field operation**, so an address `fp + o` is a committed column `A`, tied to its terms by one read of the `EXP` array, whose entry `i` is `g^i`: the row reads `(A, g^fp·g^o)`, a degree-2 product, which forces `g^A = g^(fp+o)` with `A` inside the memory, hence `A = fp + o`. Both of `EXP`'s columns are public with closed-form MLEs (`Coord::IntIndex`, linear; `Coord::Index`, a product), so only its read counts are committed. An operand therefore still rides the bytecode as `g^o`.
+- **The frame pointer rides the state twice**, as `fp` and as `g^fp`, so a row never reads `EXP` for its own frame. A value that BECOMES a base pays one read: `DEREF`'s pointer (`ptr`, `ptr_x`) and the frame a `JUMP` loads (`v_fp`, `v_fpx`), read at `b·v_fp` so that a jump not taken reads entry 0 and ignores the cell. That read is also what forces a pointer or a frame to be a valid address.
+- **The bytecode supplies `pc + 1`**, and `pc + 2` for a `DEREF` in `Pc` mode (zero elsewhere), as two more public columns of the program table: a row pushes the successor it read. A jump target is checked by the next row's bytecode read, which only finds entries below the program's length.
+- **A padding row sits in frame 0** with a null pointer, so its addresses are its operands and its `EXP` reads are real reads, counted like its bytecode and range reads.
 
 ## Flock-backed instructions
 

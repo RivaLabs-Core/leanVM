@@ -18,7 +18,7 @@
   </tr>
   <tr>
     <td><a href="#fibonacci">cheap cycles</a></td>
-    <td align="right"><b>4.5M/s</b></td>
+    <td align="right"><b>3.1M/s</b></td>
   </tr>
 </table>
 
@@ -147,10 +147,10 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ```
 Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
   cycles (VM steps)           : 2,103,361
-    details                   : MUL64 2^20.933 (99.8%)  JUMP 2^10.967 (0.1%)  XOR64 2^10.966 (0.1%)  SET 2^3.322 (0.0%)  MEMORY 2^4.17  TOTAL_COMMITTED 2^25.658
-  proof size                  : 319.9 KiB
-  proving                     : 0.466 s ± 9.6%   4,512,204 cycles/s      peak memory 8.007 GiB
-  verifying                   : 3.45 ms
+    details                   : MUL64 2^20.933 (99.8%)  JUMP 2^10.967 (0.1%)  XOR64 2^10.966 (0.1%)  SET 2^3.322 (0.0%)  MEMORY 2^4.17  TOTAL_COMMITTED 2^26.057
+  proof size                  : 303.8 KiB
+  proving                     : 0.675 s ± 11.6%   3,116,639 cycles/s      peak memory 8.513 GiB
+  verifying                   : 3.297 ms
 ```
 
 ## SNARK machinery

@@ -13,17 +13,19 @@ And fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $
 
 An element of $\K$ is a polynomial in $x$ of degree below $64$, written in hex with the coefficient of $x^{i}$ in bit $i$, so $\mathtt{2}$ is $x$ and $\mathtt{3}$ is $x+1$. An element of $\E$ is three of those, its coefficients on $1,y,y^{2}$.
 
+An integer $i<2^{64}$ names the element $\intk{i}\in\K$ with that hex writing, the coefficient of $x^{k}$ being bit $k$ of $i$. This is how a register or a memory word holds an integer. It is a bijection and nothing more: $\intk{i+j}$ is not $\intk{i}+\intk{j}$ in general.
+
 \vspace{5mm}
 
-LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Machine takes as input a bytecode (padded to a power of two, $\nprog = 2^{\kbc}$) and some public input $\textsf{input} \in \cube{256} \simeq (\textsf{input}_0, \dots, \textsf{input}_3) \in (\cube{64})^4$. The Virtual Machine then initializes its two $\K$-valued registers:
+LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Machine takes as input a bytecode (padded to a power of two, $\nprog = 2^{\kbc}$) and some public input $\textsf{input} \in \cube{256} \simeq (\textsf{input}_0, \dots, \textsf{input}_3) \in (\cube{64})^4$. The Virtual Machine then initializes its two registers, which hold integers:
 \begin{itemize}
-  \item the program counter $\pc \xleftarrow{} 1_\K$
-  \item the frame pointer $\fp \xleftarrow{} 1_\K$
+  \item the program counter $\pc \xleftarrow{} 0$
+  \item the frame pointer $\fp \xleftarrow{} 0$
 \end{itemize}
 
-Then, initialize the read-write memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed \textit{in the exponent} of $\gen$ (64 bits). The first memory word is $\mem[\gen^0] \in \K$, the second is $\mem[\gen^1]$, the third is $\mem[\gen^2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\gen^{\nmem - 1}$ (resp. $\gen^{\nprog - 1}$ for the bytecode) is invalid.
+Then, initialize the read-write memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed by the integers: the first memory word is $\mem[0] \in \K$, the second is $\mem[1]$, the third is $\mem[2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\nmem - 1$ (resp. $\nprog - 1$ for the bytecode) is invalid. A pointer is a memory word holding an address, $\intk{i}$ for the cell $\mem[i]$, so a program computes one with \texttt{ADD\_U64}.
 
-The public input fixes the first four memory words, $\mem[\gen^i] = \textsf{input}_i \in \K$ for $i<4$, both when the execution starts and when it ends: an execution that leaves another value in one of them is invalid. The same four words therefore serve as public input, which the program reads, and as public output, which the program writes.
+The public input fixes the first four memory words, $\mem[i] = \textsf{input}_i \in \K$ for $i<4$, both when the execution starts and when it ends: an execution that leaves another value in one of them is invalid. The same four words therefore serve as public input, which the program reads, and as public output, which the program writes.
 
 The Virtual Machine execution loop is the following:
 \begin{enumerate}
@@ -31,9 +33,9 @@ The Virtual Machine execution loop is the following:
   \item execute $\mathsf{inst}$:
     \begin{itemize}
       \item read its source cells, then write its destination cell (e.g. $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ for \texttt{XOR64}). All the reads of an instruction come before its writes, so a destination may be one of the sources.
-      \item update $\pc$ and $\fp$ (all instructions except \texttt{JUMP} set $\pc \xleftarrow{} \pc \cdot \gen$, advancing to the next instruction, and leave $\fp \xleftarrow{} \fp$ unchanged)
+      \item update $\pc$ and $\fp$ (all instructions except \texttt{JUMP} set $\pc \xleftarrow{} \pc + 1$, advancing to the next instruction, and leave $\fp \xleftarrow{} \fp$ unchanged)
     \end{itemize}
-  \item if $\pc$ equals $\pc_{\textsf{final}} := \gen^{\nprog - 1}$, exit the loop (successful execution). Otherwise go back to $1.$
+  \item if $\pc$ equals $\pc_{\textsf{final}} := \nprog - 1$, exit the loop (successful execution). Otherwise go back to $1.$
 \end{enumerate}
 
 \paragraph{Read-write memory}
@@ -46,10 +48,7 @@ For a given pair of bytecode and public input, there is more than one valid exec
 
 The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$. So is the initial content of the memory, the four public words aside: the prover chooses what every other cell holds when the execution starts. A program therefore has to check whatever it reads before having written it, and this is the one channel through which advice can reach it.
 
-\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an offset $j$ into the current frame encoded as the $\gen$-power $o=\gen^{\,j}$, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp=\gen^{\mathrm{base}}$, a reference names the cell
-\[
-  \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
-\]
+\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an integer offset $o<2^{32}$ into the current frame, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp$, a reference names the cell $\loc{o}$, the sum being that of the integers.
 
 \paragraph{Instruction set.} The machine implements eight instructions.
 \begin{center}
@@ -60,7 +59,7 @@ Instruction & Operands & Semantics\\
 \texttt{XOR64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ \quad(addition in $\K$)\\
 \texttt{MUL64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\K$)\\
 \texttt{SET\_CONSTANT} & $[o,k]$ & $\loc{o}\gets k$\\
-\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]\gets\srcsel{\dmode}$ (see below)\\
+\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}+o_2]\gets\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
 \texttt{ADD\_U64}       & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}\bmod 2^{64}$ (integer addition, see below)\\
@@ -70,24 +69,24 @@ Instruction & Operands & Semantics\\
 \end{center}
 
 
-\texttt{DEREF} reads the pointer $\loc{o_1}$ and the local cell $\loc{o_3}$, then writes, at the dereferenced address $\loc{o_1}\cdot o_2$, a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
+\texttt{DEREF} reads the pointer $\loc{o_1}$ and the local cell $\loc{o_3}$, then writes, at the dereferenced address $\loc{o_1}+o_2$ (the pointer read as an integer), a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
 \[
   \srcsel{\dmode}\;=\;
   \begin{cases}
     \loc{o_3} & \dmode=\texttt{deref\_cell}[o_3] \quad(\text{the local cell at offset }o_3 \in \K),\\
-    \gen^{2}\cdot\pc & \dmode=\texttt{deref\_pc} \quad(\text{the current program counter advanced by two}),\\
-    \fp & \dmode=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
+    \intk{\pc+2} & \dmode=\texttt{deref\_pc} \quad(\text{the current program counter advanced by two}),\\
+    \intk{\fp} & \dmode=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
   \end{cases}
 \]
 
 \vspace{5mm}
 
 
-\texttt{JUMP} reads a condition $c=\loc{o_c}$, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$; when $c=0$ it defaults to $\pc\gets\gen\cdot\pc$ and $\fp\gets\fp$.
+\texttt{JUMP} reads a condition $c=\loc{o_c}$, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$, both words read as integers; when $c=0$ it defaults to $\pc\gets\pc+1$ and $\fp\gets\fp$.
 
 \vspace{5mm}
 
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{\gen\cdot o_{m_i}}$. The chaining value is read from the four \emph{consecutive} cells $\loc{\gen^{k}\cdot o_{\mathit{cv}}}$, $k<4$, and the result is written to the four consecutive cells $\loc{\gen^{k}\cdot o_{\mathit{out}}}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen: fourteen reads, then the four writes of the result, which may land on cells the compression read. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{\gen\cdot o_{\md}}$, little-endian:
+\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{o_{m_i}+1}$. The chaining value is read from the four \emph{consecutive} cells $\loc{o_{\mathit{cv}}+k}$, $k<4$, and the result is written to the four consecutive cells $\loc{o_{\mathit{out}}+k}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen: fourteen reads, then the four writes of the result, which may land on cells the compression read. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{o_{\md}+1}$, little-endian:
 \[
   \md_0=\mathit{counter}_{64},\qquad \md_1=\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]

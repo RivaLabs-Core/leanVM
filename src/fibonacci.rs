@@ -75,11 +75,11 @@ fn fibonacci_program(fib_n: usize) -> (Program, [F64; 4]) {
         set(I, F64::ONE),
         set(GEN, g_pow(1)),
         set(END, g_pow(fib_n / UNROLL)),
-        set(FRAME, F64::ONE),
+        set(FRAME, F64::ZERO),
         set(ONE, F64::ONE),
     ];
     let top = body.len() + 1;
-    body.push(set(LOOP_PC, g_pow(top)));
+    body.push(set(LOOP_PC, F64(top as u64)));
     for _ in 0..UNROLL / 2 {
         body.extend([Op::Mul64 { a: A, b: B, c: A }, Op::Mul64 { a: A, b: B, c: B }]);
     }

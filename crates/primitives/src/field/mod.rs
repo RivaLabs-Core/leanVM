@@ -106,6 +106,15 @@ pub fn index_mle(zeta: &[F192]) -> F192 {
     powers_mle(F64::ONE, G, zeta)
 }
 
+/// MLE of the integer column `[0, 1, …, 2^n − 1]`, entry `z` being the element whose
+/// bits are `z`'s: `Σ_k ζ_k·x^k`, linear, since bit `k` contributes the monomial `x^k`
+/// (§sec:idxcol). What addresses memory and the bytecode.
+pub fn int_index_mle(zeta: &[F192]) -> F192 {
+    zeta.iter()
+        .enumerate()
+        .fold(F192::ZERO, |acc, (k, z)| acc + z.mul_base(F64(1 << k)))
+}
+
 /// MLE of the geometric column `[first·ratio^z]_z` over the `n`-variable cube:
 /// `first·∏_k (1 + ζ_k·(1 + ratio^{2^k}))`, the index column's formula for any ratio
 /// (§sec:idxcol). What makes a range-check table free: it is never committed.

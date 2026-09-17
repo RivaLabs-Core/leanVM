@@ -3,7 +3,8 @@
 //! Memory is read-write, so a cell's value depends on when it is read: a row carries
 //! the values its accesses saw, along with the step's `(pc, fp)`, its clock, and per
 //! access what the memory argument needs ([`Access`]). Operands and immediates still
-//! come from `prog[pc]`, and addresses from `fp` plus those operands.
+//! come from `prog[pc]`, and addresses from `fp` plus those operands. Addresses, `pc`
+//! and `fp` are integers, and a pointer in memory is the word holding that integer.
 
 use primitives::field::F64;
 
@@ -15,6 +16,8 @@ pub(crate) struct Access {
     /// `y - x - 1` for this access's timestamp `y`: what the two range reads certify
     /// to be below `2^32`.
     pub(crate) gap: u32,
+    /// The read count of the `EXP` entry at the access's address.
+    pub(crate) count_exp: F64,
     /// The read counts of the two range-array entries the gap's chunks name.
     pub(crate) count_lo: F64,
     pub(crate) count_hi: F64,
@@ -25,15 +28,16 @@ impl Access {
     pub(crate) const EMPTY: Self = Self {
         x: F64::ZERO,
         gap: 0,
+        count_exp: F64::ZERO,
         count_lo: F64::ZERO,
         count_hi: F64::ZERO,
     };
 }
 
-/// `XOR64`, `MUL64`, `ADD_U64` or `MUL_U64` row: the three cells are `fp·g^{a,b,c}`.
+/// `XOR64`, `MUL64`, `ADD_U64` or `MUL_U64` row: the three cells are `fp + {a,b,c}`.
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
-    pub(crate) fp: u32, // frame base: address = fp + offset, operand = g^offset
+    pub(crate) fp: u32, // frame base: address = fp + offset
     /// The row's clock `g^{4·cycle}`, zero on a padding row.
     pub(crate) ts: F64,
     pub(crate) va: F64,
@@ -61,6 +65,8 @@ pub(crate) struct Drow {
     pub(crate) v2_old: F64,
     /// Pointer, local cell, store target.
     pub(crate) acc: [Access; 3],
+    /// The read count of the `EXP` entry at the pointer.
+    pub(crate) count_px: F64,
     pub(crate) bytecode_read: F64,
 }
 pub(crate) struct Jrow {
@@ -71,6 +77,9 @@ pub(crate) struct Jrow {
     pub(crate) dest: F64,
     pub(crate) frame: F64,
     pub(crate) acc: [Access; 3],
+    /// The read count of the `EXP` entry at the frame the jump loads, entry 0 when it
+    /// is not taken.
+    pub(crate) count_fpx: F64,
     pub(crate) bytecode_read: F64,
 }
 
@@ -99,6 +108,8 @@ pub(crate) struct Trace {
     /// Per cell, the timestamp `g^y` of its last access; `g^0` if never touched.
     pub(crate) mem_ts: Vec<F64>,
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
+    /// Final read counts of the `EXP` array's entries, one per memory cell.
+    pub(crate) exp_count: Vec<F64>,
     /// Final read counts of the two range arrays' entries.
     pub(crate) range_lo_count: Vec<F64>,
     pub(crate) range_hi_count: Vec<F64>,

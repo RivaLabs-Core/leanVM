@@ -5,32 +5,33 @@
 
 The bytecode (of $\nprog=2^{\kbc}$ instructions) is encoded as one $\K$-valued multilinear $P$ in $\kbc+4$ variables:
 \begin{enumerate}[itemsep=1pt,topsep=3pt]
-\item lay instruction $z$ out as $16$ slots of $\K$: the opcode in slot $3$, the operands and the immediate in slots $4,\dots,10$, and $0$ everywhere else.
+\item lay instruction $z$ out as $16$ slots of $\K$: the opcode in slot $3$, the operands and the immediate in slots $4,\dots,10$, the successor $\intk{z+1}$ in slot $11$, the return address $\intk{z+2}$ in slot $12$ if the instruction is a \texttt{DEREF} in \texttt{deref\_pc} mode, and $0$ everywhere else (\S\ref{sec:bytecode}). An offset $o$ is encoded as $\gen^{o}$, which is what lets a row add it to a base by a multiplication (\S\ref{sec:exp}); an immediate and a flag are encoded as themselves.
 \item read the resulting $2^{\kbc}\times16$ table as $P$, the low $\kbc$ variables indexing the instruction and the high four its slot, bits low first.
 \end{enumerate}
 \begin{center}
+\small\setlength{\tabcolsep}{4pt}
 \begin{tabular}{lllllllll}
 \hline
 Instruction & $3$ & $4$ & $5$ & $6$ & $7$ & $8$ & $9$ & $10$\\
 \hline
-\texttt{XOR64}         & $\opc{XOR64}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{MUL64}         & $\opc{MUL64}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{SET\_CONSTANT} & $\opc{SET}$ & $o$   & $k$ & $0$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{DEREF}         & $\opc{DRF}$ & $o_1$ & $o_2$ & $o_3$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$\\
-\texttt{JUMP}          & $\opc{JMP}$ & $o_c$ & $o_d$ & $o_f$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{BLAKE2S}        & $\opc{B2S}$  & $o_{m_0}$ & $o_{m_1}$ & $o_{m_2}$ & $o_{m_3}$ & $o_{\mathit{cv}}$ & $o_{\mathit{out}}$ & $o_{\md}$\\
-\texttt{ADD\_U64}       & $\opc{ADDU}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
-\texttt{MUL\_U64}       & $\opc{MULU}$ & $o_A$ & $o_B$ & $o_C$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{XOR64}         & $\opc{XOR64}$ & $\gen^{o_A}$ & $\gen^{o_B}$ & $\gen^{o_C}$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{MUL64}         & $\opc{MUL64}$ & $\gen^{o_A}$ & $\gen^{o_B}$ & $\gen^{o_C}$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{SET\_CONSTANT} & $\opc{SET}$ & $\gen^{o}$   & $k$ & $0$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{DEREF}         & $\opc{DRF}$ & $\gen^{o_1}$ & $\gen^{o_2}$ & $\gen^{o_3}$ & $f_{\pc}$ & $f_{\fp}$ & $0$ & $0$\\
+\texttt{JUMP}          & $\opc{JMP}$ & $\gen^{o_c}$ & $\gen^{o_d}$ & $\gen^{o_f}$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{BLAKE2S}        & $\opc{B2S}$  & $\gen^{o_{m_0}}$ & $\gen^{o_{m_1}}$ & $\gen^{o_{m_2}}$ & $\gen^{o_{m_3}}$ & $\gen^{o_{\mathit{cv}}}$ & $\gen^{o_{\mathit{out}}}$ & $\gen^{o_{\md}}$\\
+\texttt{ADD\_U64}       & $\opc{ADDU}$ & $\gen^{o_A}$ & $\gen^{o_B}$ & $\gen^{o_C}$ & $0$ & $0$ & $0$ & $0$\\
+\texttt{MUL\_U64}       & $\opc{MULU}$ & $\gen^{o_A}$ & $\gen^{o_B}$ & $\gen^{o_C}$ & $0$ & $0$ & $0$ & $0$\\
 \hline
 \end{tabular}
 \end{center}
-So $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand, and $P(z,0,0,0,0)=P(z,0,0,1,1)=0$.
+So $P(z,1,1,0,0)$ is instruction $z$'s opcode, $P(z,0,0,1,0)$ its first operand, $P(z,1,1,0,1)=\intk{z+1}$ its successor, and $P(z,0,0,0,0)=P(z,1,1,1,1)=0$.
 
 \subsection{Public input}\label{sec:e2e-pi}
 
-The public input is the first four memory cells $\mem[\gen^{0}],\dots,\mem[\gen^{3}]$, four words both parties know, which hold the same values before the run and after it (\S\ref{sec:vm}). The verifier samples $r=(r_0,r_1)\in\E^{2}$ and, with nothing sent, pools the two claims
+The public input is the first four memory cells $\mem[0],\dots,\mem[3]$, four words both parties know, which hold the same values before the run and after it (\S\ref{sec:vm}). The verifier samples $r=(r_0,r_1)\in\E^{2}$ and, with nothing sent, pools the two claims
 \[
-  \mle{\meminit}(r_0,r_1,0,\dots,0)\;\qeq\;\sum_{b\in\cube{2}}\eq(r,b)\,\mem[\gen^{\,b_0+2b_1}]\;\qeq\;\mle{\memfin}(r_0,r_1,0,\dots,0),
+  \mle{\meminit}(r_0,r_1,0,\dots,0)\;\qeq\;\sum_{b\in\cube{2}}\eq(r,b)\,\mem[b_0+2b_1]\;\qeq\;\mle{\memfin}(r_0,r_1,0,\dots,0),
 \]
 whose middle term, the multilinear extension of the four public words at $r$ ($r_0$ on the low bit), the verifier computes itself. By Fact~\ref{fact:eq} each side is the same sum over the four committed cells, so a mismatch leaves a nonzero multilinear polynomial in $r$, of total degree at most two, and each claim holds with probability at most $2/|\E|$ (Lemma~\ref{lem:sz}). The PCS opening binds the claims to the committed memories. The one on $\meminit$ is what makes the four words an input; the one on $\memfin$, an output. Every other cell of $\meminit$ is the prover's to choose (\S\ref{sec:vm}).
 
@@ -38,7 +39,7 @@ whose middle term, the multilinear extension of the four public words at $r$ ($r
 
 A table is proven over a power-of-two number of rows. The prover reaches one with \emph{padding rows}, whose clock is $0$. The bytecode carries, for each table and each of a few sizes, a block of that many instructions of the table's opcode followed by a \texttt{JUMP} back to the block's first instruction, which no program code jumps into. A padding row is a row at one of those instructions. Since $0\cdot\gen^{s}=0$, the states pushed and pulled around a block cancel among themselves, for any number of traversals: these are the closed walks of Proposition~\ref{prop:walk}, and by Corollary~\ref{cor:clock} they are the only ones. A traversal of the block of size $n$ adds $n$ rows to its table and one to \texttt{JUMP}'s, so every table can be brought to its next power of two exactly.
 
-A padding row's memory accesses cost nothing either. The gap check \eqref{eq:gap} forces $\tsprev=0$ on them, so an access pulls $\tup{\dsep{MEM},a,0,v_{\mathrm{old}}}$ and pushes $\tup{\dsep{MEM},a,0,v_{\mathrm{new}}}$; the prover takes $v_{\mathrm{old}}=v_{\mathrm{new}}$ and the two cancel, whatever the address and the value. Its reads of the bytecode and of the range arrays are ordinary ones, with $\glo=\gen$ and $\ghi=1$, the two arrays' first entries. None of this bears on soundness: by Theorem~\ref{thm:rwmem} a tuple whose timestamp is zero meets no tuple of the run, so the padding rows constrain nothing and are constrained by nothing, which is what a padding row should be. The zero of $\K$, the one element that is not a power of $\gen$, plays the part of an \emph{is-real} selector, at the cost of no column and no constraint.
+A padding row's memory accesses cost nothing either. The gap check \eqref{eq:gap} forces $\tsprev=0$ on them, so an access pulls $\tup{\dsep{MEM},a,0,v_{\mathrm{old}}}$ and pushes $\tup{\dsep{MEM},a,0,v_{\mathrm{new}}}$; the prover takes $v_{\mathrm{old}}=v_{\mathrm{new}}$ and the two cancel, whatever the address and the value. Its reads of the bytecode, of the range arrays and of the exponentiation array are ordinary ones, with $\glo=\gen$ and $\ghi=1$, the two range arrays' first entries; the prover sets it in frame $0$ with a null pointer, so the addresses it reads off $\expa$ are its operands. None of this bears on soundness: by Theorem~\ref{thm:rwmem} a tuple whose timestamp is zero meets no tuple of the run, so the padding rows constrain nothing and are constrained by nothing, which is what a padding row should be. The zero of $\K$, the one element that is not a power of $\gen$, plays the part of an \emph{is-real} selector, at the cost of no column and no constraint.
 
 \subsection{Fiat Shamir instantiation}\label{sec:e2e-fiat-shamir}
 
@@ -56,7 +57,7 @@ The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the pub
 \paragraph{Commitment.}
 
 \begin{enumerate}
-\item \textbf{Prover.} Stack (\S\ref{sec:stacking}) every column, the two memories $\meminit$ and $\memfin$, the final timestamps $\tsfin$ (\S\ref{sec:memchan}), the three finalize counts (bytecode and the two range arrays, \S\ref{sec:rangecheck}), and Flock's three packed witnesses, $\qflock$ (\S\ref{sec:tab-blake2s}), $q_{\mathrm{add}}$ and $q_{\mathrm{mul}}$ (\S\ref{sec:tab-u64}), into $q$ and sends its commitment (Annex~\ref{annex:pcs}).
+\item \textbf{Prover.} Stack (\S\ref{sec:stacking}) every column, the two memories $\meminit$ and $\memfin$, the final timestamps $\tsfin$ (\S\ref{sec:memchan}), the four finalize counts (bytecode, the two range arrays, \S\ref{sec:rangecheck}, and the exponentiation array, \S\ref{sec:exp}), and Flock's three packed witnesses, $\qflock$ (\S\ref{sec:tab-blake2s}), $q_{\mathrm{add}}$ and $q_{\mathrm{mul}}$ (\S\ref{sec:tab-u64}), into $q$ and sends its commitment (Annex~\ref{annex:pcs}).
 \item \textbf{Verifier.} Receives the commitment to $q$.
 \end{enumerate}
 
@@ -66,7 +67,7 @@ The Fiat-Shamir initial state (\S\ref{sec:e2e-fiat-shamir}) is seeded by the pub
 \item \textbf{Verifier.} Samples and sends the fingerprint challenge $\alpha\in\E^{4}$ and the multiset challenge $\beta\in\E$ (\S\ref{sec:gp}).
 \item \textbf{Prover.} Forms the push, pull, and \emph{count} leaf vectors (\S\ref{sec:leafstack}; the count leaves are the count columns themselves, \S\ref{sec:lookup}), stacked into blocks and padded with $1$s. Sends one bus root $R$, then the count root $R_c$.
 \item \textbf{Prover \& Verifier.} Run the one batched GKR (\S\ref{sec:gkr}) over all three trees. For the bus, the verifier checks each side's product against $R$; one $R$ for both sides is the balance check (\S\ref{sec:gp}). For the counts it checks $R_c\neq0$ (no read self-cancels, \S\ref{sec:lookup}). The pass yields three leaf claims $\widetilde V^{s}_0(\zeta)$ at one shared $\zeta$.
-\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms every public part itself: the block selectors, the constant entries, the index and geometric columns (\S\ref{sec:idxcol}), and the program's whole share of the two bytecode blocks, one evaluation at $(\zeta,\alpha)$ (\S\ref{sec:e2e-bc}). Five blocks per side belong to no table: the state boundary, plus each array's (memory, bytecode, the two range arrays) seed (push side) or finalization (pull side). For their committed columns the prover sends one evaluation each, entering the claim pool. Every other block belongs to a table, and is discharged by the table sumcheck (\S\ref{sec:air}).
+\item \textbf{Prover \& Verifier.} Decompose each leaf claim (\S\ref{sec:leafstack}). The verifier forms every public part itself: the block selectors, the constant entries, the index and geometric columns (\S\ref{sec:idxcol}), and the program's whole share of the two bytecode blocks, one evaluation at $(\zeta,\alpha)$ (\S\ref{sec:e2e-bc}). Six blocks per side belong to no table: the state boundary, plus each array's (memory, bytecode, the two range arrays, the exponentiation array) seed (push side) or finalization (pull side). For their committed columns the prover sends one evaluation each, entering the claim pool. Every other block belongs to a table, and is discharged by the table sumcheck (\S\ref{sec:air}).
 \end{enumerate}
 
 \paragraph{Table sumcheck.} One run proves the eight tables' constraints together with their share of the bus (\S\ref{sec:air}).

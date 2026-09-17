@@ -4,13 +4,16 @@
 //! and its degree-2 constraints. Column indices here are *local* (`0..n_committed_columns`);
 //! `cpu`'s schema offsets them to global witness columns.
 //!
-//! Every column is `K`-valued (`F64`), and so is every memory cell. Nothing
-//! a row DERIVES is a column at all: an operand address `fp·o`, an arithmetic
-//! result, the `DEREF` store, the `JUMP` successors are each written out as the
-//! degree-2 bus coordinate that carries them (§sec:m3). What a table does commit
-//! per memory access is the argument that orders it in time (§sec:memchan): the
-//! timestamp `X` of the cell's previous access and the two chunks of the gap to
-//! the row's own, each a read of a range array. After the round a table joins the
+//! Every column is `K`-valued (`F64`), and so is every memory cell. Little a row
+//! DERIVES is a column: an arithmetic result, the `DEREF` store, the `JUMP`
+//! successors are each written out as the degree-2 bus coordinate that carries them
+//! (§sec:m3). What a table does commit per memory access is its address and the
+//! argument that orders it in time. Addresses are integers, `fp + o`, and integer
+//! addition is no field operation, so the address `A` is a column, tied to its two
+//! terms by one read of the `EXP` array, whose entry `A` is `g^A`: the read's value
+//! is the product `g^fp·g^o` (§sec:exp). Then (§sec:memchan) the timestamp `X` of
+//! the cell's previous access and the two chunks of the gap to the row's own, each a
+//! read of a range array. After the round a table joins the
 //! batch its columns are `E`-valued, which is what `eval_constraint` takes.
 
 use crate::arith_flock::Op as U64Op;
@@ -74,12 +77,18 @@ const fn g_pow(k: usize) -> F64 {
     acc
 }
 
-// Domain separators (coordinate 0 of every bus tuple): the g-powers g^0 .. g^4.
+// Domain separators (coordinate 0 of every bus tuple): the g-powers g^0 .. g^5.
 pub(crate) const SEP_STATE: F64 = g_pow(0);
 pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 pub(crate) const SEP_RANGE_LO: F64 = g_pow(3);
 pub(crate) const SEP_RANGE_HI: F64 = g_pow(4);
+pub(crate) const SEP_EXP: F64 = g_pow(5);
+
+/// Where a bytecode tuple carries the instruction's successor `pc + 1`, and, for a
+/// `DEREF` storing its return address, `pc + 2`: past the opcode and the seven
+/// operand slots (§sec:bytecode).
+const BYTECODE_SUCC_SLOT: usize = 11;
 
 /// Each range array holds `2^RANGE_LOG` entries, so a gap is below `2^(2·RANGE_LOG)`.
 pub const RANGE_LOG: usize = 16;
@@ -114,8 +123,9 @@ pub(crate) const OP_ADD_U64: F64 = g_pow(6);
 pub(crate) const OP_MUL_U64: F64 = g_pow(7);
 
 /// Where a table keeps its `n` accesses' columns, grouped by kind so that each
-/// kind is contiguous: the previous timestamps `X`, the gap's low and high chunks,
-/// then the two range reads' counts.
+/// kind is contiguous: the addresses `A`, the previous timestamps `X`, the gap's low
+/// and high chunks, then the counts of the three reads (`EXP`, then the two range
+/// arrays).
 #[derive(Clone, Copy)]
 pub(crate) struct Acc {
     base: usize,
@@ -126,38 +136,68 @@ impl Acc {
     const fn new(base: usize, n: usize) -> Self {
         Self { base, n }
     }
-    const fn x(&self, i: usize) -> usize {
+    const fn a(&self, i: usize) -> usize {
         self.base + i
     }
-    const fn lo(&self, i: usize) -> usize {
+    const fn x(&self, i: usize) -> usize {
         self.base + self.n + i
     }
-    const fn hi(&self, i: usize) -> usize {
+    const fn lo(&self, i: usize) -> usize {
         self.base + 2 * self.n + i
     }
-    const fn count_lo(&self, i: usize) -> usize {
+    const fn hi(&self, i: usize) -> usize {
         self.base + 3 * self.n + i
     }
-    const fn count_hi(&self, i: usize) -> usize {
+    const fn count_exp(&self, i: usize) -> usize {
         self.base + 4 * self.n + i
     }
+    const fn count_lo(&self, i: usize) -> usize {
+        self.base + 5 * self.n + i
+    }
+    const fn count_hi(&self, i: usize) -> usize {
+        self.base + 6 * self.n + i
+    }
     const fn end(&self) -> usize {
-        self.base + 5 * self.n
+        self.base + 7 * self.n
     }
 }
 
-/// A table's count columns, in column order: its accesses' range counts, low chunks
-/// then high, then its bytecode count.
+/// A table's count columns, in column order: its accesses' three counts each (they
+/// end `acc`), then whatever columns follow `acc`, which are counts up to the
+/// bytecode's, the last.
 const fn count_columns<const M: usize>(acc: Acc, rbc: usize) -> [usize; M] {
-    assert!(M == 2 * acc.n + 1);
-    let mut out = [rbc; M];
+    assert!(M == rbc + 1 - acc.count_exp(0));
+    let mut out = [0; M];
     let mut i = 0;
-    while i < 2 * acc.n {
-        out[i] = acc.count_lo(0) + i;
+    while i < M {
+        out[i] = acc.count_exp(0) + i;
         i += 1;
     }
     out
 }
+
+/// The columns every table starts with: the state it pulls, `pc`, the frame pointer
+/// as the integer `fp` and as its g-power `fpx`, and the clock, then the successor
+/// `npc = pc + 1` its bytecode read returns.
+#[derive(Clone, Copy)]
+pub(crate) struct State {
+    pc: usize,
+    fp: usize,
+    fpx: usize,
+    ts: usize,
+    npc: usize,
+}
+
+/// Every table lays those five out first, in this order.
+pub(crate) const STATE: State = State {
+    pc: 0,
+    fp: 1,
+    fpx: 2,
+    ts: 3,
+    npc: 4,
+};
+/// The first column after [`STATE`].
+const AFTER_STATE: usize = 5;
 
 // ---- flush builder -----------------------------------------------------------
 
@@ -180,54 +220,74 @@ impl FlushBuilder {
         self.pull.push(pull);
     }
 
-    /// Fall-through state step: the next pc is `g·pc`, fp unchanged, the clock
-    /// advanced by `stride`.
-    pub(crate) fn state_step(&mut self, pc: usize, fp: usize, ts: usize, stride: u32) {
-        self.state_derived(pc, fp, ts, stride, GCol(pc, 1), Col(fp));
+    /// Fall-through state step: the next pc is the successor the bytecode read
+    /// returned, the frame unchanged, the clock advanced by `stride`.
+    pub(crate) fn state_step(&mut self, st: State, stride: u32) {
+        self.state_derived(st, stride, Col(st.npc), Col(st.fp), Col(st.fpx));
     }
 
     /// Explicit state transition (JUMP): push the next state, which the row
-    /// DERIVES from its columns rather than committing, and pull `(pc, fp, ts)`.
-    pub(crate) fn state_derived(&mut self, pc: usize, fp: usize, ts: usize, stride: u32, npc: Coord, nfp: Coord) {
+    /// DERIVES from its columns rather than committing, and pull the current one.
+    /// The frame pointer rides twice, as the integer and as its g-power (§sec:exp).
+    pub(crate) fn state_derived(&mut self, st: State, stride: u32, npc: Coord, nfp: Coord, nfpx: Coord) {
         self.pair(
-            vec![Const(SEP_STATE), npc, nfp, GCol(ts, stride)],
-            vec![Const(SEP_STATE), Col(pc), Col(fp), Col(ts)],
+            vec![Const(SEP_STATE), npc, nfp, nfpx, GCol(st.ts, stride)],
+            vec![Const(SEP_STATE), Col(st.pc), Col(st.fp), Col(st.fpx), Col(st.ts)],
         );
     }
 
-    /// Bytecode read at `pc`: the program tuple (opcode + seven operand slots),
-    /// with the per-pc execution count advanced by ×g on the push side.
-    pub(crate) fn bytecode(&mut self, pc: usize, count: usize, opcode: F64, operands: &[Coord]) {
-        let mut push = vec![Const(SEP_BYTECODE), Col(pc), GCol(count, 1), Const(opcode)];
-        let mut pull = vec![Const(SEP_BYTECODE), Col(pc), Col(count), Const(opcode)];
-        push.extend_from_slice(operands);
-        pull.extend_from_slice(operands);
-        self.pair(push, pull);
+    /// Bytecode read at `pc`: the program tuple, which is the opcode, the operand
+    /// slots (the unused ones zero), then the successor `pc + 1` and, where `ret` is
+    /// given, the return address `pc + 2`; the per-pc execution count is advanced by
+    /// ×g on the push side.
+    pub(crate) fn bytecode(&mut self, st: State, count: usize, opcode: F64, operands: &[Coord], ret: Option<usize>) {
+        let mut tuple = vec![Const(SEP_BYTECODE), Col(st.pc), Col(count), Const(opcode)];
+        tuple.extend_from_slice(operands);
+        tuple.resize(BYTECODE_SUCC_SLOT, Const(F64::ZERO));
+        tuple.push(Col(st.npc));
+        tuple.extend(ret.map(Col));
+        self.counted(tuple, count);
     }
 
-    /// Access `i` of the row, at clock slot `slot` (§sec:memchan): pull the cell as
-    /// its previous access left it, `(X, old)`, push it back as `(g^{slot}·ts, new)`,
-    /// and read the gap's two chunks off the range arrays. A value the row DERIVES
-    /// rather than commits is passed as its form (§sec:m3).
-    pub(crate) fn memory(&mut self, addr: Coord, ts: usize, acc: Acc, i: usize, slot: u32, old: Coord, new: Coord) {
+    /// A read of a lookup array (§sec:lookup): `tuple` as pulled, `tuple[2]` being
+    /// its count column `count`, pushed back with the count advanced by ×g.
+    fn counted(&mut self, tuple: Vec<Coord>, count: usize) {
+        let mut push = tuple.clone();
+        push[2] = GCol(count, 1);
+        self.pair(push, tuple);
+    }
+
+    /// One read of the `EXP` array (§sec:exp): entry `index` is `g^index`, so this
+    /// asserts `value = g^index` with `index` a valid address.
+    pub(crate) fn exp(&mut self, index: Coord, count: usize, value: Coord) {
+        self.counted(vec![Const(SEP_EXP), index, Col(count), value], count);
+    }
+
+    /// Access `i` of the row, at clock slot `slot` (§sec:memchan), to the cell whose
+    /// address has the g-power `addr_exp`, a product such as `g^fp·g^o`: read the
+    /// integer address `A` off `EXP`, pull the cell as its previous access left it,
+    /// `(X, old)`, push it back as `(g^{slot}·ts, new)`, and read the gap's two chunks
+    /// off the range arrays. A value the row DERIVES rather than commits is passed as
+    /// its form (§sec:m3).
+    pub(crate) fn memory(&mut self, addr_exp: Coord, ts: usize, acc: Acc, i: usize, slot: u32, old: Coord, new: Coord) {
+        self.exp(Col(acc.a(i)), acc.count_exp(i), addr_exp);
         self.pair(
-            vec![Const(SEP_MEM), addr.clone(), GCol(ts, slot), new],
-            vec![Const(SEP_MEM), addr, Col(acc.x(i)), old],
+            vec![Const(SEP_MEM), Col(acc.a(i)), GCol(ts, slot), new],
+            vec![Const(SEP_MEM), Col(acc.a(i)), Col(acc.x(i)), old],
         );
-        for (sep, chunk, count) in [
-            (SEP_RANGE_LO, acc.lo(i), acc.count_lo(i)),
-            (SEP_RANGE_HI, acc.hi(i), acc.count_hi(i)),
-        ] {
-            self.pair(
-                vec![Const(sep), Col(chunk), GCol(count, 1)],
-                vec![Const(sep), Col(chunk), Col(count)],
-            );
-        }
+        self.counted(
+            vec![Const(SEP_RANGE_LO), Col(acc.lo(i)), Col(acc.count_lo(i))],
+            acc.count_lo(i),
+        );
+        self.counted(
+            vec![Const(SEP_RANGE_HI), Col(acc.hi(i)), Col(acc.count_hi(i))],
+            acc.count_hi(i),
+        );
     }
 
     /// A read: [`Self::memory`] leaving the value as it was.
-    pub(crate) fn read(&mut self, addr: Coord, ts: usize, acc: Acc, i: usize, slot: u32, val: Coord) {
-        self.memory(addr, ts, acc, i, slot, val.clone(), val);
+    pub(crate) fn read(&mut self, addr_exp: Coord, ts: usize, acc: Acc, i: usize, slot: u32, val: Coord) {
+        self.memory(addr_exp, ts, acc, i, slot, val.clone(), val);
     }
 }
 
@@ -291,6 +351,12 @@ impl<'a> FillCtx<'a> {
         }
     }
 
+    /// The three cells of an arithmetic row.
+    fn ternary_cells(&self, pc: u32, fp: u32) -> [u32; 3] {
+        let (a, b, c) = self.ternary_operands(pc);
+        [fp + a, fp + b, fp + c]
+    }
+
     /// Write local column `at`: `f` over the trace rows.
     fn col<R: Sync>(&self, out: &mut [ColumnOut], rows: &[R], at: usize, f: impl Fn(&R) -> F64 + Sync) {
         self.cols(out, rows, at, |r| [f(r)]);
@@ -309,16 +375,26 @@ impl<'a> FillCtx<'a> {
         self.cols_at(out, rows.len(), at, |i| f(&rows[i]));
     }
 
-    /// The `5·N` columns of a table's accesses.
+    /// The five state columns of [`STATE`]. A padding row sits in frame 0 at clock 0.
+    fn state<R: Sync>(&self, out: &mut [ColumnOut], rows: &[R], f: impl Fn(&R) -> (u32, u32, F64) + Sync) {
+        self.cols(out, rows, STATE.pc, |r| {
+            let (pc, fp, ts) = f(r);
+            [F64(pc as u64), F64(fp as u64), self.g_at(fp), ts, F64(pc as u64 + 1)]
+        });
+    }
+
+    /// The `7·N` columns of a table's accesses, `addrs` giving each one's cell.
     fn accesses<const N: usize, R: Sync>(
         &self,
         out: &mut [ColumnOut],
         rows: &[R],
         acc: Acc,
+        addrs: impl Fn(&R) -> [u32; N] + Sync,
         f: impl Fn(&R) -> &[Access; N] + Sync,
     ) {
         assert_eq!(acc.n, N);
         let mask = (1u32 << RANGE_LOG) - 1;
+        self.cols(out, rows, acc.a(0), |r| addrs(r).map(|a| F64(a as u64)));
         self.cols(out, rows, acc.x(0), |r| f(r).map(|a| a.x));
         self.cols(out, rows, acc.lo(0), |r| {
             f(r).map(|a| self.range_lo[(a.gap & mask) as usize])
@@ -326,6 +402,7 @@ impl<'a> FillCtx<'a> {
         self.cols(out, rows, acc.hi(0), |r| {
             f(r).map(|a| self.range_hi[(a.gap >> RANGE_LOG) as usize])
         });
+        self.cols(out, rows, acc.count_exp(0), |r| f(r).map(|a| a.count_exp));
         self.cols(out, rows, acc.count_lo(0), |r| f(r).map(|a| a.count_lo));
         self.cols(out, rows, acc.count_hi(0), |r| f(r).map(|a| a.count_hi));
     }
@@ -526,18 +603,19 @@ struct Arith64 {
 }
 
 mod arith64 {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
-    pub const VA: usize = 5;
-    pub const VB: usize = 6;
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FPX: usize = STATE.fpx;
+    // The operands, as the g-powers `g^o` the bytecode carries them as.
+    pub const OA: usize = AFTER_STATE;
+    pub const OB: usize = OA + 1;
+    pub const OC: usize = OA + 2;
+    pub const VA: usize = OA + 3;
+    pub const VB: usize = OA + 4;
     // What the destination held before the write.
-    pub const VC_OLD: usize = 7;
-    pub const TS: usize = 8;
-    pub const ACC: Acc = Acc::new(9, 3);
+    pub const VC_OLD: usize = OA + 5;
+    pub const ACC: Acc = Acc::new(OA + 6, 3);
     pub const RBC: usize = ACC.end();
     pub const N: usize = RBC + 1;
     pub const SLOTS: [u32; 3] = [0, 1, 2];
@@ -554,7 +632,7 @@ impl Table for Arith64 {
         arith64::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 7] = count_columns(arith64::ACC, arith64::RBC);
+        const COUNTS: [usize; 10] = count_columns(arith64::ACC, arith64::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -571,21 +649,22 @@ impl Table for Arith64 {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use arith64::*;
-        f.state_step(PC, FP, TS, CLOCK_STRIDE);
+        f.state_step(STATE, CLOCK_STRIDE);
         f.bytecode(
-            PC,
+            STATE,
             RBC,
             if self.is_xor { OP_XOR64 } else { OP_MUL64 },
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+            &[Col(OA), Col(OB), Col(OC)],
+            None,
         );
-        f.read(Prod(FP, OA, 0), TS, ACC, 0, SLOTS[0], Col(VA));
-        f.read(Prod(FP, OB, 0), TS, ACC, 1, SLOTS[1], Col(VB));
+        f.read(Prod(FPX, OA, 0), TS, ACC, 0, SLOTS[0], Col(VA));
+        f.read(Prod(FPX, OB, 0), TS, ACC, 1, SLOTS[1], Col(VB));
         let result = if self.is_xor {
             Coord::Sum(vec![Col(VA), Col(VB)])
         } else {
             Prod(VA, VB, 0)
         };
-        f.memory(Prod(FP, OC, 0), TS, ACC, 2, SLOTS[2], Col(VC_OLD), result);
+        f.memory(Prod(FPX, OC, 0), TS, ACC, 2, SLOTS[2], Col(VC_OLD), result);
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith64::*;
@@ -594,13 +673,12 @@ impl Table for Arith64 {
         } else {
             &ctx.trace.mul64
         };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
-            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), r.va, r.vb, r.vc_old, r.ts]
+            [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), r.va, r.vb, r.vc_old]
         });
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(out, rows, ACC, |r| ctx.ternary_cells(r.pc, r.fp), |r| &r.acc);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -618,18 +696,18 @@ struct ArithU64 {
 }
 
 pub(crate) mod arith_u64 {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OA: usize = 2;
-    pub const OB: usize = 3;
-    pub const OC: usize = 4;
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FPX: usize = STATE.fpx;
+    pub const OA: usize = AFTER_STATE;
+    pub const OB: usize = OA + 1;
+    pub const OC: usize = OA + 2;
     // The two operands and the result, in the packed witness's slot order.
-    pub const VA: usize = 5;
+    pub const VA: usize = OA + 3;
     // What the destination held before the write.
-    pub const VC_OLD: usize = 8;
-    pub const TS: usize = 9;
-    pub const ACC: Acc = Acc::new(10, 3);
+    pub const VC_OLD: usize = VA + 3;
+    pub const ACC: Acc = Acc::new(VC_OLD + 1, 3);
     pub const RBC: usize = ACC.end();
     pub const N: usize = RBC + 1;
     pub const SLOTS: [u32; 3] = [0, 1, 2];
@@ -650,7 +728,7 @@ impl Table for ArithU64 {
         arith_u64::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 7] = count_columns(arith_u64::ACC, arith_u64::RBC);
+        const COUNTS: [usize; 10] = count_columns(arith_u64::ACC, arith_u64::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -671,16 +749,11 @@ impl Table for ArithU64 {
             U64Op::Add => OP_ADD_U64,
             U64Op::Mul => OP_MUL_U64,
         };
-        f.state_step(PC, FP, TS, CLOCK_STRIDE);
-        f.bytecode(
-            PC,
-            RBC,
-            opcode,
-            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        f.read(Prod(FP, OA, 0), TS, ACC, 0, SLOTS[0], Col(VA));
-        f.read(Prod(FP, OB, 0), TS, ACC, 1, SLOTS[1], Col(VA + 1));
-        f.memory(Prod(FP, OC, 0), TS, ACC, 2, SLOTS[2], Col(VC_OLD), Col(VA + 2));
+        f.state_step(STATE, CLOCK_STRIDE);
+        f.bytecode(STATE, RBC, opcode, &[Col(OA), Col(OB), Col(OC)], None);
+        f.read(Prod(FPX, OA, 0), TS, ACC, 0, SLOTS[0], Col(VA));
+        f.read(Prod(FPX, OB, 0), TS, ACC, 1, SLOTS[1], Col(VA + 1));
+        f.memory(Prod(FPX, OC, 0), TS, ACC, 2, SLOTS[2], Col(VC_OLD), Col(VA + 2));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use arith_u64::*;
@@ -688,8 +761,7 @@ impl Table for ArithU64 {
             U64Op::Add => &ctx.trace.add_u64,
             U64Op::Mul => &ctx.trace.mul_u64,
         };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
             [
@@ -700,10 +772,9 @@ impl Table for ArithU64 {
                 r.vb,
                 self.op.apply(r.va, r.vb),
                 r.vc_old,
-                r.ts,
             ]
         });
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(out, rows, ACC, |r| ctx.ternary_cells(r.pc, r.fp), |r| &r.acc);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -713,15 +784,15 @@ impl Table for ArithU64 {
 struct SetTable;
 
 mod set {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const O: usize = 2;
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FPX: usize = STATE.fpx;
+    pub const O: usize = AFTER_STATE;
     // The stored immediate rides the bytecode's second operand slot.
-    pub const K: usize = 3;
-    pub const V_OLD: usize = 4;
-    pub const TS: usize = 5;
-    pub const ACC: Acc = Acc::new(6, 1);
+    pub const K: usize = O + 1;
+    pub const V_OLD: usize = O + 2;
+    pub const ACC: Acc = Acc::new(O + 3, 1);
     pub const RBC: usize = ACC.end();
     pub const N: usize = RBC + 1;
     pub const SLOTS: [u32; 1] = [0];
@@ -738,7 +809,7 @@ impl Table for SetTable {
         set::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 3] = count_columns(set::ACC, set::RBC);
+        const COUNTS: [usize; 4] = count_columns(set::ACC, set::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -755,14 +826,9 @@ impl Table for SetTable {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use set::*;
-        f.state_step(PC, FP, TS, CLOCK_STRIDE);
-        f.bytecode(
-            PC,
-            RBC,
-            OP_SET,
-            &[Col(O), Col(K), Const(F64::ZERO), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        f.memory(Prod(FP, O, 0), TS, ACC, 0, SLOTS[0], Col(V_OLD), Col(K));
+        f.state_step(STATE, CLOCK_STRIDE);
+        f.bytecode(STATE, RBC, OP_SET, &[Col(O), Col(K)], None);
+        f.memory(Prod(FPX, O, 0), TS, ACC, 0, SLOTS[0], Col(V_OLD), Col(K));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use set::*;
@@ -771,13 +837,12 @@ impl Table for SetTable {
             Op::Set { o, k } => (o, k),
             op => unreachable!("a SET row's pc {} holds {op:?}", r.pc),
         };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
         ctx.cols(out, rows, O, |r| {
             let (o, k) = imm(r);
-            [ctx.g_at(o), k, r.v_old, r.ts]
+            [ctx.g_at(o), k, r.v_old]
         });
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(out, rows, ACC, |r| [r.fp + imm(r).0], |r| &r.acc);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -787,39 +852,47 @@ impl Table for SetTable {
 struct DerefTable;
 
 mod deref {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const O1: usize = 2;
-    pub const O2: usize = 3;
-    pub const O3: usize = 4;
-    pub const FPC: usize = 5;
-    pub const FFP: usize = 6;
-    // The pointer, which forms the pointer-relative address `p·o2` on the bus.
-    pub const P: usize = 7;
-    // The local cell. The stored word is DERIVED from it, the two flags, `pc` and
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FP: usize = STATE.fp;
+    pub const FPX: usize = STATE.fpx;
+    pub const O1: usize = AFTER_STATE;
+    pub const O2: usize = O1 + 1;
+    pub const O3: usize = O1 + 2;
+    pub const FPC: usize = O1 + 3;
+    pub const FFP: usize = O1 + 4;
+    // The return address `pc + 2` the bytecode read returns in `deref_pc` mode, zero
+    // in the other two.
+    pub const RET: usize = O1 + 5;
+    // The pointer, an integer, and its g-power, read off `EXP`: the target's address
+    // is `p + o2`, so its g-power is `px·g^o2`.
+    pub const P: usize = O1 + 6;
+    pub const PX: usize = O1 + 7;
+    // The local cell. The stored word is DERIVED from it, the two flags, `ret` and
     // `fp`, so it is no column.
-    pub const V3: usize = 8;
+    pub const V3: usize = O1 + 8;
     // What the store target held before the write.
-    pub const V2_OLD: usize = 9;
-    pub const TS: usize = 10;
+    pub const V2_OLD: usize = O1 + 9;
     /// Pointer, local cell, store target: the two reads before the write.
-    pub const ACC: Acc = Acc::new(11, 3);
-    pub const RBC: usize = ACC.end();
+    pub const ACC: Acc = Acc::new(O1 + 10, 3);
+    // The count of the pointer's own `EXP` read.
+    pub const COUNT_PX: usize = ACC.end();
+    pub const RBC: usize = COUNT_PX + 1;
     pub const N: usize = RBC + 1;
     pub const SLOTS: [u32; 3] = [0, 1, 2];
 }
 
-/// The stored word as a form: `v_2 = (1+f_pc+f_fp)·v_3 + f_pc·(g²·pc) + f_fp·fp`, the
-/// flag-selected source of §sec:tab-deref. The `pc` source is the virtual return
-/// target `g²·pc`, a free `×g²` on the product coordinate.
+/// The stored word as a form: `v_2 = (1+f_pc+f_fp)·v_3 + ret + f_fp·fp`, the
+/// flag-selected source of §sec:tab-deref. The return target `ret = pc + 2` comes with
+/// the bytecode read, already zero outside `deref_pc` mode.
 fn deref_store() -> Coord {
     use deref::*;
     Coord::Sum(vec![
         Col(V3),
         Prod(FPC, V3, 0),
         Prod(FFP, V3, 0),
-        Prod(FPC, PC, 2),
+        Col(RET),
         Prod(FFP, FP, 0),
     ])
 }
@@ -835,7 +908,7 @@ impl Table for DerefTable {
         deref::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 7] = count_columns(deref::ACC, deref::RBC);
+        const COUNTS: [usize; 11] = count_columns(deref::ACC, deref::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -852,14 +925,22 @@ impl Table for DerefTable {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use deref::*;
-        f.state_step(PC, FP, TS, CLOCK_STRIDE);
-        f.bytecode(PC, RBC, OP_DEREF, &[Col(O1), Col(O2), Col(O3), Col(FPC), Col(FFP)]);
+        f.state_step(STATE, CLOCK_STRIDE);
+        f.bytecode(
+            STATE,
+            RBC,
+            OP_DEREF,
+            &[Col(O1), Col(O2), Col(O3), Col(FPC), Col(FFP)],
+            Some(RET),
+        );
         // The pointer cell and the local cell are frame-relative reads; the store
-        // target is pointer-relative, so its address is `p·o2`, and what it is
-        // written with is the flag-selected source rather than a column.
-        f.read(Prod(FP, O1, 0), TS, ACC, 0, SLOTS[0], Col(P));
-        f.read(Prod(FP, O3, 0), TS, ACC, 1, SLOTS[1], Col(V3));
-        f.memory(Prod(P, O2, 0), TS, ACC, 2, SLOTS[2], Col(V2_OLD), deref_store());
+        // target is pointer-relative, `p + o2`, so the pointer's g-power is read off
+        // `EXP` first, and what the target is written with is the flag-selected source
+        // rather than a column.
+        f.read(Prod(FPX, O1, 0), TS, ACC, 0, SLOTS[0], Col(P));
+        f.read(Prod(FPX, O3, 0), TS, ACC, 1, SLOTS[1], Col(V3));
+        f.exp(Col(P), COUNT_PX, Col(PX));
+        f.memory(Prod(PX, O2, 0), TS, ACC, 2, SLOTS[2], Col(V2_OLD), deref_store());
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use deref::*;
@@ -868,9 +949,9 @@ impl Table for DerefTable {
             Op::Deref { o1, o2, o3, mode } => (o1, o2, o3, mode),
             op => unreachable!("a DEREF row's pc {} holds {op:?}", r.pc),
         };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
-        // The three offsets and the two mode flags follow from ONE bytecode decode.
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
+        // The three offsets, the two mode flags and the return address follow from ONE
+        // bytecode decode.
         ctx.cols(out, rows, O1, |r| {
             let (o1, o2, o3, mode) = ins(r);
             [
@@ -879,13 +960,24 @@ impl Table for DerefTable {
                 ctx.g_at(o3),
                 mode.f_pc(),
                 mode.f_fp(),
+                mode.ret(r.pc),
                 r.p,
+                ctx.g_at(r.p.0 as u32),
                 r.v3,
                 r.v2_old,
-                r.ts,
             ]
         });
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(
+            out,
+            rows,
+            ACC,
+            |r| {
+                let (o1, o2, o3, _) = ins(r);
+                [r.fp + o1, r.fp + o3, r.p.0 as u32 + o2]
+            },
+            |r| &r.acc,
+        );
+        ctx.col(out, rows, COUNT_PX, |r| r.count_px);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -895,22 +987,29 @@ impl Table for DerefTable {
 struct JumpTable;
 
 mod jump {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const OC: usize = 2;
-    pub const OD: usize = 3;
-    pub const OF: usize = 4;
-    pub const V_COND: usize = 5;
-    pub const V_PC: usize = 6;
-    pub const V_FP: usize = 7;
-    pub const TS: usize = 8;
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FP: usize = STATE.fp;
+    pub const FPX: usize = STATE.fpx;
+    pub const NPC: usize = STATE.npc;
+    pub const OC: usize = AFTER_STATE;
+    pub const OD: usize = OC + 1;
+    pub const OF: usize = OC + 2;
+    pub const V_COND: usize = OC + 3;
+    pub const V_PC: usize = OC + 4;
+    pub const V_FP: usize = OC + 5;
+    // The g-power of the frame the jump loads, read off `EXP`; `g^0` when it loads
+    // none.
+    pub const V_FPX: usize = OC + 6;
     // Local witness columns (committed, never flushed): the inverse hint `w = c⁻¹`
     // and the taken indicator `b = [c ≠ 0]` it certifies.
-    pub const W: usize = 9;
-    pub const B: usize = 10;
-    pub const ACC: Acc = Acc::new(11, 3);
-    pub const RBC: usize = ACC.end();
+    pub const W: usize = OC + 7;
+    pub const B: usize = OC + 8;
+    pub const ACC: Acc = Acc::new(OC + 9, 3);
+    // The count of the new frame's `EXP` read.
+    pub const COUNT_FPX: usize = ACC.end();
+    pub const RBC: usize = COUNT_FPX + 1;
     pub const N: usize = RBC + 1;
     pub const SLOTS: [u32; 3] = [0, 1, 2];
 }
@@ -927,7 +1026,7 @@ impl Table for JumpTable {
         jump::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 7] = count_columns(jump::ACC, jump::RBC);
+        const COUNTS: [usize; 11] = count_columns(jump::ACC, jump::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -946,26 +1045,25 @@ impl Table for JumpTable {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use jump::*;
-        // The successor state is DERIVED: `b·d + (b+1)·g·pc` and `b·f + (b+1)·fp`,
-        // each degree 2 in K columns, so neither successor is committed. Written
-        // out in characteristic 2 as `b·d + b·(g·pc) + g·pc`.
+        // The successor state is DERIVED: `b·d + (b+1)·npc`, and `b·f + (b+1)·fp` in
+        // both of the frame pointer's forms, each degree 2 in K columns, so no
+        // successor is committed. Written out in characteristic 2 as `b·d + b·npc +
+        // npc`.
+        let select = |taken, otherwise| Coord::Sum(vec![Prod(B, taken, 0), Prod(B, otherwise, 0), Col(otherwise)]);
         f.state_derived(
-            PC,
-            FP,
-            TS,
+            STATE,
             CLOCK_STRIDE,
-            Coord::Sum(vec![Prod(B, V_PC, 0), Prod(B, PC, 1), GCol(PC, 1)]),
-            Coord::Sum(vec![Prod(B, V_FP, 0), Prod(B, FP, 0), Col(FP)]),
+            select(V_PC, NPC),
+            select(V_FP, FP),
+            select(V_FPX, FPX),
         );
-        f.bytecode(
-            PC,
-            RBC,
-            OP_JUMP,
-            &[Col(OC), Col(OD), Col(OF), Const(F64::ZERO), Const(F64::ZERO)],
-        );
-        f.read(Prod(FP, OC, 0), TS, ACC, 0, SLOTS[0], Col(V_COND));
-        f.read(Prod(FP, OD, 0), TS, ACC, 1, SLOTS[1], Col(V_PC));
-        f.read(Prod(FP, OF, 0), TS, ACC, 2, SLOTS[2], Col(V_FP));
+        f.bytecode(STATE, RBC, OP_JUMP, &[Col(OC), Col(OD), Col(OF)], None);
+        f.read(Prod(FPX, OC, 0), TS, ACC, 0, SLOTS[0], Col(V_COND));
+        f.read(Prod(FPX, OD, 0), TS, ACC, 1, SLOTS[1], Col(V_PC));
+        f.read(Prod(FPX, OF, 0), TS, ACC, 2, SLOTS[2], Col(V_FP));
+        // The new frame's g-power, read at `b·v_fp`: a jump not taken loads no frame,
+        // so it reads entry 0 rather than whatever the cell holds.
+        f.exp(Prod(B, V_FP, 0), COUNT_FPX, Col(V_FPX));
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use jump::*;
@@ -974,11 +1072,19 @@ impl Table for JumpTable {
             Op::Jump { oc, od, of } => (oc, od, of),
             op => unreachable!("a JUMP row's pc {} holds {op:?}", r.pc),
         };
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
         ctx.cols(out, rows, OC, |r| {
             let (oc, od, of) = ins(r);
-            [ctx.g_at(oc), ctx.g_at(od), ctx.g_at(of), r.cond, r.dest, r.frame, r.ts]
+            let loaded = if r.cond.is_zero() { 0 } else { r.frame.0 as u32 };
+            [
+                ctx.g_at(oc),
+                ctx.g_at(od),
+                ctx.g_at(of),
+                r.cond,
+                r.dest,
+                r.frame,
+                ctx.g_at(loaded),
+            ]
         });
         // The is-nonzero witness `w = c⁻¹` (0 where c = 0) for every row, in one
         // batched Montgomery inversion. `prefix[i]` is the running product of the
@@ -1007,7 +1113,17 @@ impl Table for JumpTable {
             (w, b)
         };
         ctx.cols_at(out, rows.len(), W, |i| [w[i], b[i]]);
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(
+            out,
+            rows,
+            ACC,
+            |r| {
+                let (oc, od, of) = ins(r);
+                [r.fp + oc, r.fp + od, r.fp + of]
+            },
+            |r| &r.acc,
+        );
+        ctx.col(out, rows, COUNT_FPX, |r| r.count_fpx);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }
@@ -1015,12 +1131,12 @@ impl Table for JumpTable {
 // ---- BLAKE2s ------------------------------------------------------------------
 
 /// `BLAKE2s` (§sec:tab-blake2s): one standard compression. The four 128-bit message
-/// chunks are addressed *independently* at `fp·o_i`, each spanning that cell and its
+/// chunks are addressed *independently* at `fp + o_i`, each spanning that cell and its
 /// successor, so a caller hashing e.g. `(tweak, pp)` need not copy them into
 /// adjacent cells. The digest and the chaining value span four consecutive cells,
 /// the metadata two, so the row touches eighteen cells: fourteen reads, then the
-/// four digest writes. No address is committed: each rides the bus as the product
-/// `fp·o·g^k` (§sec:m3). The compression relating output words to input words is
+/// four digest writes. Each cell's address `fp + o + k` is a column, read off `EXP`
+/// at the product `g^fp·g^o·g^k` (§sec:exp). The compression relating output words to input words is
 /// proven by flock's R1CS via `q_flock` (§hash_flock).
 ///
 /// The eighteen cells are eighteen value columns. They are listed in
@@ -1031,21 +1147,21 @@ impl Table for JumpTable {
 struct Blake2sTable;
 
 pub(crate) mod blake2st {
-    use super::Acc;
-    pub const PC: usize = 0;
-    pub const FP: usize = 1;
-    pub const O_M0: usize = 2; // operand g-powers of the four message chunks …
-    pub const O_CV: usize = 6; // … the chaining value …
-    pub const O_OUT: usize = 7; // … the digest …
-    pub const O_MD: usize = 8; // … and the metadata.
+    pub(crate) use super::STATE;
+    use super::{AFTER_STATE, Acc};
+    pub const TS: usize = STATE.ts;
+    pub const FPX: usize = STATE.fpx;
+    pub const O_M0: usize = AFTER_STATE; // operand g-powers of the four message chunks …
+    pub const O_CV: usize = O_M0 + 4; // … the chaining value …
+    pub const O_OUT: usize = O_M0 + 5; // … the digest …
+    pub const O_MD: usize = O_M0 + 6; // … and the metadata.
     // The eighteen value lanes, one per cell: the message chunks' eight, then the
     // digest's four, the chaining value's four and the metadata's counter and flags.
-    pub const V0: usize = 9;
+    pub const V0: usize = O_M0 + 7;
     // What the four digest cells held before the write.
-    pub const OUT_OLD: usize = 27;
-    pub const TS: usize = 31;
+    pub const OUT_OLD: usize = V0 + 18;
     /// One access per value lane, in the same order.
-    pub const ACC: Acc = Acc::new(32, 18);
+    pub const ACC: Acc = Acc::new(OUT_OLD + 4, 18);
     pub const RBC: usize = ACC.end();
     pub const N: usize = RBC + 1;
     /// The digest's first value lane.
@@ -1080,7 +1196,7 @@ impl Table for Blake2sTable {
         blake2st::N
     }
     fn count_columns(&self) -> &'static [usize] {
-        const COUNTS: [usize; 37] = count_columns(blake2st::ACC, blake2st::RBC);
+        const COUNTS: [usize; 55] = count_columns(blake2st::ACC, blake2st::RBC);
         &COUNTS
     }
     fn n_constraints(&self) -> usize {
@@ -1097,9 +1213,15 @@ impl Table for Blake2sTable {
     }
     fn flushes(&self, f: &mut FlushBuilder) {
         use blake2st::*;
-        f.state_step(PC, FP, TS, BLAKE2S_STRIDE);
-        f.bytecode(PC, RBC, OP_BLAKE2S, &std::array::from_fn::<_, 7, _>(|i| Col(O_M0 + i)));
-        // A successor cell is a free ×g^k on the address product. The metadata rides
+        f.state_step(STATE, BLAKE2S_STRIDE);
+        f.bytecode(
+            STATE,
+            RBC,
+            OP_BLAKE2S,
+            &std::array::from_fn::<_, 7, _>(|i| Col(O_M0 + i)),
+            None,
+        );
+        // A successor cell is a free ×g^k on the address's g-power. The metadata rides
         // the memory bus like every other operand: the read is what binds flock's
         // counter and flag inputs.
         for (lane, &(operand, k)) in BLAKE2S_LANE_CELLS.iter().enumerate() {
@@ -1108,7 +1230,7 @@ impl Table for Blake2sTable {
                 _ => Col(V0 + lane),
             };
             f.memory(
-                Prod(FP, operand, k),
+                Prod(FPX, operand, k),
                 TS,
                 ACC,
                 lane,
@@ -1121,16 +1243,14 @@ impl Table for Blake2sTable {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         use blake2st::*;
         let rows = &ctx.trace.blake2s;
-        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
-        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.state(out, rows, |r| (r.pc, r.fp, r.ts));
         ctx.cols(out, rows, O_M0, |r: &Brow| match ctx.prog[r.pc as usize] {
             Op::Blake2s { ins, cv, out, md } => [ins[0], ins[1], ins[2], ins[3], cv, out, md].map(|o| ctx.g_at(o)),
             op => unreachable!("a BLAKE2s row's pc {} holds {op:?}", r.pc),
         });
         ctx.cols(out, rows, V0, |r| r.w);
         ctx.cols(out, rows, OUT_OLD, |r| r.out_old);
-        ctx.col(out, rows, TS, |r| r.ts);
-        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.accesses(out, rows, ACC, |r| blake2s_cells(ctx.prog, r.pc, r.fp), |r| &r.acc);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);
     }
 }

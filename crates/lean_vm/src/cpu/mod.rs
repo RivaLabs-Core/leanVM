@@ -1,11 +1,12 @@
 //! Whole-program assembly over GF(2^64) (`doc/leanvm/main.tex`): the instruction tables
 //! sharing the state / memory / bytecode buses, bound to one field-valued
-//! commitment and verified oracle-free. Addresses, the program counter, and read
-//! counts are g-powers, so every increment is a free ×g. A memory word is one
-//! `K = F64` element; `XOR192`/`MUL192` compute in `E = F192 = K[y]/(y³+y+1)` over
-//! three consecutive cells. `BLAKE2s` adds the memory/state/bytecode plumbing for a
+//! commitment and verified oracle-free. Addresses, the program counter and the frame
+//! pointer are integers, added through the `EXP` array (§sec:exp); timestamps and
+//! read counts are g-powers, so every increment is a free ×g. A memory word is one
+//! `K = F64` element. `BLAKE2s` adds the memory/state/bytecode plumbing for a
 //! 64→32-byte compression whose relation is discharged by flock (see
-//! [`crate::hash_flock`]). Challenges and transcript scalars live in `E`.
+//! [`crate::hash_flock`]), as `ADD_U64` and `MUL_U64` do for theirs
+//! ([`crate::arith_flock`]). Challenges and transcript scalars live in `E = F192`.
 
 use crate::colval::ColVal;
 use crate::constraints;
@@ -17,11 +18,10 @@ use crate::tables::{
 };
 use crate::transcript::{Challenger, ProverState, Receiver, Transmitter, VerifierState};
 use crate::witness;
-use primitives::field::{F64, F192, g_pow};
+use primitives::field::{F64, F192};
 
 mod execute;
 pub mod filler;
-mod gpow;
 mod isa;
 pub mod layout;
 mod trace;
@@ -188,7 +188,7 @@ impl Program {
     /// Assemble a [`Program`] from a whole bytecode, computing its digest. The
     /// single funnel for construction, so the digest is always consistent with the
     /// bytecode. `prog.len()` must be a power of two with a never-executed sentinel
-    /// in its last slot: the run halts on reaching `g^{len-1}` (§sec:state).
+    /// in its last slot: the run halts on reaching `len - 1` (§sec:state).
     pub fn assemble(prog: Vec<Op>) -> Self {
         let bytecode_hash = {
             let table = layout::bytecode_table(&prog);
@@ -226,9 +226,9 @@ impl Program {
         body.resize(len, Op::Xor64 { a: 0, b: 0, c: 0 });
         body[halt] = Op::Set {
             o: dest,
-            k: g_pow(len - 1),
+            k: F64(len as u64 - 1),
         };
-        body[halt + 1] = Op::Set { o: frame, k: F64::ONE };
+        body[halt + 1] = Op::Set { o: frame, k: F64::ZERO };
         let mut program = Self::assemble(body);
         program.filler = blocks;
         program
@@ -717,6 +717,7 @@ fn slot_claims(l: &Layout, claims: Vec<ColumnClaim>) -> Vec<pcs::SlotClaim> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use primitives::field::g_pow;
 
     const PI: [F64; 4] = [F64(7), F64(11), F64(13), F64(17)];
 

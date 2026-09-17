@@ -55,7 +55,10 @@
 \newcommand{\colmar}{M_{\mathrm{col}}}           % column marginal of one matrix, A_0 or B_0
 
 % ---------- VM ----------
-\newcommand{\loc}[1]{\mem[\fp\cdot #1]}
+\newcommand{\loc}[1]{\mem[\fp+#1]}
+\newcommand{\intk}[1]{\underline{#1}}   % the integer #1 as the element of K with those bits
+\newcommand{\fpx}{\mathbf{fpx}}         % g^fp: the frame pointer's g-power, the third component of the VM state
+\newcommand{\expa}{\mathbf{Exp}}        % the exponentiation array, entry i holding g^i
 \newcommand{\dmode}{\mathsf{mode}}   % a DEREF store mode
 \newcommand{\pc}{\mathbf{pc}}
 \newcommand{\fp}{\mathbf{fp}}
@@ -66,7 +69,7 @@
 \newcommand{\cnt}{\mathit{count}}
 \newcommand{\md}{\mathrm{md}}       % BLAKE2s metadata: byte counter, final and last-node flags
 \newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
-\newcommand{\ts}{\mathbf{ts}}            % the clock: g^{4 cycle}, the third component of the VM state
+\newcommand{\ts}{\mathbf{ts}}            % the clock: g^{4 cycle}, the last component of the VM state
 \newcommand{\tsfinal}{\ts_{\mathrm{final}}} % the clock the run ends on, announced by the prover
 \newcommand{\tsprev}{\mathit{prev}}      % the timestamp of a cell's previous access, a committed column
 \newcommand{\tsfin}{\mathit{ts}^{\mathrm{fin}}}  % committed column: each cell's last timestamp

@@ -56,8 +56,8 @@ pub enum Op {
     },
 }
 
-/// The source `DEREF` stores at `mem[loc_o1·o2]`: a local cell, the return
-/// address `g²·pc`, or the frame pointer. Encoded as two boolean flags `(f_pc,
+/// The source `DEREF` stores at `mem[loc_o1 + o2]`: a local cell, the return
+/// address `pc + 2`, or the frame pointer. Encoded as two boolean flags `(f_pc,
 /// f_fp)`: `Cell=(0,0)`, `Pc=(1,0)`, `Fp=(0,1)`, keeping the store constraint degree 2.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DerefMode {
@@ -72,5 +72,14 @@ impl DerefMode {
     }
     pub(crate) fn f_fp(self) -> F64 {
         if self == DerefMode::Fp { F64::ONE } else { F64::ZERO }
+    }
+    /// The return address the bytecode entry at `pc` carries: `pc + 2` in `Pc` mode,
+    /// zero otherwise.
+    pub(crate) fn ret(self, pc: u32) -> F64 {
+        if self == DerefMode::Pc {
+            F64(pc as u64 + 2)
+        } else {
+            F64::ZERO
+        }
     }
 }
