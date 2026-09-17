@@ -17,8 +17,8 @@
     <td align="right"><b>480K/s</b></td>
   </tr>
   <tr>
-    <td><a href="#fibonacci">cheap cycles</a></td>
-    <td align="right"><b>3.1M/s</b></td>
+    <td><a href="#fibonacci">RISC-V cycles</a></td>
+    <td align="right"><b>1.6M/s</b></td>
   </tr>
 </table>
 
@@ -38,7 +38,7 @@ leanVM is designed for security:
 Expect leanVM to change significantly:
 
 * **hash**: BLAKE2s is a placeholder. SHA2, SHA3, BLAKE3 are actively considered.
-* **ISA**: A migration from leanISA to RISC-V (rv64im) is planned. Memory is already read-write and addressed by integers (a pointer is a word holding a cell's number), and `ADD_U64` / `MUL_U64` give the ISA wrapping 64-bit integer arithmetic, proven by Flock. This branch has no front end: programs are hand-assembled.
+* **ISA**: leanVM is moving from its own leanISA to RISC-V (rv64im). The machine, its registers and the add, compare, logic, branch and jump instructions are proven today; memory, shifts, multiplication, division and an ELF loader are in progress. Programs are hand-assembled for now.
 * **zk**: Support for zero-knowledge is planned.
 
 **note**: Prior to binary fields leanVM used [KoalaBear](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458). The historical design is in [this branch](https://github.com/leanEthereum/leanVM/tree/koalabear).
@@ -145,12 +145,12 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 ```
 
 ```
-Fibonacci (in the exponent, i.e. modulo 2^64 - 1), N = 2,000,000
-  cycles (VM steps)           : 2,103,361
-    details                   : MUL64 2^20.933 (99.8%)  JUMP 2^10.967 (0.1%)  XOR64 2^10.966 (0.1%)  SET 2^3.322 (0.0%)  MEMORY 2^4.17  TOTAL_COMMITTED 2^26.057
-  proof size                  : 303.8 KiB
-  proving                     : 0.675 s ± 11.6%   3,116,639 cycles/s      peak memory 8.513 GiB
-  verifying                   : 3.297 ms
+Fibonacci (modulo 2^64), N = 2,000,000
+  cycles (VM steps)           : 2,097,152
+    details                   : ALU 2^20.934 (100.0%)  TOTAL_COMMITTED 2^26.394
+  proof size                  : 305.7 KiB
+  proving                     : 1.298 s ± 15.7%   1,615,327 cycles/s      peak memory 11.923 GiB
+  verifying                   : 2.524 ms
 ```
 
 ## SNARK machinery

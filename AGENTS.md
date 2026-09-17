@@ -2,10 +2,10 @@
 
 ## What this is
 
-A minimal virtual machine and the SNARK that proves its execution. Proofs are not zero knowledge. There is no front end on this branch: programs are hand-assembled with `Program::from_body` (Fibonacci, a BLAKE2s hash chain, a 64-bit LCG), and small for now.
+A RISC-V (rv64im) virtual machine and the SNARK that proves its execution. Proofs are not zero knowledge. The migration from the old leanISA is in progress, following `doc/riscv-migration-plan.md` (untracked): the machine, its registers and the `ALU` instruction class are proven; RAM, shifts, multiplication, division and an ELF loader are not yet, and a run that reaches one of them stops with a message. Programs are hand-assembled with `lean_vm::rv::asm` for now. `doc/leanvm` still describes the old machine in its sections 2, 6, 7 and 8.
 
 - `doc/leanvm/` is the LaTeX project describing the machine ISA and the snark that proves it. Its root is `doc/leanvm/main.tex`; build it with `cd doc/leanvm && latexmk -pdf main.tex`, which writes to the gitignored `doc/leanvm/.build/`. Sections live in `doc/leanvm/body/`, numbered `01`..`08` plus the lettered annexes `a` (ring switching), `b` (the PCS), `c` (Flock), and `d` (novel basis and additive NTT), and every symbol is defined once in `doc/leanvm/preamble/macros.tex`. If latexmk fails oddly (a bibtex error, or a missing `main.log`) right after inputs are renamed or `refs.bib` is edited, remove `doc/leanvm/.build` and rerun; it has not reproduced on unchanged inputs. **Drafting one section:** each section file carries a `% !TeX root` comment pointing at its generated driver in `doc/leanvm/drafts/`, so the LaTeX build key (`F5`, or the extension's `cmd+alt+b`) compiles only that section, numbered as in the full document and with cross-references and citations resolved against `.build/main.aux`; in `main.tex` the same key builds everything. Run `doc/leanvm/make-drafts.sh` after adding, renaming or renumbering a section.
-- The one hash function is BLAKE2s, in `primitives::hash`: scalar, streaming, keyed, and a lane-transposed batched form for the PCS Merkle tree. The VM proves one compression per opcode, and BLAKE2s takes the byte counter and final-block flag as ordinary compression inputs, so repeated opcodes hash arbitrary byte strings by carrying the chaining value and setting the counter and final flag for each block.
+- The one hash function is BLAKE2s, in `primitives::hash`: scalar, streaming, keyed, and a lane-transposed batched form for the PCS Merkle tree. `flock::hash` still holds its compression as a circuit, with its benchmark, but the VM has no BLAKE2s instruction at the moment: it returns as a precompile.
 
 ## Layout
 
@@ -18,8 +18,8 @@ Dependency order, leaves first:
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, streaming stores, `bench` |
 | `fiat_shamir`     | VM-native `FiatShamirState` + prover/verifier transcript                |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
-| `flock`           | batched R1CS over GF(2): zerocheck + lincheck, for the BLAKE2s circuit (`hash`) and the u64 adder and multiplier (`arith`) |
-| `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
+| `flock`           | batched R1CS over GF(2): zerocheck + lincheck; gate-list circuits over word ports (`circuit`), the u64 adder and multiplier in them (`arith`), the BLAKE2s circuit (`hash`) |
+| `lean_vm`         | the RISC-V machine (`rv`: decoder, class semantics and circuits, interpreter, assembler) and its arithmetization: tables, bus, constraints, `cpu::prove`/`verify` |
 
 `src/lib.rs` is the public API and the only thing a user imports: every crate above is `publish = false`, so a new user-facing item is a re-export there. `src/main.rs` is the benchmark CLI, `tests/api.rs` the end-to-end use of the API.
 
@@ -52,38 +52,43 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 
 The benchmarks we care about:
 
-- `cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3`
+- `cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3` (Fibonacci mod 2^64, on registers)
 - `BENCH_REPEAT=3 FLOCK_N_LOG=18 cargo test --release -p flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored`
 
-## Read-write memory
+## Read-write arrays
 
-Memory is read-write, by timestamped offline memory checking (`doc/leanvm` §sec:memchan). What to keep in mind before touching it:
+The registers (and RAM, once it lands) are read-write, by timestamped offline memory checking (`doc/leanvm` §sec:memchan). What to keep in mind before touching it:
 
-- **The clock rides the state tuple**, `(pc, fp, g^fp, ts)`, and is `g^(4·cycle)`: a row's access in slot `k` carries the timestamp `g^k·ts`, which is what lets one row touch the same cell twice (`MUL64 a a c`, an in-place counter). `BLAKE2S` makes eighteen accesses, so it advances the clock by 20. The run starts at cycle 1, because the memory seed is stamped `g^0` and an access must be strictly later than the one before.
+- **The clock rides the state tuple**, `(pc, ts)`, and is `g^(4·cycle)`: a row's access in slot `k` carries the timestamp `g^k·ts`, which is what lets one row touch the same cell twice (`add a0, a0, a0`). The run starts at cycle 1, because a seed is stamped `g^0` and an access must be strictly later than the one before.
 - **Strictness is the soundness.** An access pulls `(addr, prev, old)` and pushes `(addr, g^k·ts, new)`, with `prev·lo = g^k·ts·hi`, where `lo` and `hi` are read off two uncommitted range arrays (`{g^(j+1)}` and `{g^(-2^16·j)}`, 2^16 entries each). The `+1` in the low array is the strict `<`: with a gap of zero a read pulls the tuple it pushes and returns anything.
 - **Padding rows have clock zero**, and zero is no power of `g`: their state tuples close around a fill block (`0·g^s = 0`), their accesses are forced to `prev = 0` and cancel themselves, and nothing they flush can meet a tuple of the run. They are written out by `cpu::execute`, not executed, and touch no memory. Any new table has to keep this true: every memory tuple's timestamp must be `g^k·ts` or the committed `prev`, nothing else.
-- **Three memory columns**: the memory before the run, after it, and each cell's last timestamp. The four public words are bound in both the first and the second, so they are input and output at once and a run has to leave them as it found them.
-- **The initial memory is the prover's** in the protocol, the public words aside: only those four cells of the committed initial memory are bound. The executor starts every other cell at zero, there being no advice channel yet; a front end that wants one gets it by choosing initial cells, and its programs then have to check what they read before writing it.
+- **Two committed columns per array**: what it holds after the run, and each cell's last timestamp. What it holds before is public (zero for the registers), so nothing is prover-chosen.
 - **A gap is below 2^32**, and a cell's first access is measured from zero, so a run is capped near 2^30 cycles. The executor asserts it.
-- `a_stale_read_unbalances_the_bus` is the soundness regression test (a forged run that serves an overwritten value), `lean_vm/tests/verifiers/read_write.rs` the program that only read-write memory can run, checked by both verifiers.
+- `a_stale_read_unbalances_the_bus` is the soundness regression test (a forged run that serves an overwritten register), `lean_vm/tests/verifiers/programs.rs` the programs checked by both verifiers.
 
-## Integer addresses
+## The RISC-V machine
 
-Memory cells and bytecode slots are numbered `0, 1, 2, ...`: `pc`, `fp`, every address and every pointer held in memory is the integer, stored as the field element with those bits (`F64(i)`). Timestamps, read counts, opcodes and operands stay g-powers, where a step is a free multiplication by `g`. `doc/leanvm` §sec:exp is the argument; in short:
+`lean_vm::rv` is the machine, `lean_vm::tables` and `lean_vm::cpu` prove it. What to keep in mind:
 
-- **Integer addition is no field operation**, so an address `fp + o` is a committed column `A`, tied to its terms by one read of the `EXP` array, whose entry `i` is `g^i`: the row reads `(A, g^fp·g^o)`, a degree-2 product, which forces `g^A = g^(fp+o)` with `A` inside the memory, hence `A = fp + o`. Both of `EXP`'s columns are public with closed-form MLEs (`Coord::IntIndex`, linear; `Coord::Index`, a product), so only its read counts are committed. An operand therefore still rides the bytecode as `g^o`.
-- **The frame pointer rides the state twice**, as `fp` and as `g^fp`, so a row never reads `EXP` for its own frame. A value that BECOMES a base pays one read: `DEREF`'s pointer (`ptr`, `ptr_x`) and the frame a `JUMP` loads (`v_fp`, `v_fpx`), read at `b·v_fp` so that a jump not taken reads entry 0 and ignores the cell. That read is also what forces a pointer or a frame to be a valid address.
-- **The bytecode supplies `pc + 1`**, and `pc + 2` for a `DEREF` in `Pc` mode (zero elsewhere), as two more public columns of the program table: a row pushes the successor it read. A jump target is checked by the next row's bytecode read, which only finds entries below the program's length.
-- **A padding row sits in frame 0** with a null pointer, so its addresses are its operands and its `EXP` reads are real reads, counted like its bytecode and range reads.
+- **The program is public, so decoding is free.** `rv::decode` turns each word into an `Entry` once: an instruction class, a `flags` word selecting what the class's one function does, the three register cells the row touches, the immediate already sign-extended, the branch target, and the `link` and `jalr` selectors. `LUI`, `AUIPC` and `JAL` fold to constants, `ECALL` is a jump to the halt slot, and everything rv64im does not define (reserved shift encodings, `EBREAK`, CSRs) is an illegal entry. The bytecode lookup returns those fields; no table ever decomposes an instruction word. An entry whose class has no table has tag zero, which no row can read.
+- **The statement is about the decoded table**, so the rules that make it RISC-V are checked where a table enters, on both sides (`rv::Entry::is_well_formed` in `Program::new`, `check_bytecode` in Python): two registers below 32 are read, the cell written is in `1..=32`, the successor is `pc + 4`, the flags are ones the class defines. The proof system itself is sound for any table.
+- **`x0` is hardwired by the decoder.** Every row reads two registers and writes one. An instruction with fewer reads `x0`; one with no destination, or with `rd = x0`, writes `SINK` (cell 32), which nothing reads. So cell 0 is never written, and its seed is zero.
+- **Registers are a second read-write array**, under their own separator `REG`, so that loads and stores will not be able to reach them: 64 cells, a public zero seed, committed final values and timestamps, the same clock, gap check and range arrays as memory. A register's number comes straight from the bytecode, so an access needs no address arithmetic. Slots are `rs1` at 0, `rs2` at 1, `rd` at 3 (2 is kept for the RAM access), and slots only need to be distinct per separator.
+- **State is `(pc, ts)`**, `pc` the real byte address. Instruction `z` sits at `TEXT_BASE ^ (z << 2)` and the bytecode block's address coordinate is `Coord::IntIndex { base, shift }`, whose MLE is linear. That XOR is the sum only because `TEXT_BASE` is a multiple of the largest text: the memory map (`rv::TEXT_BASE`, `rv::RAM_BASE`) is chosen for that, inside one 2 GiB window and below `0x7FFF_F800` for the code models' sake. A computed or misaligned jump target needs no check: the next row's bytecode read finds no entry.
+- **A trap is the absence of a proof** (`rv::Trap`): an illegal or unmapped `pc`, a misaligned or unmapped access, an `ecall` that is not `exit`, the cycle cap. An illegal word follows the text, so a run falling off it traps instead of sliding into the padding blocks or the halt slot.
+- **The halt is an exit.** The run ends on the last slot of the padded text, which is never executed. The verifier claims `a7 = 93` and `a0..a3 = output` on the committed final registers at the Boolean points naming them; the output seeds the transcript with the program's digest, which covers the decoded table, the entry and halt `pc`, and RAM's size and image. Nothing the program fixes is read from the prover.
+- **The interpreter is the reference** (`rv::Machine`), tested against an executor written from the specification on byte-addressed memory that shares no code with it. `cpu::execute` is that interpreter plus the memory argument's bookkeeping. `riscv-tests` is still owed: no RISC-V C toolchain on the dev machine.
 
-## Flock-backed instructions
+## Instruction classes and their circuits
 
-`BLAKE2S`, `ADD_U64` and `MUL_U64` are relations no degree-2 identity over `K` expresses, so each is a Boolean circuit proven by flock (`doc/leanvm` Annex C, §flock:u64), glued in by `lean_vm::hash_flock` and `lean_vm::arith_flock`:
+Addition with carries, comparisons, shifts, AND/OR, multiplication and division are Boolean relations no degree-2 identity over `K` expresses, so each instruction class is a Boolean circuit proven by flock (`doc/leanvm` Annex C), and a table only does plumbing:
 
-- **One packed witness per circuit**, a committed column of the one stack (`QFLOCK`, `QADD`, `QMUL`): instance `j` is row `j` of the instruction's table. The packing is 64 bits a word and a memory word is 64 bits, so the words a row touches ARE packed words of its instance, and the table's value columns are virtual: their claims are routed to slots of that witness (`cpu::flock_value_slot`). A new flock-backed instruction follows the same three steps: a table with virtual value columns, a committed witness, a ring-switched region.
-- **One reduction per circuit, one opening for all.** The three zerocheck plus lincheck runs happen in table order after the public-word claims, each leaving a claim on its own witness; `pcs::stack_open` takes one ring-switched region per witness, all under one map challenge.
-- **Batch floors.** Flock needs eight instances and a zerocheck cube of `2^13` bits, so `ADD_U64`'s table has at least 32 rows and the other two at least 8 (`cpu::filler::MIN_ROWS`); padding rows supply them, as all-zero instances.
-- **The circuits are gate lists**, walked forwards by the verifier and backwards by the prover, never matrices. `python-verifier/verifier.py` rebuilds the adder and the multiplier gate for gate (`_adder`, `_multiplier`): the multiplier's carry-save schedule sorts rows with a stable sort, so a change to `flock::arith::mul` has to be mirrored there in the same order, and `u64_arithmetic_proves_and_verifies` is what catches a drift.
+- **One generic table, specialized by a `tables::ClassSpec`**: the state step, the bytecode read, two register reads and one register write, with `npc = pc4 + taken·dt + jalr·(out + pc4)` and `rd <- out + link·(out + pc4)` as degree-2 bus forms for a class with control flow. A new class is a spec, a circuit in `rv::circuits`, its reference function in `rv::semantics`, a no-op word in `cpu::filler`, and the same in Python.
+- **Every word the circuit reads or writes is a virtual column** of the table, living in the class's packed witness (`Q_BASE + t`, one committed column per table, instance `j` being row `j`): `flags` and `imm` from the bytecode tuple, `v1` and `v2` from the register tuples, `out`, `taken`. The bus is the whole binding. `class_flock::Prepared::build` asserts that what the circuit computed is what the interpreter did.
+- **Circuits are gate lists over word ports** (`flock::circuit`): inputs, outputs, the constant, then products in the order they are made. A port bit with no gate is an empty row, hence zero, which is what makes a one-bit output such as `taken` a 0 or 1 field element: give such an output a word to itself and never put a free wire on its spare bits. What Rust and Python must agree on is the port layout and the ORDER PRODUCTS ARE MADE IN; XOR order is free. `alu_is_its_reference` pins a circuit to its reference function, and the end-to-end tests pin the Python mirror.
+- **One reduction per class, one opening for all**: zerocheck plus lincheck per table, in table order after the exit claims, each leaving a claim on its own witness; `pcs::stack_open` takes one ring-switched region per witness, all under one map challenge.
+- **Batch floors.** Flock needs eight instances and a zerocheck cube of `2^13` bits (`class_flock::n_blocks_log`); padding rows supply them, as honest instances on zero registers.
+- **Witness generation is the generic walk of the gate list, bit by bit**, and is the prover's largest single stage. A word-arithmetic or bit-sliced generator per circuit is a known follow-up.
 
 ## The proving arena (`zk_alloc`)
 
@@ -137,7 +142,6 @@ The same verification algorithm is written out twice, in two languages. Any chan
 | `ZK_ALLOC_STATS`                                                                                        | arena peak/phase, high water, overflow           |
 | `ZK_ALLOC_POISON`                                                                                       | fill released arena blocks, to catch use-after-free |
 | `BENCH_REPEAT`, `BENCH_COOLDOWN`                                                                        | `--repeat`/`--cooldown` for `#[ignore]`d benches |
-| `LEANVM_HASH_N`, `LEANVM_HASH_UNROLL`                                                                   | workload sizes in tests                          |
 | `FLOCK_N_LOG`, `FLOCK_PROVE_TRACE`, `FLOCK_ZC_TIMING`, `LINCHECK_TRACE`                                 | flock batch size, stage traces                   |
 | `PCS_LOG_N`, `PCS_LOG_INV_RATE`, `PCS_SAMPLES`                                                          | PCS throughput bench                             |
 | `WHIR_TRACE`, `WHIR_NUM_VARS`, `WHIR_LOG_INV_RATE`                                          | WHIR NTT/Merkle split                        |
