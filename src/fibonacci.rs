@@ -1,13 +1,8 @@
 //! Fibonacci in the exponent: the demo benchmark (`buff[g^k] = g^{F(k)}`,
 //! recurrence `buff[i·g²] = buff[i·g] · buff[i]`).
 
-use lean_compiler::{compile, parse};
-use lean_vm::cpu::{prove, verify};
-use primitives::{
-    bench::Plan,
-    field::{F64, g_pow},
-    pretty_f64, pretty_integer,
-};
+use leanvm::{F64, compile, g_pow, parse, prove, verify};
+use primitives::{bench::Plan, pretty_f64, pretty_integer};
 
 /// Prove and verify Fibonacci-in-the-exponent over a `HeapBuf` (an unrolled
 /// `mul_range` recurrence), binding `g^{F(n)}` as the public input. Prints the
@@ -19,7 +14,7 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     let (src, pi) = fibonacci_program(n);
     let program = compile(&parse(&src).unwrap());
 
-    // Only the final measured pass of each stage is traced (see `run_recursion`).
+    // Only the final measured pass of each stage is traced.
     let ((proof, stats), prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
         prove(&program, pi, log_inv_rate)
@@ -29,6 +24,8 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
         verify(&program, &pi, &proof).unwrap()
     });
 
+    // tracing-forest renders its tree only when the root span closes, so the
+    // complete trace has to be flushed above the report.
     drop(trace_span);
 
     println!(
@@ -37,14 +34,15 @@ pub fn run_fibonacci(n: usize, log_inv_rate: usize, plan: Plan) {
     );
     println!("  cycles (VM steps)           : {}", pretty_integer(stats.cycles));
     println!("    details                   : {}", stats.details());
-    crate::report::print_proof_size(&proof);
+    let proof_bytes = bincode::serialized_size(&proof).expect("proof is serializable");
+    println!("  proof size                  : {:.1} KiB", proof_bytes as f64 / 1024.0);
     let cycles_per_second = (stats.cycles as f64 / prove_time.mean()).round() as u64;
     println!(
         "  proving                     : {} s{}   {} cycles/s      peak memory {} GiB",
         pretty_f64(prove_time.mean()),
         prove_time.spread(),
         pretty_integer(cycles_per_second),
-        crate::report::peak_gib()
+        pretty_f64(primitives::bench::peak_rss_bytes() as f64 / (1u64 << 30) as f64)
     );
     println!(
         "  verifying                   : {} ms",
