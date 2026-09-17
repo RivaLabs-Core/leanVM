@@ -228,6 +228,67 @@ pub fn mulh() -> Circuit {
     c.finish()
 }
 
+/// `x` negated if `negative`: `(x ^ negative) + negative`.
+fn negate_if(c: &mut Builder, negative: Wire, x: &[Wire]) -> Word {
+    let flipped: Word = x.iter().map(|&bit| c.xor(bit, negative)).collect();
+    add_with_carry(c, &flipped, &[None; 64], negative).0
+}
+
+/// [`super::semantics::div`]: `(v1, v2, flags, q, r) -> (out, bad)`. The quotient's and
+/// the remainder's magnitudes `q` and `r` are the prover's ([`super::semantics::div_hints`]),
+/// and `bad` is set unless they are the ones: `|n| = q·|d| + r` over the integers (the
+/// product's high word zero, the sum without a carry) and `r < |d|`. A row puts `bad`
+/// where its bytecode entry holds zero, so it is zero. Dividing by zero checks nothing
+/// and returns what the specification says, all ones or the dividend, and the one
+/// overflow, `-2^63 / -1`, is no special case on magnitudes.
+pub fn div() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 3, 64, 64], &[64, 1]);
+    let (v1, v2, f, q, r) = (c.input(0), c.input(1), c.input(2), c.input(3), c.input(4));
+    let (signed, rem, word) = (f[0], f[1], f[2]);
+    // A word form divides the low 32 bits, extended as the division is signed or not.
+    let mut extend = |x: &[Wire]| -> Word {
+        let sign = c.and(signed, x[31]);
+        (0..64)
+            .map(|i| if i < 32 { x[i] } else { c.mux(word, sign, x[i]) })
+            .collect()
+    };
+    let (n, d) = (extend(&v1), extend(&v2));
+    let (n_negative, d_negative) = (c.and(signed, n[63]), c.and(signed, d[63]));
+    let (n_abs, d_abs) = (negate_if(&mut c, n_negative, &n), negate_if(&mut c, d_negative, &d));
+
+    let (product, _) = flock::arith::mul::Multiplier::build(&mut c, &q, &d_abs, 128);
+    let overflows = any(&mut c, &product[64..]);
+    let (sum, carries) = add_with_carry(&mut c, &product[..64], &r, None);
+    let difference = xor_words(&mut c, &sum, &n_abs);
+    let differs = any(&mut c, &difference);
+    // `r - |d|` does not borrow, which is `r + !|d| + 1` carrying out, when `r >= |d|`.
+    let d_inverted: Word = d_abs.iter().map(|&bit| c.not(bit)).collect();
+    let one = c.one();
+    let (_, too_large) = add_with_carry(&mut c, &r, &d_inverted, one);
+    let d_nonzero = any(&mut c, &d);
+    let wrong = [carries, differs, too_large]
+        .into_iter()
+        .fold(overflows, |acc, w| c.or(acc, w));
+    let bad = c.and(d_nonzero, wrong);
+
+    // The quotient is negative when the operands' signs differ, the remainder when
+    // the dividend is.
+    let q_negative = c.xor(n_negative, d_negative);
+    let (q_signed, r_signed) = (negate_if(&mut c, q_negative, &q), negate_if(&mut c, n_negative, &r));
+    let out: Word = (0..64)
+        .map(|i| {
+            let result = c.mux(rem, r_signed[i], q_signed[i]);
+            let by_zero = c.mux(rem, n[i], one);
+            c.mux(d_nonzero, result, by_zero)
+        })
+        .collect();
+    for (i, &wire) in sext32_if(&mut c, word, &out).iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    c.output(1, 0, bad);
+    c.finish()
+}
+
 /// [`super::Class::Alu`]'s ports.
 pub mod alu_ports {
     /// Input words: the two register values, the immediate, the flags.
@@ -453,6 +514,63 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn div_is_its_reference_and_refuses_other_hints() {
+        let div = div();
+        assert_eq!(div.k_log(), 13);
+        let mut rng = Rng(0xA5);
+        for round in 0..300 {
+            let (v1, v2) = (
+                rng.word(),
+                if round % 9 == 0 {
+                    0
+                } else {
+                    rng.word() >> (rng.next() % 64)
+                },
+            );
+            for &flags in &crate::rv::div::LEGAL {
+                let (q, r) = semantics::div_hints(v1, v2, flags);
+                let expected = [semantics::div(v1, v2, flags), 0];
+                assert_eq!(
+                    run(&div, &[v1, v2, flags, q, r], 5..7),
+                    expected,
+                    "div {flags:#x} of {v1:#x} by {v2:#x}"
+                );
+                // Any other quotient or remainder is refused, unless the divisor is zero,
+                // where they are ignored and the result is still the specification's.
+                let by_zero = if flags & crate::rv::div::WORD != 0 {
+                    v2 as u32 == 0
+                } else {
+                    v2 == 0
+                };
+                for (q, r) in [
+                    (q.wrapping_add(1), r),
+                    (q, r.wrapping_add(1)),
+                    (q ^ (1 << 63), r),
+                    (rng.next(), rng.next()),
+                ] {
+                    let got = run(&div, &[v1, v2, flags, q, r], 5..7);
+                    if by_zero {
+                        assert_eq!(got, expected);
+                    } else {
+                        assert_eq!(got[1], 1, "div {flags:#x} of {v1:#x} by {v2:#x} accepts {q:#x}, {r:#x}");
+                    }
+                }
+            }
+        }
+        // The forgery a check modulo 2^64 would accept: 1 / 3 with a quotient of (2^64 + 1) / 3.
+        assert_eq!(run(&div, &[1, 3, 0, 0x5555_5555_5555_5555, 2], 5..7)[1], 1);
+        // The overflow, and division by zero, as the specification has them.
+        let min = i64::MIN as u64;
+        let (q, r) = semantics::div_hints(min, u64::MAX, crate::rv::div::SIGNED);
+        assert_eq!(
+            run(&div, &[min, u64::MAX, crate::rv::div::SIGNED, q, r], 5..7),
+            [min, 0]
+        );
+        assert_eq!(run(&div, &[7, 0, 0, 0, 0], 5..7), [u64::MAX, 0]);
+        assert_eq!(run(&div, &[7, 0, crate::rv::div::REM, 0, 0], 5..7), [7, 0]);
     }
 
     /// flock proves a batch of honest instances, and refuses one with a flipped output bit.

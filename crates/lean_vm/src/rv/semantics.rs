@@ -120,6 +120,20 @@ pub fn mulh(v1: u64, v2: u64, flags: u64) -> u64 {
     (product >> 64) as u64
 }
 
+/// What the prover tells [`super::circuits::div`] beyond the operands: the magnitudes of
+/// the quotient and the remainder, which the circuit checks rather than computes.
+pub fn div_hints(v1: u64, v2: u64, flags: u64) -> (u64, u64) {
+    let (signed, word) = (flags & div::SIGNED != 0, flags & div::WORD != 0);
+    let magnitude = |v: u64| match (word, signed) {
+        (false, false) => v,
+        (false, true) => (v as i64).unsigned_abs(),
+        (true, false) => v as u32 as u64,
+        (true, true) => (v as i32 as i64).unsigned_abs(),
+    };
+    let (n, d) = (magnitude(v1), magnitude(v2));
+    n.checked_div(d).map_or((0, 0), |q| (q, n % d))
+}
+
 /// One rule for the word forms: extend the low 32 bits of both operands, divide as
 /// 64-bit, sign-extend the low 32 bits of the result.
 pub fn div(v1: u64, v2: u64, flags: u64) -> u64 {

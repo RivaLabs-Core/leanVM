@@ -810,15 +810,18 @@ CONTROL_COLUMNS = ("dt", "link", "jalr")  # the bytecode fields of a class with 
 RAM_COLUMNS = {"none": (), "read": ("address", "cell"), "write": ("address", "cell", "cell_new")}  # a load's, a store's
 
 
-def _class_columns(control: bool, ram: str) -> tuple[str, ...]:
+BAD_SLOT = 13  # where a bytecode tuple holds a row's `bad` word: past every field of an entry, where the program is zero
+
+
+def _class_columns(control: bool, ram: str, asserts: bool) -> tuple[str, ...]:
     return (
         "pc", "ts", "a1", "a2", "ad", "pc4", *(CONTROL_COLUMNS if control else ()),
-        "vd_old", "flags", "imm", "v1", "v2", "out", *(("taken",) if control else ()), *RAM_COLUMNS[ram],
+        "vd_old", "flags", "imm", "v1", "v2", "out", *(("taken",) if control else ()), *RAM_COLUMNS[ram], *(("bad",) if asserts else ()),
         *_accesses(len(REGISTER_SLOTS) + bool(RAM_COLUMNS[ram])), "cnt_bc",
     )  # fmt: skip
 
 
-def _class_flushes(opcode: int, columns: Sequence[str], control: bool, ram: str) -> Flushes:
+def _class_flushes(opcode: int, columns: Sequence[str], control: bool, ram: str, asserts: bool) -> Flushes:
     a1, a2, ad, pc4, vd_old, flags, imm, v1, v2, out, cnt_bc = _cols(
         columns, "a1", "a2", "ad", "pc4", "vd_old", "flags", "imm", "v1", "v2", "out", "cnt_bc"
     )
@@ -832,6 +835,9 @@ def _class_flushes(opcode: int, columns: Sequence[str], control: bool, ram: str)
     flushes = Flushes()
     flushes.state(columns, npc)
     entry = (_const(_gpow(opcode)), _col(flags), _col(a1), _col(a2), _col(ad), _col(imm), _col(pc4), *fields)
+    if asserts:
+        # What the circuit asserts to be zero rides a slot where the program is zero, so the lookup makes it zero.
+        entry = (*entry, *[_const(ZERO)] * (BAD_SLOT - 3 - len(entry)), _col(_cols(columns, "bad")[0]))
     flushes.counted((_const(SEP_BYTECODE), _col(_cols(columns, "pc")[0])), cnt_bc, entry)
     # The register's number comes straight from the bytecode. A read pushes back the value it pulled.
     flushes.access(columns, SEP_REG, _col(a1), 0, REGISTER_SLOTS[0], _col(v1), _col(v1))
@@ -853,16 +859,16 @@ class Table:
     control: bool
     ram: str  # how the class uses RAM: a key of RAM_COLUMNS
     circuit: FlockCircuit
-    ports: tuple[str, ...]  # the circuit's port words in order, each a column of WORDS
+    ports: tuple[str | None, ...]  # the circuit's port words in order: a column each, or None for a hint, which is no column
     legal_flags: frozenset[int]
 
     @property
     def columns(self) -> tuple[str, ...]:
-        return _class_columns(self.control, self.ram)
+        return _class_columns(self.control, self.ram, "bad" in self.ports)
 
     @property
     def flushes(self) -> Flushes:
-        return _class_flushes(self.opcode, self.columns, self.control, self.ram)
+        return _class_flushes(self.opcode, self.columns, self.control, self.ram, "bad" in self.ports)
 
     @property
     def slots(self) -> tuple[int, ...]:
@@ -1519,6 +1525,50 @@ def _mulh() -> _GateList:
     return c
 
 
+def _negate_if(c: _GateList, negative: Wire, x: Sequence[Wire]) -> list[Wire]:
+    """`x` negated if `negative`: `(x ^ negative) + negative`."""
+    return _add_with_carry(c, [c.xor(bit, negative) for bit in x], [None] * 64, negative)[0]
+
+
+def _div() -> _GateList:
+    """(v1, v2, flags, q, r) -> (out, bad). The quotient's and the remainder's magnitudes `q` and `r` are the prover's,
+    and `bad` is set unless they are the ones: `|n| = q |d| + r` over the integers (the product's high word zero,
+    the sum without a carry) and `r < |d|`. A row puts `bad` where its bytecode entry holds zero, so it is zero.
+    Dividing by zero checks nothing and returns what the specification says, all ones or the dividend, and the one
+    overflow, -2^63 / -1, is no special case on magnitudes. The flags: signed, remainder, 32-bit."""
+    c = _GateList((64, 64, 3, 64, 64), (64, 1))
+    v1, v2, (signed, rem, word), q, r = c.inputs
+
+    def extend(x: Sequence[Wire]) -> list[Wire]:
+        """A word form divides the low 32 bits, extended as the division is signed or not."""
+        sign = c.product(signed, x[31])
+        return list(x[:32]) + [c.mux(word, sign, bit) for bit in x[32:]]
+
+    n, d = extend(v1), extend(v2)
+    n_negative, d_negative = c.product(signed, n[63]), c.product(signed, d[63])
+    n_abs, d_abs = _negate_if(c, n_negative, n), _negate_if(c, d_negative, d)
+
+    product = _multiply(c, q, d_abs, 128)
+    overflows = reduce(c.either, product[64:], None)
+    total, carries = _add_with_carry(c, product[:64], r, None)
+    differs = reduce(c.either, [c.xor(x, y) for x, y in zip(total, n_abs)], None)
+    # `r - |d|` does not borrow, which is `r + not(|d|) + 1` carrying out, when `r >= |d|`.
+    _, too_large = _add_with_carry(c, r, [c.invert(bit) for bit in d_abs], c.one)
+    d_nonzero = reduce(c.either, d, None)
+    bad = c.product(d_nonzero, reduce(c.either, (carries, differs, too_large), overflows))
+
+    # The quotient is negative when the operands' signs differ, the remainder when the dividend is.
+    q_signed, r_signed = _negate_if(c, c.xor(n_negative, d_negative), q), _negate_if(c, n_negative, r)
+    out: list[Wire] = []
+    for i in range(64):
+        result = c.mux(rem, r_signed[i], q_signed[i])
+        out.append(c.mux(d_nonzero, result, c.mux(rem, n[i], c.one)))
+    for i, wire in enumerate(_sext32_if(c, word, out)):
+        c.output(0, i, wire)
+    c.output(1, 0, bad)
+    return c
+
+
 TABLES = (
     Table("alu", 0, True, "none", _alu().circuit(), ("v1", "v2", "imm", "flags", "out", "taken"), ALU_LEGAL_FLAGS),
     # A load's flags are log2 of its width in bytes, then whether it sign-extends; a store's, log2 of its width.
@@ -1528,6 +1578,8 @@ TABLES = (
     Table("shift", 3, False, "none", _shift().circuit(), ("v1", "v2", "imm", "flags", "out"), frozenset((0, 1, 3, 4, 5, 7))),
     Table("mul", 4, False, "none", _mul().circuit(), ("v1", "v2", "flags", "out"), frozenset((0, 1))),
     Table("mulh", 5, False, "none", _mulh().circuit(), ("v1", "v2", "flags", "out"), frozenset((0, 1, 3))),
+    # A division's flags: signed, remainder, 32-bit. Its two hints are in its witness and in no column.
+    Table("div", 6, False, "none", _div().circuit(), ("v1", "v2", "flags", None, None, "out", "bad"), frozenset(range(8))),
 )
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)
@@ -1587,7 +1639,10 @@ def build_layout(
     # A circuit word gets no block of its own: it is committed inside its table's flock witness, whose ports
     # interleave, so it sits at that witness's offset behind its own port's bits. Same width either way.
     words = {
-        GLOBAL_COLUMN_BASES[table.opcode] + _cols(table.columns, name)[0]: (table, port) for table in TABLES for port, name in enumerate(table.ports)
+        GLOBAL_COLUMN_BASES[table.opcode] + _cols(table.columns, name)[0]: (table, port)
+        for table in TABLES
+        for port, name in enumerate(table.ports)
+        if name
     }
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in words}
     block_offsets, total_log = stack_offsets(list(blocks.values()))

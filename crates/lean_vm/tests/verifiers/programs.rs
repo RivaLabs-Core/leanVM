@@ -207,6 +207,34 @@ fn shifts_and_multiplications_prove_and_verify() {
     proves_and_verifies("shift-mul", &program, [0; 4], expected);
 }
 
+/// Every division and remainder, 64-bit and 32-bit, on operands of both signs, by zero,
+/// and the one that overflows.
+#[test]
+fn divisions_prove_and_verify() {
+    let mut a = Asm::new();
+    let operands = [
+        (0x8765_4321_fedc_ba98u64, 0xffff_ffff_ffff_ff85u64),
+        (1_000_000_007, 13),
+        (5, 0),
+        (i64::MIN as u64, u64::MAX),
+        (0xffff_ffff_8000_0000, 0xffff_ffff_ffff_ffff),
+    ];
+    for (n, d) in operands {
+        a.li(S0, n).li(S1, d);
+        for op in ["div", "divu", "rem", "remu", "divw", "divuw", "remw", "remuw"] {
+            a.r(op, T0, S0, S1)
+                .r("xor", A0, A0, T0)
+                .r("add", A1, A1, T0)
+                .r("sub", A2, A2, A1);
+        }
+    }
+    let program = Program::new(&a.exit().finish(), TEXT_BASE, vec![], 2);
+    let expected = lean_vm::rv::Machine::new(&program.rv, [0; 4])
+        .run(1 << 20)
+        .expect("the run halts");
+    proves_and_verifies("div", &program, [0; 4], expected);
+}
+
 /// A run that traps has no proof, and says why.
 #[test]
 fn a_trap_is_reported() {

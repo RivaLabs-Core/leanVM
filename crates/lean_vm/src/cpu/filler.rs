@@ -65,6 +65,7 @@ fn nop(class: Class) -> u32 {
         Class::Shift => asm::i_type(0x13, 1, 0, 0, 0),
         Class::Mul => asm::r_type(0x33, 0, 1, 0, 0, 0),
         Class::Mulh => asm::r_type(0x33, 3, 1, 0, 0, 0),
+        Class::Div => asm::r_type(0x33, 5, 1, 0, 0, 0),
         class => unreachable!("no fill block of {class:?}"),
     }
 }

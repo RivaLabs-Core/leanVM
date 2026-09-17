@@ -159,7 +159,7 @@ pub fn col_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<Option<(usi
         // Their bus claims route directly to slot evaluations of it (`slot_claims`),
         // which is the whole binding.
         k[q_column(t)] = Some((1 + t, crate::class_flock::stride_log(tables::CLASSES[t])));
-        for c in tables::word_columns(t) {
+        for (_, c) in tables::word_columns(t) {
             k[base + c] = None;
         }
     }

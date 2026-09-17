@@ -70,6 +70,9 @@ fn word_of(word: Word, row: &Row, entry: &Entry) -> u64 {
         Word::Address => row.ram.address,
         Word::Cell => row.ram.old,
         Word::CellNew => row.ram.new,
+        Word::Bad => 0,
+        Word::HintQ => crate::rv::semantics::div_hints(row.v1, row.v2, entry.flags).0,
+        Word::HintR => crate::rv::semantics::div_hints(row.v1, row.v2, entry.flags).1,
     }
 }
 

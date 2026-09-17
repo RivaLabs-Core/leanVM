@@ -317,7 +317,9 @@ fn xi_form_pows(xi: F192) -> [F192; 3] {
 fn flock_value_slot(col: usize) -> Option<(usize, usize, usize)> {
     let sch = schema();
     (0..tables::N_TABLES).find_map(|t| {
-        let port = tables::word_columns(t).iter().position(|&c| sch.base[t] + c == col)?;
+        let (port, _) = tables::word_columns(t)
+            .into_iter()
+            .find(|&(_, c)| sch.base[t] + c == col)?;
         Some((q_column(t), port, crate::class_flock::stride_log(tables::CLASSES[t])))
     })
 }

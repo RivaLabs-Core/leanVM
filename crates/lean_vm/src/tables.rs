@@ -341,6 +341,12 @@ pub enum Word {
     Address,
     Cell,
     CellNew,
+    /// What a circuit asserts to be zero: the row puts it in its bytecode tuple, in a
+    /// slot where the program holds zero, so the lookup is what makes it zero.
+    Bad,
+    /// What the prover tells the circuit beyond the row: in its witness, in no column.
+    HintQ,
+    HintR,
 }
 
 /// How a class uses RAM.
@@ -452,10 +458,29 @@ pub static MULH: ClassSpec = ClassSpec {
     n_inputs: 3,
 };
 
+pub static DIV: ClassSpec = ClassSpec {
+    class: Class::Div,
+    name: "DIV",
+    control: false,
+    ram: Ram::None,
+    circuit: rv::circuits::div,
+    k_log: 13,
+    ports: &[
+        Word::V1,
+        Word::V2,
+        Word::Flags,
+        Word::HintQ,
+        Word::HintR,
+        Word::Out,
+        Word::Bad,
+    ],
+    n_inputs: 5,
+};
+
 /// The tables, in the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
 /// class tag in the bytecode is `g^t`.
-pub const N_TABLES: usize = 6;
-pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU, &LOAD, &STORE, &SHIFT, &MUL, &MULH];
+pub const N_TABLES: usize = 7;
+pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU, &LOAD, &STORE, &SHIFT, &MUL, &MULH, &DIV];
 
 /// The table running `class`, if it has one yet.
 pub fn table_of(class: Class) -> Option<usize> {
@@ -468,11 +493,16 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
     std::array::from_fn(|t| &tables[t] as &dyn Table)
 }
 
-/// The local column of each of table `t`'s circuit words, in port order.
-pub(crate) fn word_columns(t: usize) -> Vec<usize> {
+/// Table `t`'s circuit words that are columns, as `(port, local column)`.
+pub(crate) fn word_columns(t: usize) -> Vec<(usize, usize)> {
     let cols = Cols::new(CLASSES[t]);
-    CLASSES[t].ports.iter().map(|&w| cols.word(w)).collect()
+    let ports = CLASSES[t].ports.iter().enumerate();
+    ports.filter_map(|(port, &w)| Some((port, cols.word(w)?))).collect()
 }
+
+/// The slot of a bytecode tuple that holds a row's [`Word::Bad`]: past every field of
+/// an entry, where the program is zero.
+const BAD_SLOT: usize = 13;
 
 /// A class table's local columns.
 #[derive(Clone, Copy)]
@@ -496,6 +526,7 @@ struct Cols {
     taken: Option<usize>,
     /// The bus address and the cell, then what a store leaves in the cell.
     ram: Option<usize>,
+    bad: Option<usize>,
     acc: Acc,
     /// The bytecode read's count, the last column.
     rbc: usize,
@@ -518,6 +549,7 @@ impl Cols {
             Ram::Read => Some(take(2)),
             Ram::Write => Some(take(3)),
         };
+        let bad = spec.ports.contains(&Word::Bad).then(|| take(1));
         let n = spec.n_accesses();
         let acc = Acc { base: take(5 * n), n };
         Self {
@@ -536,13 +568,15 @@ impl Cols {
             out,
             taken,
             ram,
+            bad,
             acc,
             rbc: take(1),
         }
     }
 
-    fn word(&self, word: Word) -> usize {
-        match word {
+    /// The word's column, if it has one: a hint has none.
+    fn word(&self, word: Word) -> Option<usize> {
+        Some(match word {
             Word::Flags => self.flags,
             Word::Imm => self.imm,
             Word::V1 => self.v1,
@@ -552,7 +586,9 @@ impl Cols {
             Word::Address => self.ram.expect("only a load or a store has an address"),
             Word::Cell => self.ram.expect("only a load or a store has a cell") + 1,
             Word::CellNew => self.ram.expect("only a store rewrites its cell") + 2,
-        }
+            Word::Bad => self.bad.expect("the class asserts nothing"),
+            Word::HintQ | Word::HintR => return None,
+        })
     }
 }
 
@@ -637,6 +673,10 @@ impl Table for ClassTable {
             Col(c.pc4),
         ];
         entry.extend(control);
+        if let Some(bad) = c.bad {
+            entry.resize(BAD_SLOT, Const(F64::ZERO));
+            entry.push(Col(bad));
+        }
         f.counted(entry, c.rbc);
         let [s1, s2, sd] = REG_SLOTS;
         f.access(SEP_REG, Col(c.a1), c.ts, c.acc, 0, s1, Col(c.v1), Col(c.v1));
@@ -691,9 +731,11 @@ impl Table for ClassTable {
                 ctx.col(out, rows, address + 2, |r| F64(r.ram.new));
             }
         }
+        if let Some(bad) = c.bad {
+            ctx.col(out, rows, bad, |_| F64::ZERO);
+        }
         ctx.accesses(out, rows, c.acc, |r| &r.acc);
         ctx.col(out, rows, c.rbc, |r| r.bytecode_read);
-        debug_assert_eq!(self.spec.ports.len(), word_columns(self.index).len());
     }
 }
 

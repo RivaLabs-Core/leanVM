@@ -130,8 +130,7 @@ impl Program {
             }
             let step = m.step()?;
             let e = &p.entries[step.index];
-            let table = crate::tables::table_of(e.class)
-                .unwrap_or_else(|| panic!("no table proves {:?} yet (pc {:#x})", e.class, p.pc_of(step.index)));
+            let table = crate::tables::table_of(e.class).expect("every class that runs has a table");
             // The register accesses, then the RAM access if the class has one. Their
             // order here is the order of their columns, not of their clock slots.
             let cells = [e.a1, e.a2, e.ad].map(|cell| cell as usize);
