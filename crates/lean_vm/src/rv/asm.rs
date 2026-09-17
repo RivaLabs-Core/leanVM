@@ -233,6 +233,12 @@ impl Asm {
         }
     }
 
+    /// `blake2s rs1, rs2` ([`super::hash`]): compress the block at `rs1` with the
+    /// counter `rs2`, `last` marking the final block.
+    pub fn blake2s(&mut self, rs1: u32, rs2: u32, last: bool) -> &mut Self {
+        self.word(r_type(super::hash::OPCODE, last as u32, 0, 0, rs1, rs2))
+    }
+
     /// `exit(a0)`.
     pub fn exit(&mut self) -> &mut Self {
         self.i("addi", A7, ZERO, super::SYS_EXIT as i32).word(ECALL)

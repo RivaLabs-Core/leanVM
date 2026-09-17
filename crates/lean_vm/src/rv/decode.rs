@@ -1,7 +1,7 @@
 //! The decoder: a 32-bit word at `pc` to its [`Entry`]. Anything rv64im does not
 //! define, a reserved encoding included, is [`Entry::ILLEGAL`].
 
-use super::{Class, Entry, SINK, Target, alu, div, load, mul, mulh, shift, store};
+use super::{Class, Entry, SINK, Target, alu, div, hash, load, mul, mulh, shift, store};
 
 /// Sign-extend the low `bits` bits of `x`.
 fn sext(x: u32, bits: u32) -> u64 {
@@ -149,6 +149,10 @@ pub fn decode(word: u32, pc: u64) -> Entry {
         },
         // FENCE: a no-op, whatever its other fields hold.
         0x0f if f3 == 0 => entry(Class::Alu, 0, 0, 0, 0, 0),
+        // The BLAKE2s precompile: the block at rs1, the counter in rs2, no destination.
+        hash::OPCODE if f7 == 0 && rd == 0 && f3 <= 1 => {
+            entry(Class::Hash, if f3 == 1 { hash::FINAL } else { 0 }, rs1, rs2, 0, 0)
+        }
         // ECALL: a jump to the halt slot. EBREAK and the CSR instructions are illegal.
         0x73 if word == 0x73 => Entry {
             target: Target::Halt,
@@ -190,10 +194,13 @@ mod tests {
             0x0000_100f,    // FENCE.I
             0x0000_0000,
             0xffff_ffff,
-            0x0000_7003, // a load of width 7
-            0x0000_4023, // a store of width 4
-            0x0000_2063, // a branch with function 2
-            0x0000_1067, // JALR with a nonzero function
+            0x0000_7003,          // a load of width 7
+            0x0000_4023,          // a store of width 4
+            0x0000_2063,          // a branch with function 2
+            0x0000_1067,          // JALR with a nonzero function
+            0x0000_208b,          // BLAKE2S with function 2
+            0x0000_008b | 5 << 7, // BLAKE2S with a destination
+            0x0200_000b,          // BLAKE2S with a function-7 bit set
         ];
         for word in illegal {
             assert_eq!(decode(word, 0), Entry::ILLEGAL, "{word:#010x}");

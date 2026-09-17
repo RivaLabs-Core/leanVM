@@ -2,8 +2,8 @@
 //! for every access, what the memory argument needs ([`Trace`]).
 
 use super::*;
-use crate::rv::{self, LOG_REGS, Machine, RAM_BASE, Trap, machine::compute};
-use crate::tables::{CLOCK_STRIDE, RAM_SLOT, RANGE_LOG, REG_SLOTS};
+use crate::rv::{self, Class, LOG_REGS, Machine, RAM_BASE, Trap, hash, machine::compute};
+use crate::tables::{CLASSES, CLOCK_STRIDE, RAM_SLOT, RANGE_LOG, REG_SLOTS, block_slot};
 use primitives::field::{F64, mul_by_g};
 
 pub struct Execution {
@@ -125,23 +125,41 @@ impl Program {
         while !m.halted() {
             // A cell's first access is measured from the seed, so the whole run has
             // to fit the range a gap can take (§sec:memchan).
-            if tick >= u32::MAX - CLOCK_STRIDE {
+            if tick >= u32::MAX - block_slot(hash::WORDS) {
                 return Err(Trap::CycleCap);
             }
             let step = m.step()?;
             let e = &p.entries[step.index];
             let table = crate::tables::table_of(e.class).expect("every class that runs has a table");
+            let spec = CLASSES[table];
             // The register accesses, then the RAM access if the class has one. Their
             // order here is the order of their columns, not of their clock slots.
             let cells = [e.a1, e.a2, e.ad].map(|cell| cell as usize);
+            let n_regs = if spec.writes_register() { 3 } else { 2 };
             let mut acc: [Access; 4] = std::array::from_fn(|i| match cells.get(i) {
-                Some(&cell) => regs.access(&mut ranges, cell, tick + REG_SLOTS[i], advance(ts, REG_SLOTS[i])),
-                None => padding_access_unread(),
+                Some(&cell) if i < n_regs => {
+                    regs.access(&mut ranges, cell, tick + REG_SLOTS[i], advance(ts, REG_SLOTS[i]))
+                }
+                _ => padding_access_unread(),
             });
             if let Some(access) = step.ram {
                 let cell = ((access.address - RAM_BASE) / 8) as usize;
                 acc[3] = ram.access(&mut ranges, cell, tick + RAM_SLOT, advance(ts, RAM_SLOT));
             }
+            // A hash row's block, word `k` at `v1 ^ 8k`, after its two register reads.
+            let hash = step.hash.map(|h| {
+                let mut all = [padding_access_unread(); 2 + hash::WORDS];
+                all[..2].copy_from_slice(&acc[..2]);
+                for k in 0..hash::WORDS {
+                    let cell = (((step.v1 ^ (8 * k as u64)) - RAM_BASE) / 8) as usize;
+                    all[2 + k] = ram.access(&mut ranges, cell, tick + block_slot(k), advance(ts, block_slot(k)));
+                }
+                Box::new(HashRow {
+                    block: h.block,
+                    out: h.out,
+                    acc: all,
+                })
+            });
             rows[table].push(Row {
                 index: step.index as u32,
                 ts,
@@ -152,10 +170,11 @@ impl Program {
                 vd_old: step.vd_old,
                 ram: step.ram.unwrap_or_default(),
                 acc,
+                hash,
                 bytecode_read: fetch(step.index),
             });
-            tick += CLOCK_STRIDE;
-            ts = advance(ts, CLOCK_STRIDE);
+            tick += spec.stride();
+            ts = advance(ts, spec.stride());
         }
         let syscall = m.regs[rv::SYSCALL_REG as usize];
         if syscall != rv::SYS_EXIT {
@@ -173,7 +192,23 @@ impl Program {
                     let e = &p.entries[index];
                     let table = crate::tables::table_of(e.class).expect("a fill block's class has a table");
                     let (out, taken, access) = compute(e, 0, 0, 0);
-                    let n_accesses = crate::tables::CLASSES[table].n_accesses();
+                    let n_accesses = CLASSES[table].n_accesses();
+                    // The row's accesses are all padding ones, in a hash row's own array.
+                    let mut acc = [padding_access_unread(); 4];
+                    let mut hash = (e.class == Class::Hash).then(|| {
+                        // The compression of a zero block, whose result the row rewrites.
+                        let mut h = rv::machine::compute_hash([0; hash::WORDS], 0, e.flags);
+                        h.block[hash::OUT as usize / 8..][..4].copy_from_slice(&h.out);
+                        Box::new(HashRow {
+                            block: h.block,
+                            out: h.out,
+                            acc: [padding_access_unread(); 2 + hash::WORDS],
+                        })
+                    });
+                    let all = hash.as_mut().map_or(&mut acc[..], |h| &mut h.acc[..]);
+                    for a in &mut all[..n_accesses] {
+                        *a = padding_access(&mut ranges);
+                    }
                     rows[table].push(Row {
                         index: index as u32,
                         ts: F64::ZERO,
@@ -183,13 +218,8 @@ impl Program {
                         taken,
                         vd_old: if e.link { p.pc_of(index) + 4 } else { out },
                         ram: access,
-                        acc: std::array::from_fn(|i| {
-                            if i < n_accesses {
-                                padding_access(&mut ranges)
-                            } else {
-                                padding_access_unread()
-                            }
-                        }),
+                        acc,
+                        hash,
                         bytecode_read: fetch(index),
                     });
                 }

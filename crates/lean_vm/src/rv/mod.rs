@@ -9,7 +9,8 @@
 //!
 //! Every row reads two registers and writes one. An instruction with fewer reads
 //! `x0`, and one with no destination, or with `rd = x0`, writes [`SINK`], a cell
-//! nothing reads: that is what hardwires `x0` to zero.
+//! nothing reads: that is what hardwires `x0` to zero. The one exception is the
+//! BLAKE2s precompile ([`hash`]), whose row writes RAM instead of a register.
 //!
 //! A trap is the absence of a run: [`machine::Trap`].
 
@@ -63,6 +64,8 @@ pub enum Class {
     /// The high word of a product.
     Mulh,
     Div,
+    /// The BLAKE2s compression, a custom instruction ([`hash`]).
+    Hash,
     /// No table runs it: reaching one is a trap.
     Illegal,
 }
@@ -120,14 +123,19 @@ impl Entry {
             Class::Mul => &mul::LEGAL,
             Class::Mulh => &mulh::LEGAL,
             Class::Div => &div::LEGAL,
+            Class::Hash => &hash::LEGAL,
             Class::Illegal => return *self == Self::ILLEGAL,
         };
         let control = self.class == Class::Alu;
+        // A hash row writes no register and reads no immediate: its table holds both at
+        // their constants.
+        let hash = self.class == Class::Hash;
         self.a1 < 32
             && self.a2 < 32
             && (1..=SINK).contains(&self.ad)
             && legal.contains(&self.flags)
             && (control || (self.target == Target::Next && !self.link && !self.jalr))
+            && (!hash || (self.ad == SINK && self.imm == 0))
     }
 }
 
@@ -215,6 +223,28 @@ pub mod mulh {
     pub const SIGNED_2: u64 = 1 << 1;
 
     pub const LEGAL: [u64; 3] = [SIGNED_1 | SIGNED_2, SIGNED_1, 0];
+}
+
+/// [`Class::Hash`]: `blake2s rs1, rs2`, the BLAKE2s compression of the 128-byte block
+/// at `rs1`, with `rs2` the byte counter. The block is the chaining value (32 bytes),
+/// where the result goes (32 bytes), then the message (64 bytes). Word `k` of the
+/// block is the cell at `rs1 ^ 8k`, which is `rs1 + 8k` when `rs1` is aligned to the
+/// block, as the guest library makes sure; an unaligned `rs1` permutes the words,
+/// which is deterministic and provable, and a guest bug. The flags are the
+/// finalization word `f0`: all ones on the last block.
+pub mod hash {
+    /// The custom-0 opcode, R-type: `funct3` is 1 for the final block, `funct7` and `rd` are zero.
+    pub const OPCODE: u32 = 0x0b;
+    /// Byte offsets in the block.
+    pub const H: u64 = 0;
+    pub const OUT: u64 = 32;
+    pub const M: u64 = 64;
+    /// The block's words, and how many the row rewrites.
+    pub const WORDS: usize = 16;
+    pub const BLOCK_BYTES: u64 = 8 * WORDS as u64;
+
+    pub const FINAL: u64 = u32::MAX as u64;
+    pub const LEGAL: [u64; 2] = [0, FINAL];
 }
 
 /// [`Class::Div`]'s flags.

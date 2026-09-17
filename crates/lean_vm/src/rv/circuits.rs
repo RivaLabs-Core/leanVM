@@ -45,9 +45,20 @@ fn sext32_if(c: &mut Builder, word: Wire, x: &[Wire]) -> Word {
         .collect()
 }
 
-/// `x + y`, the carry out of the top bit dropped.
+/// `x + y` over `x.len()` bits, the carry out of the top bit dropped: one product
+/// per bit but the top, the carry into bit `i + 1` being `maj(x_i, y_i, c_i)`.
 fn add(c: &mut Builder, x: &[Wire], y: &[Wire]) -> Word {
-    let (sum, _) = flock::arith::add::Adder::build(c, x, y);
+    let mut carry = None;
+    let mut sum = Vec::with_capacity(x.len());
+    for (i, (&x, &y)) in x.iter().zip(y).enumerate() {
+        let xc = c.xor(x, carry);
+        let yc = c.xor(y, carry);
+        sum.push(c.xor(xc, y));
+        if i + 1 < sum.capacity() {
+            let maj = c.and(xc, yc);
+            carry = c.xor(maj, carry);
+        }
+    }
     sum
 }
 
@@ -363,6 +374,53 @@ pub fn alu() -> Circuit {
     c.finish()
 }
 
+/// [`super::Class::Hash`]'s circuit: `(t, f0, h, m) -> out`, the BLAKE2s compression
+/// ([`super::semantics::blake2s`]) on the 32-bit halves of the block's words, `h`
+/// and `out` four words each and `m` eight. Every G is six 32-bit additions, its
+/// two three-operand ones chained, and the state is never materialized: only the
+/// carries are products, and the result's words are copied out.
+pub fn blake2s() -> Circuit {
+    use primitives::hash::{G_LANES, IV, SIGMA};
+    let mut c = Builder::new(
+        &[64, 32, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64],
+        &[64, 64, 64, 64],
+    );
+    let half = |c: &Builder, port: usize, i: usize| -> Word { c.input(port)[32 * (i % 2)..32 * (i % 2) + 32].to_vec() };
+    let (t, f0) = (c.input(0), c.input(1));
+    let h: Vec<Word> = (0..8).map(|i| half(&c, 2 + i / 2, i)).collect();
+    let m: Vec<Word> = (0..16).map(|i| half(&c, 6 + i / 2, i)).collect();
+    let literal = |c: &Builder, x: u32| -> Word { (0..32).map(|i| c.one().filter(|_| x >> i & 1 == 1)).collect() };
+    let rotr = |w: &[Wire], r: usize| -> Word { (0..32).map(|i| w[(i + r) % 32]).collect() };
+
+    let mut v = h.clone();
+    v.extend(IV[..4].iter().map(|&x| literal(&c, x)));
+    for (i, x) in [&t[..32], &t[32..], &f0, &[None; 32]].into_iter().enumerate() {
+        let iv = literal(&c, IV[4 + i]);
+        v.push(xor_words(&mut c, &iv, x));
+    }
+    for round in &SIGMA {
+        for (g, &[a, b, cc, d]) in G_LANES.iter().enumerate() {
+            for (x, r1, r2) in [(&m[round[2 * g]], 16, 12), (&m[round[2 * g + 1]], 8, 7)] {
+                let ab = add(&mut c, &v[a], &v[b]);
+                v[a] = add(&mut c, &ab, x);
+                let da = xor_words(&mut c, &v[d], &v[a]);
+                v[d] = rotr(&da, r1);
+                v[cc] = add(&mut c, &v[cc], &v[d]);
+                let bc = xor_words(&mut c, &v[b], &v[cc]);
+                v[b] = rotr(&bc, r2);
+            }
+        }
+    }
+    for i in 0..8 {
+        let hv = xor_words(&mut c, &h[i], &v[i]);
+        let out = xor_words(&mut c, &hv, &v[i + 8]);
+        for (bit, &wire) in out.iter().enumerate() {
+            c.output(i / 2, 32 * (i % 2) + bit, wire);
+        }
+    }
+    c.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,6 +629,42 @@ mod tests {
         );
         assert_eq!(run(&div, &[7, 0, 0, 0, 0], 5..7), [u64::MAX, 0]);
         assert_eq!(run(&div, &[7, 0, crate::rv::div::REM, 0, 0], 5..7), [7, 0]);
+    }
+
+    #[test]
+    fn blake2s_is_its_reference() {
+        let circuit = blake2s();
+        assert_eq!(circuit.k_log(), 14, "a compression is 256 packed words");
+        let mut rng = Rng(0xA6);
+        for round in 0..40 {
+            let block: [u64; 16] = std::array::from_fn(|_| rng.word());
+            let t = rng.word();
+            // The legal flags, and now and then any finalization word, which the
+            // circuit XORs in like the reference does.
+            let flags = match round % 4 {
+                0 => crate::rv::hash::FINAL,
+                1 => rng.next() as u32 as u64,
+                _ => 0,
+            };
+            let inputs: Vec<u64> = [t, flags]
+                .into_iter()
+                .chain(block[..4].iter().chain(&block[8..]).copied())
+                .collect();
+            let expected = if crate::rv::hash::LEGAL.contains(&flags) {
+                semantics::blake2s(&block, t, flags)
+            } else {
+                let half = |w: &[u64]| -> Vec<u32> { w.iter().flat_map(|&w| [w as u32, (w >> 32) as u32]).collect() };
+                let out = flock::hash::blake2s_compress(
+                    &half(&block[..4]).try_into().unwrap(),
+                    &half(&block[8..]).try_into().unwrap(),
+                    t,
+                    flags as u32,
+                    0,
+                );
+                std::array::from_fn(|i| out[2 * i] as u64 | (out[2 * i + 1] as u64) << 32)
+            };
+            assert_eq!(run(&circuit, &inputs, 14..18), expected, "flags {flags:#x}");
+        }
     }
 
     /// flock proves a batch of honest instances, and refuses one with a flipped output bit.

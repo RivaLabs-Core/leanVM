@@ -1,7 +1,7 @@
 //! What each [`Class`](super::Class) computes: the reference its circuit is tested
 //! against, and what the interpreter runs. Defined on a class's legal flags only.
 
-use super::{alu, div, load, mul, mulh, shift, store};
+use super::{alu, div, hash, load, mul, mulh, shift, store};
 
 fn sext32(x: u64) -> u64 {
     x as u32 as i32 as i64 as u64
@@ -154,4 +154,20 @@ pub fn div(v1: u64, v2: u64, flags: u64) -> u64 {
     };
     let out = if rem { r } else { q };
     if word { sext32(out) } else { out }
+}
+
+/// The 32-bit words of `words`, little-endian.
+fn halves<const N: usize>(words: &[u64]) -> [u32; N] {
+    std::array::from_fn(|i| (words[i / 2] >> (32 * (i % 2))) as u32)
+}
+
+/// [`super::Class::Hash`]: the compression of the block's chaining value and message
+/// with the counter `t` and the finalization word `flags`, as the four words the row
+/// writes back. `block` is the block's sixteen words.
+pub fn blake2s(block: &[u64; hash::WORDS], t: u64, flags: u64) -> [u64; 4] {
+    let mut h: [u32; 8] = halves(&block[..4]);
+    let m: [u32; 16] = halves(&block[8..]);
+    debug_assert!(hash::LEGAL.contains(&flags));
+    primitives::hash::compress(&mut h, &m, t, flags == hash::FINAL);
+    std::array::from_fn(|i| h[2 * i] as u64 | (h[2 * i + 1] as u64) << 32)
 }

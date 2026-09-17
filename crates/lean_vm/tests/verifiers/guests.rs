@@ -53,6 +53,22 @@ fn blake2s_guest() {
     );
 }
 
+/// The same digest through the `blake2s` instruction, from the runtime's hasher: the
+/// precompile as a guest reaches it, on a message of several blocks.
+#[test]
+fn hash_guest() {
+    let length = 1000u64;
+    let message: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+    let digest = primitives::hash::Hasher::new().update(&message).finalize();
+    let expected = std::array::from_fn(|i| u64::from_le_bytes(digest[8 * i..8 * i + 8].try_into().unwrap()));
+    proves_and_verifies(
+        "hash",
+        include_bytes!("../../../../guests/elf/hash.elf"),
+        [length, 0, 0, 0],
+        expected,
+    );
+}
+
 /// Multiplications and divisions as `rustc` emits them, 128-bit arithmetic included.
 #[test]
 fn numbers_guest() {

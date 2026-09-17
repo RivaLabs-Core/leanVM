@@ -66,7 +66,9 @@ fn nop(class: Class) -> u32 {
         Class::Mul => asm::r_type(0x33, 0, 1, 0, 0, 0),
         Class::Mulh => asm::r_type(0x33, 3, 1, 0, 0, 0),
         Class::Div => asm::r_type(0x33, 5, 1, 0, 0, 0),
-        class => unreachable!("no fill block of {class:?}"),
+        // A compression of the block at address zero, which clock zero never checks.
+        Class::Hash => asm::r_type(crate::rv::hash::OPCODE, 0, 0, 0, 0, 0),
+        Class::Illegal => unreachable!("no fill block of an illegal entry"),
     }
 }
 

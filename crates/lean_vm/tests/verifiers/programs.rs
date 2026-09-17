@@ -235,6 +235,66 @@ fn divisions_prove_and_verify() {
     proves_and_verifies("div", &program, [0; 4], expected);
 }
 
+/// BLAKE2s of 100 bytes through the precompile: two compressions of the block at
+/// `RAM_BASE + 128`, the chaining value copied forward between them and the second
+/// message block loaded from the image, checked against the host's hash.
+#[test]
+fn blake2s_precompile_proves_and_verifies() {
+    use lean_vm::rv::hash::{H, M, OUT};
+    const BLOCK: u64 = RAM_BASE + 128;
+    let data: Vec<u8> = (0..100u32).map(|i| (i * 37 + 11) as u8).collect();
+    let words = |bytes: &[u8]| -> Vec<u64> {
+        let mut padded = bytes.to_vec();
+        padded.resize(64, 0);
+        padded
+            .chunks(8)
+            .map(|w| u64::from_le_bytes(w.try_into().unwrap()))
+            .collect()
+    };
+    let iv: Vec<u64> = primitives::hash::PARAM_IV
+        .chunks(2)
+        .map(|w| w[0] as u64 | (w[1] as u64) << 32)
+        .collect();
+    // The image: the block (its chaining value seeded, its message the first 64 bytes),
+    // then the second message block.
+    let mut image = vec![0u64; ((BLOCK - RAM_BASE) / 8 - 4) as usize];
+    image.extend(&iv);
+    image.extend([0; 4]);
+    image.extend(words(&data[..64]));
+    image.extend(words(&data[64..]));
+    let second = BLOCK + 128;
+
+    let mut a = Asm::new();
+    a.li(S0, BLOCK).li(S1, 64).blake2s(S0, S1, false);
+    for k in 0..4 {
+        a.load("ld", T0, (OUT + 8 * k) as i32, S0)
+            .store("sd", T0, (H + 8 * k) as i32, S0);
+    }
+    a.li(T1, second);
+    for k in 0..8 {
+        a.load("ld", T0, 8 * k, T1)
+            .store("sd", T0, (M + 8 * k as u64) as i32, S0);
+    }
+    a.li(S1, data.len() as u64).blake2s(S0, S1, true);
+    for (i, reg) in [A0, A1, A2, A3].into_iter().enumerate() {
+        a.load("ld", reg, (OUT + 8 * i as u64) as i32, S0);
+    }
+    let program = Program::new(&a.exit().finish(), TEXT_BASE, image, 7);
+    let expected: [u64; 4] = words(&primitives::hash::hash(&data))[..4].try_into().unwrap();
+    proves_and_verifies("blake2s", &program, [0; 4], expected);
+
+    // A block pointer that is no word address traps, like a misaligned load.
+    let text = Asm::new().li(S0, BLOCK + 4).blake2s(S0, ZERO, true).exit().finish();
+    let program = Program::new(&text, TEXT_BASE, vec![], 7);
+    assert_eq!(
+        prove(&program, [0; 4], 1).err(),
+        Some(lean_vm::rv::Trap::Misaligned {
+            pc: TEXT_BASE + 8,
+            address: BLOCK + 4
+        })
+    );
+}
+
 /// A run that traps has no proof, and says why.
 #[test]
 fn a_trap_is_reported() {

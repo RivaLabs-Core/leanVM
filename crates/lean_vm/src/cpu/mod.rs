@@ -23,7 +23,7 @@ pub mod layout;
 mod trace;
 pub use execute::Execution;
 pub use layout::*;
-pub(crate) use trace::{Access, Row, Trace};
+pub(crate) use trace::{Access, HashRow, Row, Trace};
 
 /// Each table holds at most `2^MAX_LOG_ROWS` rows (executed instructions of its
 /// class). Together with the bytecode cap these are the instance caps from “Counts
@@ -656,7 +656,7 @@ mod tests {
         let t = &mut exec.trace;
         let accesses = t.rows.iter_mut().enumerate().flat_map(|(table, rows)| {
             let n = tables::CLASSES[table].n_accesses();
-            rows.iter_mut().flat_map(move |r| r.acc[..n].iter_mut())
+            rows.iter_mut().flat_map(move |r| r.accesses_mut()[..n].iter_mut())
         });
         for a in accesses {
             let (l, h) = ((a.gap & mask) as usize, (a.gap >> tables::RANGE_LOG) as usize);

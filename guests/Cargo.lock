@@ -17,6 +17,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "hash"
+version = "0.1.0"
+dependencies = [
+ "leanvm-guest",
+]
+
+[[package]]
 name = "leanvm-guest"
 version = "0.1.0"
 

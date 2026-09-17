@@ -4,7 +4,7 @@ use super::{
     Class, Entry, INPUT_WORDS, LOG_REGS, MAX_LOG_RAM, MAX_LOG_TEXT, OUTPUT_REGS, RAM_BASE, SYS_EXIT, SYSCALL_REG,
     TEXT_BASE,
 };
-use super::{Target, decode, load, semantics, store};
+use super::{Target, decode, hash, load, semantics, store};
 
 /// A decoded program: its text, where it starts, and RAM as the run finds it.
 #[derive(Clone, Debug)]
@@ -131,8 +131,16 @@ pub struct RamAccess {
     pub new: u64,
 }
 
+/// The block a hash row works on ([`hash`]): its words as the row found them, and
+/// the four it leaves in the result's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HashAccess {
+    pub block: [u64; hash::WORDS],
+    pub out: [u64; 4],
+}
+
 /// One executed instruction, as a row of its class's table records it.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Step {
     /// The entry executed.
     pub index: usize,
@@ -141,10 +149,12 @@ pub struct Step {
     /// What the class computed.
     pub out: u64,
     pub taken: bool,
-    /// What `ad` held, and what it holds now: `out`, or `pc + 4` for a link.
+    /// What `ad` held, and what it holds now: `out`, or `pc + 4` for a link. Zeros
+    /// for a hash row, which writes no register.
     pub vd_old: u64,
     pub vd: u64,
     pub ram: Option<RamAccess>,
+    pub hash: Option<Box<HashAccess>>,
     pub npc: u64,
 }
 
@@ -178,7 +188,15 @@ pub fn compute(e: &Entry, v1: u64, v2: u64, cell: u64) -> (u64, bool, RamAccess)
             false,
             ram(semantics::store(cell, address, v2, e.flags), e.flags & store::LOG_WIDTH),
         ),
-        Class::Illegal => (0, false, none),
+        Class::Hash | Class::Illegal => (0, false, none),
+    }
+}
+
+/// What a hash row does to its block: [`semantics::blake2s`] of the block's words.
+pub fn compute_hash(block: [u64; hash::WORDS], t: u64, flags: u64) -> HashAccess {
+    HashAccess {
+        block,
+        out: semantics::blake2s(&block, t, flags),
     }
 }
 
@@ -239,9 +257,16 @@ impl<'a> Machine<'a> {
             self.ram[cell] = access.new;
             access
         });
+        let hash = match e.class {
+            Class::Hash => Some(Box::new(self.hash(pc, v1, v2, e.flags)?)),
+            _ => None,
+        };
         let pc4 = pc.wrapping_add(4);
         let vd = if e.link { pc4 } else { out };
-        let vd_old = std::mem::replace(&mut self.regs[e.ad as usize], vd);
+        let vd_old = match e.class {
+            Class::Hash => 0,
+            _ => std::mem::replace(&mut self.regs[e.ad as usize], vd),
+        };
         let npc = match (e.jalr, taken) {
             (true, _) => out,
             (false, true) => self.program.target_of(index).expect("a taken entry has a target"),
@@ -257,8 +282,26 @@ impl<'a> Machine<'a> {
             vd_old,
             vd,
             ram,
+            hash,
             npc,
         })
+    }
+
+    /// A hash row's block ([`hash`]): word `k` is the cell at `base ^ 8k`, so `base`
+    /// has to be a word address and every word of the block in RAM.
+    fn hash(&mut self, pc: u64, base: u64, t: u64, flags: u64) -> Result<HashAccess, Trap> {
+        if !base.is_multiple_of(8) {
+            return Err(Trap::Misaligned { pc, address: base });
+        }
+        let mut cells = [0usize; hash::WORDS];
+        for (k, cell) in cells.iter_mut().enumerate() {
+            *cell = self.cell(base ^ (8 * k as u64))?;
+        }
+        let access = compute_hash(cells.map(|cell| self.ram[cell]), t, flags);
+        for (j, &out) in access.out.iter().enumerate() {
+            self.ram[cells[hash::OUT as usize / 8 + j]] = out;
+        }
+        Ok(access)
     }
 
     /// Run to the halt slot, within `cycle_cap` steps, and return the public output `a0..a3`.

@@ -20,10 +20,28 @@ pub(crate) struct Access {
     pub(crate) count_hi: F64,
 }
 
+/// What a hash row adds to a [`Row`]: its block's words as found and the four it
+/// writes ([`crate::rv::hash`]), and every one of its accesses, the registers' first.
+pub(crate) struct HashRow {
+    pub(crate) block: [u64; crate::rv::hash::WORDS],
+    pub(crate) out: [u64; 4],
+    pub(crate) acc: [Access; 2 + crate::rv::hash::WORDS],
+}
+
+impl HashRow {
+    /// Word `k` of the block after the row.
+    pub(crate) fn word_after(&self, k: usize) -> u64 {
+        match k.wrapping_sub(crate::rv::hash::OUT as usize / 8) {
+            j if j < 4 => self.out[j],
+            _ => self.block[k],
+        }
+    }
+}
+
 pub(crate) struct Row {
     /// The entry executed.
     pub(crate) index: u32,
-    /// The row's clock `g^{4·cycle}`, zero on a padding row.
+    /// The row's clock, zero on a padding row.
     pub(crate) ts: F64,
     pub(crate) v1: u64,
     pub(crate) v2: u64,
@@ -35,9 +53,30 @@ pub(crate) struct Row {
     /// The RAM cell a load or a store accessed: its bus address, what it held and
     /// what it holds. Zeros for another class.
     pub(crate) ram: crate::rv::machine::RamAccess,
-    /// `rs1`, `rs2`, `rd`, then the RAM access if the class has one.
+    /// `rs1`, `rs2`, `rd`, then the RAM access if the class has one. A hash row
+    /// keeps its accesses in `hash` instead.
     pub(crate) acc: [Access; 4],
+    pub(crate) hash: Option<Box<HashRow>>,
     pub(crate) bytecode_read: F64,
+}
+
+impl Row {
+    /// The row's accesses in column order, at least the class's
+    /// [`n_accesses`](crate::tables::ClassSpec::n_accesses).
+    pub(crate) fn accesses(&self) -> &[Access] {
+        match &self.hash {
+            Some(hash) => &hash.acc,
+            None => &self.acc,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn accesses_mut(&mut self) -> &mut [Access] {
+        match &mut self.hash {
+            Some(hash) => &mut hash.acc,
+            None => &mut self.acc,
+        }
+    }
 }
 
 pub(crate) struct Trace {
