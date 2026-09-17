@@ -1,4 +1,4 @@
-//! `disassemble` must render every one of the six opcodes without panicking,
+//! `disassemble` must render every one of the eight opcodes without panicking,
 //! so it stays usable when a failure names only a pc.
 
 use lean_compiler::{compile, disassemble, parse};
@@ -17,7 +17,7 @@ def main():
     d = StackBuf(4)
     blake2s(h, h, d)
     p = 1
-    p[1] = buff[GEN ** 4] + d[1]
+    p[1] = add_u64(mul_u64(buff[GEN ** 4], d[1]), d[2])
     p[GEN] = d[0]
     return
 ";
@@ -32,7 +32,9 @@ def main():
     let text = disassemble(&program.prog);
     print!("{text}");
 
-    for mnemonic in ["SET", "XOR64", "MUL64", "DEREF", "JUMP", "BLAKE2S"] {
+    for mnemonic in [
+        "SET", "XOR64", "MUL64", "DEREF", "JUMP", "BLAKE2S", "ADD_U64", "MUL_U64",
+    ] {
         assert!(text.contains(mnemonic), "disassembly is missing {mnemonic}");
     }
 }

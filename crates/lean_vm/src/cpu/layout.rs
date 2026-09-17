@@ -26,7 +26,18 @@ pub const RHI_CNT: usize = 5;
 // nothing duplicates them. flock's R1CS validity is discharged by the single
 // stacked WHIR opening over this commitment.
 pub const QFLOCK: usize = 6;
-pub const N_SHARED: usize = 7;
+// The packed witnesses of flock's two u64 circuits, committed the same way (§arith_flock).
+pub const QADD: usize = 7;
+pub const QMUL: usize = 8;
+pub const N_SHARED: usize = 9;
+
+/// The committed column holding a u64 operation's packed witness.
+pub(crate) const fn u64_column(op: crate::arith_flock::Op) -> usize {
+    match op {
+        crate::arith_flock::Op::Add => QADD,
+        crate::arith_flock::Op::Mul => QMUL,
+    }
+}
 
 /// Global column indexing: the shared columns occupy `0..N_SHARED`, then each
 /// table `t` (in [`tables::tables`] order) owns the contiguous block `[base[t],
@@ -50,6 +61,9 @@ pub fn schema() -> &'static Schema {
         Schema { base, n: next }
     })
 }
+
+/// The u64 operations, in table order.
+pub(crate) const U64_OPS: [crate::arith_flock::Op; 2] = [crate::arith_flock::Op::Add, crate::arith_flock::Op::Mul];
 
 /// Offset a table's local flush coordinates to global column indices.
 fn offset_coords(base: usize, coords: Vec<Coord>) -> Vec<Coord> {
@@ -101,6 +115,8 @@ pub(crate) struct Witness {
     pub(crate) ts_final: F64,
     /// Freed immediately after reduction, before the mixed PCS opening.
     pub(crate) flock_reduction: crate::hash_flock::PreparedReductionWitness,
+    /// The same for the two u64 circuits, `ADD_U64` then `MUL_U64`.
+    pub(crate) u64_reductions: [crate::arith_flock::Prepared; 2],
 }
 
 impl Witness {
@@ -169,6 +185,15 @@ pub fn col_kappa_sources(log_bytecode: usize) -> Vec<Option<(usize, usize)>> {
     for &c in &tables::BLAKE2S_VALUE_COLS {
         k[b3 + c] = None;
     }
+    // The same holds for the u64 tables: each circuit's packed witness is `2^(k_log +
+    // tau - LOG_PACKING)` words and already holds the three words a row touches.
+    for op in U64_OPS {
+        let t = tables::u64_table(op);
+        k[u64_column(op)] = Some((2 + t, op.stride_log()));
+        for &c in &tables::U64_VALUE_COLS {
+            k[sch.base[t] + c] = None;
+        }
+    }
     k
 }
 
@@ -231,7 +256,9 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
     let max_op = prog
         .iter()
         .map(|op| match *op {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => a.max(b).max(c),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::AddU64 { a, b, c } | Op::MulU64 { a, b, c } => {
+                a.max(b).max(c)
+            }
             Op::Set { o, .. } => o,
             Op::Deref { o1, o2, o3, .. } => o1.max(o2).max(o3),
             Op::Jump { oc, od, of } => oc.max(od).max(of),
@@ -249,10 +276,14 @@ pub fn bytecode_columns(prog: &[Op]) -> [Vec<F64>; 8] {
         Op::Deref { .. } => OP_DEREF,
         Op::Jump { .. } => OP_JUMP,
         Op::Blake2s { .. } => OP_BLAKE2S,
+        Op::AddU64 { .. } => tables::OP_ADD_U64,
+        Op::MulU64 { .. } => tables::OP_MUL_U64,
     };
     let operands = |op: &Op| -> (F64, F64, F64) {
         match *op {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => (g_at(a), g_at(b), g_at(c)),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::AddU64 { a, b, c } | Op::MulU64 { a, b, c } => {
+                (g_at(a), g_at(b), g_at(c))
+            }
             // The immediate rides the second operand slot.
             Op::Set { o, k } => (g_at(o), k, F64::ZERO),
             Op::Deref { o1, o2, o3, .. } => (g_at(o1), g_at(o2), g_at(o3)),
@@ -469,6 +500,14 @@ impl Program {
             crate::hash_flock::n_blocks_log(row_counts[tables::BLAKE2S_TABLE]),
             "the BLAKE2s table must be filled to flock's instance floor"
         );
+        for op in U64_OPS {
+            let t = tables::u64_table(op);
+            assert_eq!(
+                taus[t],
+                crate::arith_flock::n_blocks_log(op, row_counts[t]),
+                "the {op:?} table must be filled to flock's instance floor"
+            );
+        }
         let pi = [exec.init[0], exec.init[1], exec.init[2], exec.init[3]];
         assert_eq!(
             pi,
@@ -518,11 +557,11 @@ impl Program {
                 let ctx = FillCtx::new(tr, &gpow, &range_lo, &range_hi, &self.prog, 1 << l.taus[t], n);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
-            // Shared columns. These six plus `QFLOCK` below are every shared
+            // Shared columns. These six plus the three flock witnesses below are every shared
             // column, and each has to be written: the stack is uninitialized, so one
             // left out would be read as indeterminate bytes rather than caught by a
             // length mismatch.
-            const _: () = assert!(N_SHARED == 7, "a new shared column needs a fill here");
+            const _: () = assert!(N_SHARED == 9, "a new shared column needs a fill here");
             windows[MEM_INIT].copy_from_slice(&exec.init);
             windows[MEM_FIN].copy_from_slice(&exec.mem);
             windows[MFTS].copy_from_slice(&tr.mem_ts);
@@ -548,6 +587,18 @@ impl Program {
             crate::hash_flock::build_qflock_prepared(&blocks, windows[QFLOCK])
         });
 
+        // The two u64 circuits' packed witnesses, one instance per row of their table.
+        let u64_reductions = crate::stage!("Build u64 witnesses", || {
+            U64_OPS.map(|op| {
+                let rows = match op {
+                    crate::arith_flock::Op::Add => &tr.add_u64,
+                    crate::arith_flock::Op::Mul => &tr.mul_u64,
+                };
+                let pairs: Vec<(u64, u64)> = rows.iter().map(|r| (r.va.0, r.vb.0)).collect();
+                crate::arith_flock::Prepared::build(op, &pairs, windows[u64_column(op)])
+            })
+        });
+
         // (`execute` already asserts the run halts at the sentinel (pc, fp) =
         // (g^{B-1}, 0), exactly the boundary the public layout derives.)
         drop(windows); // release the borrow of `q` and of the virtual buffers
@@ -558,6 +609,7 @@ impl Program {
             log_mem,
             ts_final: tr.ts_final,
             flock_reduction,
+            u64_reductions,
         }
     }
 }

@@ -474,6 +474,19 @@ impl Program {
                     }
                     pc += 1;
                 }
+                Op::AddU64 { a, b, c } | Op::MulU64 { a, b, c } => {
+                    let u64_op = match op {
+                        Op::AddU64 { .. } => crate::arith_flock::Op::Add,
+                        _ => crate::arith_flock::Op::Mul,
+                    };
+                    let (aa, ab, ac) = (fp + a, fp + b, fp + c);
+                    let vc = u64_op.apply(m.get(aa), m.get(ab));
+                    m.put(ac, vc);
+                    for cell in [aa, ab, ac] {
+                        m.touch(cell);
+                    }
+                    pc += 1;
+                }
                 Op::Set { o, k } => {
                     let a = fp + o;
                     m.put(a, k);
@@ -750,6 +763,8 @@ impl Program {
         let mut deref: Vec<Drow> = Vec::new();
         let mut jump: Vec<Jrow> = Vec::new();
         let mut blake2s: Vec<Brow> = Vec::new();
+        let mut add_u64: Vec<Xrow> = Vec::new();
+        let mut mul_u64: Vec<Xrow> = Vec::new();
 
         let (mut pc, mut fp) = (0u32, 0u32);
         // The clock, as an exponent and as its g-power: cycle 1, so that the first
@@ -777,12 +792,18 @@ impl Program {
             let mut stride = CLOCK_STRIDE;
             let op = self.prog[pc as usize];
             match op {
-                Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => {
-                    let is_xor = matches!(op, Op::Xor64 { .. });
+                Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::AddU64 { a, b, c } | Op::MulU64 { a, b, c } => {
+                    use crate::arith_flock::Op as U64;
                     let (aa, ab, ac) = (fp + a, fp + b, fp + c);
                     let (va, vb, vc_old) = (m.get(aa), m.get(ab), m.get(ac));
-                    m.put(ac, if is_xor { va + vb } else { va * vb });
-                    let row = Xrow {
+                    let (vc, rows) = match op {
+                        Op::Xor64 { .. } => (va + vb, &mut xor64),
+                        Op::Mul64 { .. } => (va * vb, &mut mul64),
+                        Op::AddU64 { .. } => (U64::Add.apply(va, vb), &mut add_u64),
+                        _ => (U64::Mul.apply(va, vb), &mut mul_u64),
+                    };
+                    m.put(ac, vc);
+                    rows.push(Xrow {
                         pc,
                         fp,
                         ts,
@@ -795,12 +816,7 @@ impl Program {
                             m.access(ac, tick + 2, ts2),
                         ],
                         bytecode_read,
-                    };
-                    if is_xor {
-                        xor64.push(row);
-                    } else {
-                        mul64.push(row);
-                    }
+                    });
                     pc += 1;
                 }
                 Op::Set { o, k } => {
@@ -943,6 +959,8 @@ impl Program {
             deref.len(),
             jump.len(),
             blake2s.len(),
+            add_u64.len(),
+            mul_u64.len(),
         ];
 
         // The padding rows, written out rather than executed: they sit at clock zero
@@ -961,8 +979,15 @@ impl Program {
                         let (fp, ts) = (0, F64::ZERO);
                         let closing = pc == block_pc + size;
                         match self.prog[pc as usize] {
-                            Op::Xor64 { .. } | Op::Mul64 { .. } => {
-                                let row = Xrow {
+                            // Zero operands, and zero is the result of all four.
+                            op @ (Op::Xor64 { .. } | Op::Mul64 { .. } | Op::AddU64 { .. } | Op::MulU64 { .. }) => {
+                                let rows = match op {
+                                    Op::Xor64 { .. } => &mut xor64,
+                                    Op::Mul64 { .. } => &mut mul64,
+                                    Op::AddU64 { .. } => &mut add_u64,
+                                    _ => &mut mul_u64,
+                                };
+                                rows.push(Xrow {
                                     pc,
                                     fp,
                                     ts,
@@ -971,12 +996,7 @@ impl Program {
                                     vc_old: F64::ZERO,
                                     acc: std::array::from_fn(|_| m.padding_access()),
                                     bytecode_read,
-                                };
-                                if matches!(self.prog[pc as usize], Op::Xor64 { .. }) {
-                                    xor64.push(row);
-                                } else {
-                                    mul64.push(row);
-                                }
+                                });
                             }
                             Op::Set { k, .. } => set.push(Srow {
                                 pc,
@@ -1047,6 +1067,8 @@ impl Program {
             deref,
             jump,
             blake2s,
+            add_u64,
+            mul_u64,
             mem_ts: m.last_ts,
             bytecode_count,
             range_lo_count: m.range_lo,

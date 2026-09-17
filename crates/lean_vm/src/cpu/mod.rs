@@ -153,6 +153,9 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F64; 4]) 
         // floor describes a layout the arithmetization cannot express. `python-verifier`
         // rejects it here too.
         || taus[tables::BLAKE2S_TABLE] < crate::hash_flock::n_blocks_log(1)
+        || U64_OPS
+            .iter()
+            .any(|&op| taus[tables::u64_table(op)] < crate::arith_flock::n_blocks_log(op, 1))
         || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err()
     {
         return Err(CpuError::PublicInput);
@@ -325,6 +328,8 @@ pub enum CpuError {
     /// malformed sub-proof surfaces as [`CpuError::Transcript`] when the shared
     /// `stream`/`openings` fail to reconstruct or fully consume.)
     Blake2s(flock::verifier::VerifyError),
+    /// Flock's reduction for `ADD_U64` or `MUL_U64`.
+    U64(flock::verifier::VerifyError),
 }
 
 /// Per side, which table (if any) owns each bus block, as `(table, column base)`.
@@ -439,16 +444,22 @@ fn xi_form_pows(xi: F192) -> [F192; 3] {
     [pows[base], pows[base + 1], pows[base + 2]]
 }
 
-/// If `col` is a BLAKE2s **value** column (global index), its `q_flock` packed slot.
-/// These columns are virtual (uncommitted): their memory-bus evaluation claims
-/// are re-routed to `q_flock` slot evaluations, which is the whole binding: the
-/// bus-tied value IS the proven `q_flock` word, no separate check needed.
-fn blake2s_value_slot(col: usize) -> Option<usize> {
-    let base = schema().base[tables::BLAKE2S_TABLE];
-    tables::BLAKE2S_VALUE_COLS
-        .iter()
-        .position(|&c| base + c == col)
-        .map(|i| crate::hash_flock::SLOTS[i])
+/// If `col` is a flock-backed **value** column (global index), where its words
+/// live: the committed packed witness, the within-instance slot, and the stride
+/// between instances. These columns are virtual (uncommitted): their memory-bus
+/// evaluation claims are re-routed to slot evaluations of that witness, which is
+/// the whole binding: the bus-tied value IS the flock-proven word, no separate
+/// check needed.
+fn flock_value_slot(col: usize) -> Option<(usize, usize, usize)> {
+    let sch = schema();
+    let find = |table: usize, cols: &[usize]| cols.iter().position(|&c| sch.base[table] + c == col);
+    if let Some(i) = find(tables::BLAKE2S_TABLE, &tables::BLAKE2S_VALUE_COLS) {
+        return Some((QFLOCK, crate::hash_flock::SLOTS[i], crate::hash_flock::SLOT_STRIDE_LOG));
+    }
+    U64_OPS.iter().find_map(|&op| {
+        find(tables::u64_table(op), &tables::U64_VALUE_COLS)
+            .map(|i| (u64_column(op), crate::arith_flock::SLOTS[i], op.stride_log()))
+    })
 }
 
 /// Run statistics returned alongside the proof: the cycle count (total executed
@@ -473,7 +484,9 @@ pub struct Stats {
 
 impl Stats {
     /// Table names in `counts` order.
-    pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR64", "MUL64", "SET", "DEREF", "JUMP", "BLAKE2S"];
+    pub const TABLES: [&'static str; tables::N_TABLES] = [
+        "XOR64", "MUL64", "SET", "DEREF", "JUMP", "BLAKE2S", "ADD_U64", "MUL_U64",
+    ];
 
     /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
     ///
@@ -612,8 +625,22 @@ fn prove_execution(program: &Program, exec: &Execution, public_input: [F64; 4], 
     let n_blocks = flock_reduction.n_blocks();
     drop(flock_reduction);
     let offset = w.layout.placements[QFLOCK].offset;
-    let ring = crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced);
-    crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
+    let mut rings = vec![crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced)];
+    // The two u64 circuits the same way, each a ring-switched region of its own.
+    let u64_reductions = w.u64_reductions;
+    crate::stage!("u64 reductions", || {
+        for (op, prepared) in U64_OPS.into_iter().zip(&u64_reductions) {
+            let placement = &w.layout.placements[u64_column(op)];
+            let reduced = prepared.prove(&mut ps);
+            rings.push(flock::reduction::ring_switch_open(
+                placement.n_vars,
+                placement.offset,
+                &reduced,
+            ));
+        }
+    });
+    drop(u64_reductions);
+    crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &rings) });
     (
         ps.into_proof(),
         Stats {
@@ -724,8 +751,21 @@ pub fn verify_to_raw(
     let n_blocks = n_blake2s.max(1);
     let offset = l.placements[QFLOCK].offset;
     let replay = crate::hash_flock::verify_reduction(n_blocks, &mut vs).map_err(CpuError::Blake2s)?;
-    let ring = crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim);
-    pcs::verify(&mut vs, &slots, &ring, l.shape, log_inv_rate, &root).map_err(CpuError::Open)?;
+    let mut replays = Vec::with_capacity(U64_OPS.len());
+    for op in U64_OPS {
+        let tau = l.taus[tables::u64_table(op)];
+        replays.push(crate::arith_flock::verify_reduction(op, tau, &mut vs).map_err(CpuError::U64)?);
+    }
+    let mut rings = vec![crate::hash_flock::ring_switch_verify(n_blocks, offset, &replay.claim)];
+    for (op, replay) in U64_OPS.into_iter().zip(&replays) {
+        let placement = &l.placements[u64_column(op)];
+        rings.push(flock::reduction::ring_switch_verify(
+            placement.n_vars,
+            placement.offset,
+            &replay.claim,
+        ));
+    }
+    pcs::verify(&mut vs, &slots, &rings, l.shape, log_inv_rate, &root).map_err(CpuError::Open)?;
     vs.finish().map_err(CpuError::Transcript)?;
     Ok(vs.into_raw_proof())
 }
@@ -747,11 +787,11 @@ fn slot_claims(l: &Layout, claims: Vec<ColumnClaim>) -> Vec<pcs::SlotClaim> {
             // instance point `c.point` is the q_flock slot value, a boolean-selector
             // (strided) claim on QFLOCK, folded sparsely (2^n_log, not the 2^(8+n_log)
             // dense QFLOCK block).
-            if let Some(slot) = blake2s_value_slot(c.col) {
+            if let Some((q_col, slot, stride_log)) = flock_value_slot(c.col) {
                 return pcs::SlotClaim::Strided {
-                    offset: l.placements[QFLOCK].offset,
+                    offset: l.placements[q_col].offset,
                     slot,
-                    stride_log: crate::hash_flock::SLOT_STRIDE_LOG,
+                    stride_log,
                     point: c.point,
                     value: c.value,
                 };
@@ -855,6 +895,8 @@ mod tests {
         t.xor64
             .iter_mut()
             .chain(&mut t.mul64)
+            .chain(&mut t.add_u64)
+            .chain(&mut t.mul_u64)
             .for_each(|r| r.acc.iter_mut().for_each(&mut read));
         t.set.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));
         t.deref.iter_mut().for_each(|r| r.acc.iter_mut().for_each(&mut read));

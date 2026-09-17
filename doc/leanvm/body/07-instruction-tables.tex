@@ -118,3 +118,20 @@ The message, result, chaining value and metadata are all committed in $\qflock$:
     \end{align*}
   \end{itemize}
 \end{itemize}
+
+\subsection{\texttt{ADD\_U64} and \texttt{MUL\_U64}}\label{sec:tab-u64}
+
+\texttt{ADD\_U64}\ $[o_A,o_B,o_C]$ writes $\loc{o_C}\gets\loc{o_A}+\loc{o_B}\bmod 2^{64}$ and \texttt{MUL\_U64}\ $[o_A,o_B,o_C]$ writes $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}\bmod 2^{64}$, the three words read as unsigned integers (\S\ref{sec:vm}). The two tables differ in their opcode alone.
+
+Neither relation is a low-degree identity over $\K$, so each is proven as \texttt{BLAKE2S} is: by Flock, over a Boolean circuit (\S\ref{flock:u64}), one instance per row of the table, each operation having its own packed witness, $q_{\mathrm{add}}$ and $q_{\mathrm{mul}}$, committed beside $\qflock$. The packing is $64$ bits to a $\K$-element and a memory word is $64$ bits, so the operands and the result $v_A,v_B,v_C$ are the first three packed words of their instance, and the table commits none of them: the memory interactions below are what bind the circuit's inputs and output to the cells.
+\begin{itemize}
+\item \textbf{Columns:} $\pc,\fp,\ts$; operands $o_A,o_B,o_C$; the destination's old value $v_C^{\mathrm{old}}$; bytecode count $r_{\mathrm{bc}}$. The three words $v_A,v_B,v_C$ are committed in $q_{\mathrm{add}}$ or $q_{\mathrm{mul}}$.
+\item \textbf{Constraints:} the three accesses'. The arithmetic relation is handled by Flock.
+\item \textbf{Flushes:}
+  \begin{itemize}
+  \item \textbf{State:} \pull\ $\tup{\dsep{ST},\pc,\fp,\ts}$, \push\ $\tup{\dsep{ST},\gen\cdot\pc,\fp,\gen^{4}\cdot\ts}$.
+  \item \textbf{Bytecode:} $\rdf{\dsep{BC},\pc,r_{\mathrm{bc}},\opc{ADDU},o_A,o_B,o_C,0,0}$, with $\opc{MULU}$ for \texttt{MUL\_U64}.
+  \item \textbf{Memory:} $\acc{0}\tup{\fp\cdot o_A;\,v_A}$, $\acc{1}\tup{\fp\cdot o_B;\,v_B}$, $\acc{2}\tup{\fp\cdot o_C;\,v_C^{\mathrm{old}}\to v_C}$.
+  \end{itemize}
+\end{itemize}
+Flock proves a batch of at least $2^{13}$ bits and at least eight instances (\S\ref{flock:u64}), so \texttt{ADD\_U64}'s table has at least $2^{5}$ rows and \texttt{MUL\_U64}'s at least $2^{3}$, as \texttt{BLAKE2S}'s does; padding rows (\S\ref{sec:e2e-pad}) supply them, with $v_A=v_B=v_C=0$.

@@ -19,7 +19,7 @@ Dependency order, leaves first:
 | `primitives`      | field kernels (NEON/AVX), bit transposes, multilinear helpers, streaming stores, `bench` |
 | `fiat_shamir`     | VM-native `FiatShamirState` + prover/verifier transcript                |
 | `pcs`             | additive NTT, Merkle, ring switch, stacked WHIR                    |
-| `flock`           | batched R1CS over GF(2) for BLAKE2s: zerocheck + lincheck               |
+| `flock`           | batched R1CS over GF(2): zerocheck + lincheck, for the BLAKE2s circuit (`hash`) and the u64 adder and multiplier (`arith`) |
 | `lean_vm`         | arithmetization: tables, bus, constraints, `cpu::prove`/`verify`       |
 | `lean_compiler`   | zkDSL (Python subset) → ISA                                            |
 
@@ -68,6 +68,15 @@ Memory is read-write, by timestamped offline memory checking (`doc/leanvm` §sec
 - **The initial memory is the prover's**, the public words aside. That is how advice reaches a program, and it is why the zkDSL is unsound today: its `assert`, division, range check and hint checks all rely on a second write being an equality, and a second write now overwrites. `Program::write_once` marks such a program; `cpu::execute` then runs a first pass that solves for the one memory image all its instructions agree on (hints, back-solving, deferred `DEREF`s, and a panic on a conflicting write), and the machine starts from that image, which it never changes. A hand-assembled program (`Program::from_body`) runs the machine alone.
 - **A gap is below 2^32**, and a cell's first access is measured from zero, so a run is capped near 2^30 cycles. The executor asserts it.
 - `a_stale_read_unbalances_the_bus` is the soundness regression test (a forged run that serves an overwritten value), `lean_vm/tests/verifiers/read_write.rs` the program that only read-write memory can run, checked by both verifiers.
+
+## Flock-backed instructions
+
+`BLAKE2S`, `ADD_U64` and `MUL_U64` are relations no degree-2 identity over `K` expresses, so each is a Boolean circuit proven by flock (`doc/leanvm` Annex C, §flock:u64), glued in by `lean_vm::hash_flock` and `lean_vm::arith_flock`:
+
+- **One packed witness per circuit**, a committed column of the one stack (`QFLOCK`, `QADD`, `QMUL`): instance `j` is row `j` of the instruction's table. The packing is 64 bits a word and a memory word is 64 bits, so the words a row touches ARE packed words of its instance, and the table's value columns are virtual: their claims are routed to slots of that witness (`cpu::flock_value_slot`). A new flock-backed instruction follows the same three steps: a table with virtual value columns, a committed witness, a ring-switched region.
+- **One reduction per circuit, one opening for all.** The three zerocheck plus lincheck runs happen in table order after the public-word claims, each leaving a claim on its own witness; `pcs::stack_open` takes one ring-switched region per witness, all under one map challenge.
+- **Batch floors.** Flock needs eight instances and a zerocheck cube of `2^13` bits, so `ADD_U64`'s table has at least 32 rows and the other two at least 8 (`cpu::filler::MIN_ROWS`); padding rows supply them, as all-zero instances.
+- **The circuits are gate lists**, walked forwards by the verifier and backwards by the prover, never matrices. `python-verifier/verifier.py` rebuilds the adder and the multiplier gate for gate (`_adder`, `_multiplier`): the multiplier's carry-save schedule sorts rows with a stable sort, so a change to `flock::arith::mul` has to be mirrored there in the same order, and `u64_arithmetic_proves_and_verifies` is what catches a drift.
 
 ## The proving arena (`zk_alloc`)
 

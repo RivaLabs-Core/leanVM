@@ -83,7 +83,15 @@ fn hash_batch_prove_verify() {
 
         let t = Instant::now();
         let ring = ring_switch_open(n, 0, &reduced);
-        open_batch_mixed_whir_stacked(&mut ps, mu, &q_flock, &prover_data, &config, &[], &ring);
+        open_batch_mixed_whir_stacked(
+            &mut ps,
+            mu,
+            &q_flock,
+            &prover_data,
+            &config,
+            &[],
+            std::slice::from_ref(&ring),
+        );
         let open_s = t.elapsed().as_secs_f64();
         let prove_s = t_prove.elapsed().as_secs_f64();
 
@@ -130,7 +138,7 @@ fn hash_batch_prove_verify() {
                 1 << INITIAL_FOLDING_FACTOR,
                 &root,
                 &[],
-                &ring
+                std::slice::from_ref(&ring)
             )
             .is_ok(),
             "stacked PCS opening verifies"

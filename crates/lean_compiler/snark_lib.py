@@ -48,6 +48,18 @@ class _Elt:
         _ = idx, value
 
 
+def add_u64(a, b) -> _Elt:
+    """`a + b mod 2^64`, the two words read as unsigned integers: one ADD_U64."""
+    _ = a, b
+    return _Elt()
+
+
+def mul_u64(a, b) -> _Elt:
+    """`a * b mod 2^64`, the two words read as unsigned integers: one MUL_U64."""
+    _ = a, b
+    return _Elt()
+
+
 GEN = _Elt()
 """The fixed generator g = x of K^× = GF(2^64)^× (order 2^64 - 1)."""
 

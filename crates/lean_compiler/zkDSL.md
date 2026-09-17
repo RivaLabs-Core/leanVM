@@ -1,6 +1,6 @@
 # zkDSL Language Reference (leanVM)
 
-The zkDSL is a Python-syntax language that compiles to the leanVM ISA: six instructions (`XOR64`, `MUL64`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`) over 64-bit memory words in the binary field GF(2^64), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
+The zkDSL is a Python-syntax language that compiles to the leanVM ISA: eight instructions (`XOR64`, `MUL64`, `SET`, `DEREF`, `JUMP`, `BLAKE2S`, `ADD_U64`, `MUL_U64`) over 64-bit memory words in the binary field GF(2^64), with write-once memory and all indices carried "in the exponent" as powers of a fixed generator. For the underlying VM and proving system, see [`doc/leanvm/main.tex`](../../doc/leanvm/main.tex).
 
 > **Write-once memory is no longer enforced.** This language is written against write-once memory, and everything below says "asserts" where a second write lands on a written cell. The machine's memory is now read-write (`doc/leanvm` §sec:memchan): a compiled program still runs and its executions still prove, because the memory image in which all its equalities hold is a fixed point of the machine and the prover supplies it as the initial memory. But a second write now overwrites instead of asserting, so `assert`, `/`, the range check and every checked hint no longer bind a malicious prover. Only witness generation still refuses a conflicting write (`lean_vm::cpu::Program::write_once`). Treat the soundness claims in this document as describing the language's intent, not what a proof guarantees today.
 
@@ -22,6 +22,7 @@ Machine **words** (the contents of a memory cell, an immediate, one word of a ha
 
 - `+` is field addition = bitwise **XOR** (64-bit on words, so `x + x == 0`),
 - `*` is multiplication in `K`,
+- `add_u64(a, b)` and `mul_u64(a, b)` read the same two words as unsigned 64-bit integers instead, bit `i` being the coefficient of `x^i`, and wrap modulo `2^64`,
 - `/` is runtime field division, `a / b = a · b⁻¹`. It costs one `MUL64`: the compiler leaves the quotient cell unset and emits the checked relation `quotient · b == a`, which witness generation back-solves. Division by zero is undefined. This is distinct from `//`, compile-time integer floor division in sizes and indices,
 - an integer literal `n` is a 64-bit word whose bits are the coefficients of `x`: `5` is `1 + x^2`, not the integer five. A literal that does not fit in 64 bits is rejected in a value position, while compile-time integer arithmetic (a size, a bound, a keyword) reads it whole. Written `2 ** 64` in a value position it is not a literal: `**` there is a field power, so it is `x^64` reduced. A 192-bit constant is `f192(c0, c1, c2)`, with each limb an unsigned 64-bit compile-time integer,
 - `GEN` is the fixed generator `g = x` of the 64-bit field `K^×` (multiplicative order `2^64 − 1`),
@@ -491,6 +492,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `x = <literal>` / `GEN ** k` | 1 `SET` |
 | `a + b` | 1 `XOR64` |
 | `a * b` | 1 `MUL64` |
+| `add_u64(a, b)` / `mul_u64(a, b)` | 1 `ADD_U64` / 1 `MUL_U64`, each a flock circuit instance, so far dearer than a `MUL64` |
 | `a / b` | 1 `MUL64` (write-once back-solve; division by zero is undefined) |
 | heap read / store `buf[i]` | 1 `DEREF`; +1 `MUL64` for a *runtime* index (a compile-time g-power offset folds into the `DEREF`, for free) |
 | stack read `sa[k]` | 0 (direct cell addressing); a *store* is 1, like any other write |

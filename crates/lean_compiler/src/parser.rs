@@ -224,6 +224,7 @@ pub fn parse_with_replacements(src: &str, replacements: &BTreeMap<String, String
 /// may not take one of these, since the builtin would win and the body would be
 /// dead code that still looked live.
 const BUILTINS: &[&str] = &[
+    "add_u64",
     "addr",
     "blake2s",
     "const",
@@ -233,6 +234,7 @@ const BUILTINS: &[&str] = &[
     "hint_witness",
     "len",
     "match",
+    "mul_u64",
     "HeapBuf",
     "StackBuf",
 ];

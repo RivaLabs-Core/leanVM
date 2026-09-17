@@ -13,6 +13,7 @@
 //! the row's own, each a read of a range array. After the round a table joins the
 //! batch its columns are `E`-valued, which is what `eval_constraint` takes.
 
+use crate::arith_flock::Op as U64Op;
 use crate::colval::ColVal;
 use crate::cpu::{Access, Brow, Drow, Jrow, Op, Srow, Trace};
 use crate::leaf::Coord::{self, Col, Const, GCol, Prod};
@@ -109,6 +110,8 @@ pub(crate) const OP_SET: F64 = g_pow(2);
 pub(crate) const OP_DEREF: F64 = g_pow(3);
 pub(crate) const OP_JUMP: F64 = g_pow(4);
 pub(crate) const OP_BLAKE2S: F64 = g_pow(5);
+pub(crate) const OP_ADD_U64: F64 = g_pow(6);
+pub(crate) const OP_MUL_U64: F64 = g_pow(7);
 
 /// Where a table keeps its `n` accesses' columns, grouped by kind so that each
 /// kind is contiguous: the previous timestamps `X`, the gap's low and high chunks,
@@ -281,7 +284,9 @@ impl<'a> FillCtx<'a> {
     /// rather than copied into every row (§the trace rows in `cpu::trace`).
     fn ternary_operands(&self, pc: u32) -> (u32, u32, u32) {
         match self.prog[pc as usize] {
-            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } => (a, b, c),
+            Op::Xor64 { a, b, c } | Op::Mul64 { a, b, c } | Op::AddU64 { a, b, c } | Op::MulU64 { a, b, c } => {
+                (a, b, c)
+            }
             op => unreachable!("a three-operand row's pc {pc} holds {op:?}"),
         }
     }
@@ -405,9 +410,10 @@ pub trait Table: Sync {
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]);
 }
 
-/// The tables in fixed order `[XOR64, MUL64, SET, DEREF, JUMP, BLAKE2S]`, the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
+/// The tables in fixed order `[XOR64, MUL64, SET, DEREF, JUMP, BLAKE2S, ADD_U64,
+/// MUL_U64]`, the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
 /// opcode is `g^t`.
-pub const N_TABLES: usize = 6;
+pub const N_TABLES: usize = 8;
 
 pub fn tables() -> [&'static dyn Table; N_TABLES] {
     [
@@ -417,11 +423,20 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
         &DerefTable,
         &JumpTable,
         &Blake2sTable,
+        &ArithU64 { op: U64Op::Add },
+        &ArithU64 { op: U64Op::Mul },
     ]
 }
 
 /// Index of the BLAKE2s table in [`tables`].
 pub(crate) const BLAKE2S_TABLE: usize = 5;
+/// Index of each u64 table in [`tables`].
+pub(crate) const fn u64_table(op: U64Op) -> usize {
+    match op {
+        U64Op::Add => 6,
+        U64Op::Mul => 7,
+    }
+}
 
 /// The eighteen cells a `BLAKE2s` row touches, in value-lane order: the four message
 /// chunks' two cells each, the digest's four, the chaining value's four and the
@@ -584,6 +599,109 @@ impl Table for Arith64 {
         ctx.cols(out, rows, OA, |r| {
             let (a, b, c) = ctx.ternary_operands(r.pc);
             [ctx.g_at(a), ctx.g_at(b), ctx.g_at(c), r.va, r.vb, r.vc_old, r.ts]
+        });
+        ctx.accesses(out, rows, ACC, |r| &r.acc);
+        ctx.col(out, rows, RBC, |r| r.bytecode_read);
+    }
+}
+
+// ---- ADD_U64 / MUL_U64 -------------------------------------------------------
+
+/// `ADD_U64` and `MUL_U64` (§sec:tab-u64): the two operands and the result read as
+/// unsigned 64-bit integers, the result wrapping. The relation between the three
+/// words is proven by flock's R1CS over the operation's own packed witness
+/// ([`crate::arith_flock`]), which already holds them, so the three value columns
+/// are VIRTUAL like `BLAKE2s`'s: `cpu` routes their claims to that witness
+/// ([`U64_VALUE_COLS`]).
+struct ArithU64 {
+    op: U64Op,
+}
+
+pub(crate) mod arith_u64 {
+    use super::Acc;
+    pub const PC: usize = 0;
+    pub const FP: usize = 1;
+    pub const OA: usize = 2;
+    pub const OB: usize = 3;
+    pub const OC: usize = 4;
+    // The two operands and the result, in the packed witness's slot order.
+    pub const VA: usize = 5;
+    // What the destination held before the write.
+    pub const VC_OLD: usize = 8;
+    pub const TS: usize = 9;
+    pub const ACC: Acc = Acc::new(10, 3);
+    pub const RBC: usize = ACC.end();
+    pub const N: usize = RBC + 1;
+    pub const SLOTS: [u32; 3] = [0, 1, 2];
+}
+
+/// The u64 tables' value-column LOCAL indices, in the order of
+/// [`crate::arith_flock::SLOTS`]: `a`, `b`, the result.
+pub const U64_VALUE_COLS: [usize; 3] = [arith_u64::VA, arith_u64::VA + 1, arith_u64::VA + 2];
+
+impl ArithU64 {
+    fn eval<T: ColVal>(w: &[F192], cols: &[T]) -> F192 {
+        access_identities(w, cols, arith_u64::TS, arith_u64::ACC)
+    }
+}
+
+impl Table for ArithU64 {
+    fn n_committed_columns(&self) -> usize {
+        arith_u64::N
+    }
+    fn count_columns(&self) -> &'static [usize] {
+        const COUNTS: [usize; 7] = count_columns(arith_u64::ACC, arith_u64::RBC);
+        &COUNTS
+    }
+    fn n_constraints(&self) -> usize {
+        3
+    }
+    fn constraint_weights(&self, pows: &[F192]) -> Vec<F192> {
+        access_weights(pows, &arith_u64::SLOTS)
+    }
+    fn eval_constraint(&self, w: &[F192], cols: &[F192], _quadratic: bool) -> F192 {
+        Self::eval(w, cols)
+    }
+    fn eval_constraint_k(&self, w: &[F192], cols: &[F64], _quadratic: bool) -> F192 {
+        Self::eval(w, cols)
+    }
+    fn flushes(&self, f: &mut FlushBuilder) {
+        use arith_u64::*;
+        let opcode = match self.op {
+            U64Op::Add => OP_ADD_U64,
+            U64Op::Mul => OP_MUL_U64,
+        };
+        f.state_step(PC, FP, TS, CLOCK_STRIDE);
+        f.bytecode(
+            PC,
+            RBC,
+            opcode,
+            &[Col(OA), Col(OB), Col(OC), Const(F64::ZERO), Const(F64::ZERO)],
+        );
+        f.read(Prod(FP, OA, 0), TS, ACC, 0, SLOTS[0], Col(VA));
+        f.read(Prod(FP, OB, 0), TS, ACC, 1, SLOTS[1], Col(VA + 1));
+        f.memory(Prod(FP, OC, 0), TS, ACC, 2, SLOTS[2], Col(VC_OLD), Col(VA + 2));
+    }
+    fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
+        use arith_u64::*;
+        let rows = match self.op {
+            U64Op::Add => &ctx.trace.add_u64,
+            U64Op::Mul => &ctx.trace.mul_u64,
+        };
+        ctx.col(out, rows, PC, |r| ctx.g_at(r.pc));
+        ctx.col(out, rows, FP, |r| ctx.g_at(r.fp));
+        ctx.cols(out, rows, OA, |r| {
+            let (a, b, c) = ctx.ternary_operands(r.pc);
+            [
+                ctx.g_at(a),
+                ctx.g_at(b),
+                ctx.g_at(c),
+                r.va,
+                r.vb,
+                self.op.apply(r.va, r.vb),
+                r.vc_old,
+                r.ts,
+            ]
         });
         ctx.accesses(out, rows, ACC, |r| &r.acc);
         ctx.col(out, rows, RBC, |r| r.bytecode_read);

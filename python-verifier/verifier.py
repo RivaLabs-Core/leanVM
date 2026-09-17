@@ -652,17 +652,17 @@ def table_sumcheck(
 R1CS_DIGEST = bytes.fromhex("537ad20790308f8eb8c0e8bd3e6c58ee64573371e3d53c30613dd04d87c0b7ea")
 
 # The columns no instruction table owns. They come first in the global column numbering, the tables after.
-NUM_GLOBAL_COLUMNS = 7
-MEMORY_INITIAL, MEMORY_FINAL, MEMORY_FINAL_TIMESTAMPS, BYTECODE_FINAL_COUNTERS, RANGE_LO_FINAL_COUNTERS, RANGE_HI_FINAL_COUNTERS, QFLOCK = range(NUM_GLOBAL_COLUMNS)  # fmt: skip
+NUM_GLOBAL_COLUMNS = 9
+MEMORY_INITIAL, MEMORY_FINAL, MEMORY_FINAL_TIMESTAMPS, BYTECODE_FINAL_COUNTERS, RANGE_LO_FINAL_COUNTERS, RANGE_HI_FINAL_COUNTERS, QFLOCK, QADD, QMUL = range(NUM_GLOBAL_COLUMNS)  # fmt: skip
 
 BLAKE2S_R1CS_LOG_SIZE = 14
 K_BITS = 64
 FLOCK_K_SKIP = log2_ceil(K_BITS)
 LOG_PACKING = log2_ceil(K_BITS)  # bits per committed K-element (pcs::pack::LOG_PACKING)
 
-FLOCK_NUM_LINCHECK_ROUNDS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
-QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - LOG_PACKING
 BLAKE2S_CONSTANT_COLUMN = 512
+# Flock's zerocheck runs over a cube of at least this many variables: the skip, then seven fixed coordinates.
+FLOCK_MIN_LOG_SIZE = 13
 
 
 @dataclass(frozen=True)
@@ -797,6 +797,20 @@ def _flushes_arith64(opcode: int, multiply: bool) -> Flushes:
     return flushes
 
 
+def _flushes_u64(opcode: int) -> Flushes:
+    """`ADD_U64` and `MUL_U64`: the result is a column of its own, tied to the operands by flock, not by a form."""
+    pc, fp, o_a, o_b, o_c, va, vb, vc, vc_old, ts, cnt_bc = _cols(
+        U64_COLUMNS, "pc", "fp", "o_a", "o_b", "o_c", "va", "vb", "vc", "vc_old", "ts", "cnt_bc"
+    )
+    flushes = Flushes()
+    flushes.state_step(pc, fp, ts)
+    flushes.bytecode(pc, cnt_bc, opcode, (_col(o_a), _col(o_b), _col(o_c), _const(ZERO), _const(ZERO)))
+    flushes.read(U64_COLUMNS, _prod(fp, o_a), 0, 0, _col(va))
+    flushes.read(U64_COLUMNS, _prod(fp, o_b), 1, 1, _col(vb))
+    flushes.memory(U64_COLUMNS, _prod(fp, o_c), 2, 2, _col(vc_old), _col(vc))
+    return flushes
+
+
 def _flushes_set() -> Flushes:
     pc, fp, o, k, v_old, ts, cnt_bc = _cols(SET_COLUMNS, "pc", "fp", "o", "k", "v_old", "ts", "cnt_bc")
     flushes = Flushes()
@@ -853,11 +867,13 @@ def _flushes_blake2s() -> Flushes:
     return flushes
 
 
-OP_XOR64, OP_MUL64, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
+OP_XOR64, OP_MUL64, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S, OP_ADD_U64, OP_MUL_U64 = range(8)
 
 # A write's destination carries what the cell held before (`*_old`); every access carries its `_accesses` columns.
 ARITH64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va", "vb", "vc_old", "ts", *_accesses(3), "cnt_bc")
 SET_COLUMNS = ("pc", "fp", "o", "k", "v_old", "ts", *_accesses(1), "cnt_bc")
+# The two operands and the result live in the operation's flock witness, like BLAKE2s's lanes in q_flock.
+U64_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va", "vb", "vc", "vc_old", "ts", *_accesses(3), "cnt_bc")
 DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3", "v2_old", "ts", *_accesses(3), "cnt_bc")
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "ts", "w", "b", *_accesses(3), "cnt_bc")
 # The eighteen cells a BLAKE2s row touches, as (value lane, operand, offset from it, clock slot): each message chunk's two
@@ -886,6 +902,8 @@ TABLES = (
     Table(
         "blake2s", OP_BLAKE2S, BLAKE2S_COLUMNS, _flushes_blake2s(), _access_constraints(BLAKE2S_COLUMNS, [slot for _, _, _, slot in BLAKE2S_LANES])
     ),
+    Table("add_u64", OP_ADD_U64, U64_COLUMNS, _flushes_u64(OP_ADD_U64), _access_constraints(U64_COLUMNS, (0, 1, 2))),
+    Table("mul_u64", OP_MUL_U64, U64_COLUMNS, _flushes_u64(OP_MUL_U64), _access_constraints(U64_COLUMNS, (0, 1, 2))),
 )
 
 # Where in the flock witness each BLAKE2s value lane lives: one 64-bit slot per lane, the chaining value first, then the
@@ -894,6 +912,34 @@ BLAKE2S_SLOTS = (
     "cv0", "cv1", "cv2", "cv3", "out0", "out1", "out2", "out3", None, None,
     "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_lo", "md_hi",
 )  # fmt: skip
+
+
+@dataclass(frozen=True)
+class FlockWitness:
+    """One circuit's packed witness, a committed column: instance j is row j of the circuit's table, and the
+    table's value columns are whole packed words of it, so they are committed there and nowhere else."""
+
+    column: int
+    table: int
+    log_size: int  # log2 of the bits one instance occupies
+    slots: tuple[str | None, ...]  # the table column held by each of the instance's leading packed words
+
+    @property
+    def slot_bits(self) -> int:
+        return self.log_size - LOG_PACKING
+
+    @property
+    def min_log_height(self) -> int:
+        """A batch is at least eight instances, and the zerocheck's cube at least 2^13 bits."""
+        return max(3, FLOCK_MIN_LOG_SIZE - self.log_size)
+
+
+U64_SLOTS = ("va", "vb", "vc")
+FLOCK_WITNESSES = (
+    FlockWitness(QFLOCK, OP_BLAKE2S, BLAKE2S_R1CS_LOG_SIZE, BLAKE2S_SLOTS),
+    FlockWitness(QADD, OP_ADD_U64, 8, U64_SLOTS),
+    FlockWitness(QMUL, OP_MUL_U64, 12, U64_SLOTS),
+)
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)
 GLOBAL_COLUMN_BASES = tuple(NUM_GLOBAL_COLUMNS + sum(TABLE_WIDTHS[:table]) for table in range(len(TABLES)))
@@ -904,7 +950,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     require(
         16 <= log_memory <= 32
         and all(0 <= log_height <= 32 for log_height in table_log_heights)
-        and table_log_heights[OP_BLAKE2S] >= 3
+        and all(table_log_heights[witness.table] >= witness.min_log_height for witness in FLOCK_WITNESSES)
         and 0 <= log_bytecode <= 32,
         "invalid announced table sizes",
     )
@@ -921,23 +967,32 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
         for local in table.count_columns:
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
-    # Every column's log size, in global order: the framework's, q_flock's, then each table's block.
-    qflock_kappa = table_log_heights[OP_BLAKE2S] + QFLOCK_SLOT_BITS
-    kappas = [log_memory, log_memory, log_memory, log_bytecode, RANGE_LOG, RANGE_LOG, qflock_kappa]
+    # Every column's log size, in global order: the framework's, the flock witnesses', then each table's block.
+    flock_kappas = [table_log_heights[witness.table] + witness.slot_bits for witness in FLOCK_WITNESSES]
+    kappas = [log_memory, log_memory, log_memory, log_bytecode, RANGE_LOG, RANGE_LOG, *flock_kappas]
     for table in TABLES:
         kappas += [table_log_heights[table.opcode]] * table.width
 
-    # A BLAKE2s value lane gets no block of its own: it is committed inside q_flock, whose slots
-    # interleave, so it sits at q_flock's offset behind its own slot's bits. Same width either way.
-    limbs = {GLOBAL_COLUMN_BASES[OP_BLAKE2S] + _cols(BLAKE2S_COLUMNS, name)[0]: slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
+    # A flock-backed value column gets no block of its own: it is committed inside its circuit's witness, whose
+    # slots interleave, so it sits at that witness's offset behind its own slot's bits. Same width either way.
+    limbs = {
+        GLOBAL_COLUMN_BASES[witness.table] + _cols(TABLES[witness.table].columns, name)[0]: (witness, slot)
+        for witness in FLOCK_WITNESSES
+        for slot, name in enumerate(witness.slots)
+        if name
+    }
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
     block_offsets, total_log = stack_offsets(list(blocks.values()))
     offsets = dict(zip(blocks, block_offsets))
     stack_log = max(MIN_STACKED_LOG, total_log)  # Floor at the PCS minimum
-    placements = [
-        Placement(kappa, offsets[QFLOCK] + limbs[column], QFLOCK_SLOT_BITS) if column in limbs else Placement(kappa, offsets[column])
-        for column, kappa in enumerate(kappas)
-    ]
+
+    def placement(column: int, kappa: int) -> Placement:
+        if column not in limbs:
+            return Placement(kappa, offsets[column])
+        witness, slot = limbs[column]
+        return Placement(kappa, offsets[witness.column] + slot, witness.slot_bits)
+
+    placements = [placement(column, kappa) for column, kappa in enumerate(kappas)]
     return Layout(
         log_memory,
         log_bytecode,
@@ -1204,17 +1259,28 @@ def verify_flock_zerocheck(log_n: int, transcript: Transcript) -> ZerocheckResul
     return ZerocheckResult(z_skip, chi, v_a, v_b, v_c)
 
 
-def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
+@dataclass(frozen=True)
+class FlockCircuit:
+    """What the reduction needs of a circuit: its block size, where its constant wire sits, and the walk that
+    evaluates `e_row^T (A0 + alpha B0) w_col` without building either matrix."""
+
+    log_size: int
+    constant_column: int
+    bilinear: Callable[[E, Sequence[E], Sequence[E]], E]
+
+
+def verify_flock_lincheck(circuit: FlockCircuit, zc: ZerocheckResult, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
     """Lincheck at the quirky point (z_skip, chi): the claim's point, then its 64 slices s."""
+    n_rounds = circuit.log_size - FLOCK_K_SKIP
     alpha = transcript.sample()  # batches the two matrix identities, the c claim and the constant-position claim
     # e_row: phi8 Lagrange in the skip coordinate, eq in the slot variables.
     skip_weights = lagrange_weights(K_BITS, zc.z_skip)
-    chi_in = zc.chi[:FLOCK_NUM_LINCHECK_ROUNDS]
+    chi_in = zc.chi[:n_rounds]
     e_row = [weight * value for weight in eq_kernel(chi_in) for value in skip_weights]
 
-    # The 8 rounds that bind the high column coordinates, leaving 64 unfolded.
+    # The rounds that bind the high column coordinates (8 for BLAKE2s), leaving 64 unfolded.
     claim = zc.v_a + alpha * zc.v_b + alpha**2 * zc.v_c + alpha**3
-    round_challenges, r_lc = sumcheck(transcript, claim, 3, [None] * FLOCK_NUM_LINCHECK_ROUNDS)
+    round_challenges, r_lc = sumcheck(transcript, claim, 3, [None] * n_rounds)
 
     # The residual, then the terminal identity: pin term and c term included.
     # C = I, so the c weight is e_row itself, and both sides being tensors it
@@ -1223,12 +1289,12 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     chi_in_prime = tuple(reversed(round_challenges))
     w_col = [value * weight for weight in eq_kernel(chi_in_prime) for value in s]
     terminal = (
-        blake2s_bilinear(alpha, e_row, w_col)
+        circuit.bilinear(alpha, e_row, w_col)
         + alpha**2 * eq_eval(chi_in, chi_in_prime) * dot(skip_weights, s)
-        + alpha**3 * w_col[BLAKE2S_CONSTANT_COLUMN]
+        + alpha**3 * w_col[circuit.constant_column]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
-    return chi_in_prime + zc.chi[FLOCK_NUM_LINCHECK_ROUNDS:], s
+    return chi_in_prime + zc.chi[n_rounds:], s
 
 
 def blake2s_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
@@ -1349,11 +1415,164 @@ def blake2s_bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequenc
     return dot(row_weights, left_values) + alpha * dot(row_weights, right_values)
 
 
-def verify_flock(log_n: int, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
+# The u64 circuits ------------------------------------------------------------
+#
+# One instance is `a` in bits [0, 64), `b` in [64, 128), the result in [128, 192), the constant wire at 192, then
+# the circuit's products. A circuit is a gate list, a wire being the gate that drives it: a free committed wire
+# (an input or the constant), an uncommitted XOR, an AND whose product is committed at a slot, or a copy that
+# commits an affine wire at a slot, which is how the result leaves.
+
+type Gate = tuple[str, int, int, int]
+U64_CONSTANT_COLUMN = 192
+
+
+class _GateList:
+    def __init__(self) -> None:
+        self.gates: list[Gate] = []
+        self.next_slot = U64_CONSTANT_COLUMN + 1
+        self.one = self.push("free", U64_CONSTANT_COLUMN)
+        self.a = [self.push("free", i) for i in range(64)]
+        self.b = [self.push("free", 64 + i) for i in range(64)]
+
+    def push(self, kind: str, x: int, y: int = 0, slot: int = 0) -> int:
+        self.gates.append((kind, x, y, slot))
+        return len(self.gates) - 1
+
+    def xor(self, x: int | None, y: int | None) -> int | None:
+        """`None` is a structural zero."""
+        if x is None or y is None:
+            return y if x is None else x
+        return self.push("xor", x, y)
+
+    def product(self, x: int | None, y: int | None) -> int:
+        assert x is not None and y is not None
+        self.next_slot += 1
+        return self.push("and", x, y, self.next_slot - 1)
+
+    def output(self, position: int, wire: int | None) -> None:
+        assert wire is not None, "every result bit has a wire"
+        self.push("copy", wire, 0, 128 + position)
+
+    def ripple_carry(self, x: Sequence[int | None], y: Sequence[int | None]) -> None:
+        """Commit `x + y mod 2^64`: a carry is `maj(x, y, c) = (x ^ c)(y ^ c) ^ c`, one product, wherever two
+        of the three are present, and the carry out of the top bit falls off the modulus."""
+        carry = None
+        for position, (wx, wy) in enumerate(zip(x, y, strict=True)):
+            if position < 63 and sum(wire is not None for wire in (wx, wy, carry)) >= 2:
+                xc, yc = self.xor(wx, carry), self.xor(wy, carry)
+                carry = self.xor(self.product(xc, yc), carry)
+                out = self.xor(xc, wy)
+            else:
+                out, carry = self.xor(self.xor(wx, wy), carry), None
+            self.output(position, out)
+
+
+def _adder() -> _GateList:
+    """Wrapping addition: a ripple-carry adder, 63 products."""
+    c = _GateList()
+    carry = None
+    for i in range(64):
+        ac, bc = c.xor(c.a[i], carry), c.xor(c.b[i], carry)
+        c.output(i, c.xor(ac, c.b[i]))
+        if i < 63:
+            carry = c.xor(c.product(ac, bc), carry)
+    return c
+
+
+def _multiplier() -> _GateList:
+    """Wrapping multiplication. With `e_ij = not(a_i ^ b_j)`, `2 a_i b_j = a_i + b_j - 1 + e_ij`, so twice the product
+    is a sum of 66 rows of affine bits: `(a_i ? b : not b) << i`, then `not a + a 2^64` and the same for `b`.
+    Its column 0 is `2 + 2g` with `g = (not a_0)(not b_0)`, so after that one product the identity halves, `1` and `g`
+    taking the empty low bits of two rows. Carry-save steps then compress three rows into two, the three ending
+    lowest each time, and a ripple-carry addition finishes. Every product is a majority."""
+    c = _GateList()
+    n = 64
+    width = (1 << n) - 1
+    not_a = [c.xor(wire, c.one) for wire in c.a]
+    not_b = [c.xor(wire, c.one) for wire in c.b]
+    g = c.product(not_a[0], not_b[0])
+
+    rows: list[list[int | None]] = [[None] * n for _ in range(66)]
+    for i in range(64):
+        for j in range(64):
+            if 0 <= i + j - 1 < n:
+                rows[i][i + j - 1] = c.xor(c.b[j], not_a[i])
+    for row, low, high in ((64, not_a, c.a), (65, not_b, c.b)):
+        rows[row][:63] = low[1:]
+        rows[row][63] = high[0]
+    rows[2][0], rows[3][0] = c.one, g
+    present = [sum(1 << p for p in range(n) if row[p] is not None) for row in rows]
+
+    live = list(range(66))
+    while len(live) > 2:
+        # The three rows ending lowest: by highest position, then by lowest, ties in `live` order.
+        order = sorted(range(len(live)), key=lambda t: (present[live[t]].bit_length(), (present[live[t]] & -present[live[t]]).bit_length()))
+        x, y, z = (live[t] for t in order[:3])
+        live = [row for row in live if row not in (x, y, z)] + [x, y]
+        px, py, pz = present[x], present[y], present[z]
+        pairs = ((px & py) | (px & pz) | (py & pz)) & (width >> 1)
+        triples = px & py & pz
+        products = moves = 0
+        for p in range(n - 1):
+            if (pairs >> p) & 1:
+                # Where exactly two rows have a bit and the carry row is still free, one bit moves into it.
+                if not (triples >> p) & 1 and not ((products << 1) >> p) & 1:
+                    moves |= 1 << p
+                else:
+                    products |= 1 << p
+        total: list[int | None] = [None] * n
+        carry: list[int | None] = [None] * n
+        for p in range(n):
+            wx, wy, wz = rows[x][p], rows[y][p], rows[z][p]
+            if (products >> p) & 1:
+                xz, yz = c.xor(wx, wz), c.xor(wy, wz)
+                carry[p + 1] = c.xor(c.product(xz, yz), wz)
+                total[p] = c.xor(xz, wy)
+            elif ((moves & pz) >> p) & 1:
+                carry[p], total[p] = wz, c.xor(wx, wy)
+            elif ((moves & ~pz) >> p) & 1:
+                carry[p], total[p] = wy, wx
+            else:
+                total[p] = c.xor(c.xor(wx, wz), wy)
+        rows[x], rows[y] = total, carry
+        present[x], present[y] = px | py | pz, (products << 1) | moves
+
+    c.ripple_carry(rows[live[0]], rows[live[1]])
+    return c
+
+
+def _u64_bilinear(gates: Sequence[Gate], log_size: int) -> Callable[[E, Sequence[E], Sequence[E]], E]:
+    def bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequence[E]) -> E:
+        """`e_row^T (A0 + alpha B0) w_col` by one forward walk: every committed wire is a row, whose A side is the
+        wire's expansion against `w_col` and whose B side is its other factor, the constant for a free wire or a copy."""
+        constant = column_weights[U64_CONSTANT_COLUMN]
+        left, right = [ZERO] * 2**log_size, [ZERO] * 2**log_size
+        wires: list[E] = []
+        for kind, x, y, slot in gates:
+            if kind == "xor":
+                wires.append(wires[x] + wires[y])
+                continue
+            slot = x if kind == "free" else slot
+            left[slot] = column_weights[slot] if kind == "free" else wires[x]
+            right[slot] = wires[y] if kind == "and" else constant
+            wires.append(column_weights[slot])
+        return dot(row_weights, left) + alpha * dot(row_weights, right)
+
+    return bilinear
+
+
+FLOCK_CIRCUITS = {
+    QFLOCK: FlockCircuit(BLAKE2S_R1CS_LOG_SIZE, BLAKE2S_CONSTANT_COLUMN, blake2s_bilinear),
+    QADD: FlockCircuit(8, U64_CONSTANT_COLUMN, _u64_bilinear(_adder().gates, 8)),
+    QMUL: FlockCircuit(12, U64_CONSTANT_COLUMN, _u64_bilinear(_multiplier().gates, 12)),
+}
+
+
+def verify_flock(circuit: FlockCircuit, log_height: int, transcript: Transcript) -> tuple[MultilinearPoint, tuple[E, ...]]:
     """The reduction in protocol order: zerocheck, then lincheck. What it leaves is the
     point and the 64 claims s[i] = z(i, point), i < 64, for ring switching to bind."""
-    zc = verify_flock_zerocheck(log_n, transcript)
-    return verify_flock_lincheck(zc, transcript)
+    zc = verify_flock_zerocheck(circuit.log_size + log_height, transcript)
+    return verify_flock_lincheck(circuit, zc, transcript)
 
 
 # Ring switching --------------------------------------------------------------
@@ -1383,16 +1602,21 @@ def _ring_weight(r: MultilinearPoint, r_prime: Sequence[E], coefficients: Sequen
     return total
 
 
-def ring_switch(point: MultilinearPoint, s: Sequence[E], transcript: Transcript) -> tuple[E, Callable[[Sequence[E]], E]]:
-    """The 64 claims s[i] = z(i, point) become the one dense claim `sum_u W(u) qflock(u) = target`.
+def ring_switch(families: Sequence[tuple[MultilinearPoint, Sequence[E]]], transcript: Transcript) -> list[tuple[E, Callable[[Sequence[E]], E]]]:
+    """Each family of 64 claims s[i] = z(i, point) becomes one dense claim `sum_u W(u) q(u) = target` on its own packed witness.
 
-    Draw Phi once they are fixed, then take the target `T = sum_i x^i Phi(s_i)` against the
-    MLE-friendly weight `W(u) = Phi(eq(point, u))`. Returns the target and W as a closure."""
+    Draw Phi once every family is fixed, the one map serving them all, then take the target
+    `T = sum_i x^i Phi(s_i)` against the MLE-friendly weight `W(u) = Phi(eq(point, u))`.
+    Returns each family's target and its W as a closure."""
     challenges = transcript.samples(len(RING_MAP_SHIFTS))
     # The same map as a Frobenius sum, `Phi(a) = sum_k c_k a^(2^k)` for k < 64.
     coefficients = [reduce(mul, (f ** (2 ** (k % s)) for f, s in zip(challenges, RING_MAP_SHIFTS) if k & s), ONE) for k in range(K_BITS)]
-    target = poly_eval([_phi(value, challenges) for value in s], GEN)
-    return target, lambda r_prime: _ring_weight(point, r_prime, coefficients)
+
+    def claim(point: MultilinearPoint, s: Sequence[E]) -> tuple[E, Callable[[Sequence[E]], E]]:
+        target = poly_eval([_phi(value, challenges) for value in s], GEN)
+        return target, lambda r_prime: _ring_weight(point, r_prime, coefficients)
+
+    return [claim(point, s) for point, s in families]
 
 
 # Stacked opening -------------------------------------------------------------
@@ -1433,7 +1657,7 @@ def verify_execution(bytecode: Sequence[K], public_input: Sequence[K], proof: Pr
     # 3] Bus: one batched GKR over the push, pull and count trees, then the leaf decomposition, which leaves each table a degree-2 claim.
     bus = verify_bus_balance(layout, transcript)
 
-    # 4] One batched (back-loaded) "table sumcheck" over all six tables, at the bus point, proving the target the three
+    # 4] One batched (back-loaded) "table sumcheck" over all eight tables, at the bus point, proving the target the three
     # leaf claims derive and that constraints vanish. Every table takes a disjoint range of xi powers for its constraints
     xi = transcript.sample()
     n_constraints = sum(table.n_constraints for table in TABLES)
@@ -1450,16 +1674,18 @@ def verify_execution(bytecode: Sequence[K], public_input: Sequence[K], proof: Pr
     public_value = multilinear_eval(public_input, public_challenges)
     claims += [ColumnClaim(column, public_point, public_value) for column in (MEMORY_INITIAL, MEMORY_FINAL)]
 
-    # 6] BLAKE2s validity via Flock
-    flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_log_heights[OP_BLAKE2S], transcript)
+    # 6] BLAKE2s, ADD_U64 and MUL_U64 validity via Flock, one reduction per circuit over its own packed witness
+    families = [verify_flock(FLOCK_CIRCUITS[witness.column], layout.table_log_heights[witness.table], transcript) for witness in FLOCK_WITNESSES]
 
     # 7] Ring-switching
-    ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)
-    # That claim is supported on q_flock's region of the stack, so its weight carries the
-    # placement's selector, and it leads the batch, taking the first power.
-    qflock = layout.placements[QFLOCK]
-    ringswitch = (lambda x: qflock.eq_above(x) * ringswitch_weight(x[: qflock.variables]), ringswitch_target)
-    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [ringswitch, *(c.on_stack(layout) for c in claims)])
+    # Each claim is supported on its witness's region of the stack, so its weight carries the
+    # placement's selector, and they lead the batch, taking the first powers.
+    def on_region(placement: Placement, target: E, weight: Callable[[Sequence[E]], E]) -> StackClaim:
+        return (lambda x: placement.eq_above(x) * weight(x[: placement.variables]), target)
+
+    regions = [layout.placements[witness.column] for witness in FLOCK_WITNESSES]
+    ringswitches = [on_region(region, *claim) for region, claim in zip(regions, ring_switch(families, transcript), strict=True)]
+    verify_stacked_opening(transcript, root, layout.stack_log, log_inverse_rate, [*ringswitches, *(c.on_stack(layout) for c in claims)])
     transcript.finish()
 
 

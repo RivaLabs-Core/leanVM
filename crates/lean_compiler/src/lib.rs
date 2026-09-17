@@ -226,6 +226,8 @@ pub fn disassemble(prog: &[Op]) -> String {
         let line = match op {
             Op::Set { o, k } => format!("SET    fp[{o}] = {}", kfmt(*k)),
             Op::Xor64 { a, b, c } => format!("XOR64  fp[{c}] = fp[{a}] ^ fp[{b}]"),
+            Op::AddU64 { a, b, c } => format!("ADD_U64 fp[{c}] = fp[{a}] + fp[{b}] mod 2^64"),
+            Op::MulU64 { a, b, c } => format!("MUL_U64 fp[{c}] = fp[{a}] * fp[{b}] mod 2^64"),
             Op::Mul64 { a, b, c } => format!("MUL64  fp[{c}] = fp[{a}] * fp[{b}]"),
             Op::Deref { o1, o2, o3, mode } => {
                 let src = match mode {
@@ -293,6 +295,8 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32, fra
         },
         LOp::Xor64 { a, b, c } => Op::Xor64 { a: *a, b: *b, c: *c },
         LOp::Mul64 { a, b, c } => Op::Mul64 { a: *a, b: *b, c: *c },
+        LOp::AddU64 { a, b, c } => Op::AddU64 { a: *a, b: *b, c: *c },
+        LOp::MulU64 { a, b, c } => Op::MulU64 { a: *a, b: *b, c: *c },
         LOp::Deref { o1, o2, o3, mode } => Op::Deref {
             o1: *o1,
             o2: *o2,

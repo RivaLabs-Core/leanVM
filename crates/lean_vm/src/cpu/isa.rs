@@ -42,6 +42,18 @@ pub enum Op {
         out: u32,
         md: u32,
     },
+    /// `m[c] = m[a] + m[b] mod 2^64`, the three words read as unsigned integers.
+    AddU64 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
+    /// `m[c] = m[a] · m[b] mod 2^64`.
+    MulU64 {
+        a: u32,
+        b: u32,
+        c: u32,
+    },
 }
 
 /// The source `DEREF` stores at `mem[loc_o1·o2]`: a local cell, the return

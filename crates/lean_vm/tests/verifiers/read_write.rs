@@ -1,4 +1,4 @@
-//! A program that only read-write memory can run: every cell of its loop is
+//! Programs that only read-write memory can run: every cell of their loop is
 //! overwritten each iteration, one of them by an instruction that also reads it,
 //! and a digest lands on the cells it was computed from. Proven, and checked by both
 //! verifiers.
@@ -97,6 +97,72 @@ fn read_write_program_proves_and_verifies() {
     let (proof, _) = prove(&program, public_input, 1);
     let raw = verify_to_raw(&program, &public_input, &proof).expect("honest proof verifies");
     PythonStatement::new("read-write", &program, &public_input).assert_accepts(&raw);
+
+    let mut wrong = public_input;
+    wrong[0] += F64::ONE;
+    assert!(verify(&program, &wrong, &proof).is_err());
+}
+
+/// A 64-bit linear congruential generator, `x ← x·A + C mod 2^64`, stepped in place:
+/// `MUL_U64` and `ADD_U64` each overwrite the operand they read.
+fn lcg_program(seed: u64) -> Program {
+    const X: u32 = 4;
+    const MULTIPLIER: u32 = 5;
+    const INCREMENT: u32 = 6;
+    let set = |o: u32, k: F64| Op::Set { o, k };
+    let mut body = vec![
+        set(X, F64(seed)),
+        set(MULTIPLIER, F64(LCG_A)),
+        set(INCREMENT, F64(LCG_C)),
+        set(I, F64::ONE),
+        set(GEN, g_pow(1)),
+        set(END, g_pow(STEPS)),
+        set(FRAME, F64::ONE),
+        set(ONE, F64::ONE),
+    ];
+    let top = body.len() + 1;
+    body.push(set(LOOP_PC, g_pow(top)));
+    body.extend([
+        Op::MulU64 {
+            a: X,
+            b: MULTIPLIER,
+            c: X,
+        },
+        Op::AddU64 {
+            a: X,
+            b: INCREMENT,
+            c: X,
+        },
+        Op::Mul64 { a: I, b: GEN, c: I },
+        Op::Xor64 { a: I, b: END, c: COND },
+        Op::Jump {
+            oc: COND,
+            od: LOOP_PC,
+            of: FRAME,
+        },
+        Op::Mul64 { a: X, b: ONE, c: 0 },
+    ]);
+    Program::from_body(body, FRAME_CELLS)
+}
+
+const LCG_A: u64 = 6_364_136_223_846_793_005;
+const LCG_C: u64 = 1_442_695_040_888_963_407;
+
+#[test]
+fn u64_arithmetic_proves_and_verifies() {
+    let seed = 0x0123_4567_89ab_cdef;
+    let program = lcg_program(seed);
+    let x = (0..STEPS).fold(seed, |x, _| x.wrapping_mul(LCG_A).wrapping_add(LCG_C));
+    let public_input = [F64(x), F64::ZERO, F64::ZERO, F64::ZERO];
+
+    let (proof, stats) = prove(&program, public_input, 1);
+    assert_eq!(
+        stats.base_counts[6..],
+        [STEPS, STEPS],
+        "one ADD_U64 and one MUL_U64 a step"
+    );
+    let raw = verify_to_raw(&program, &public_input, &proof).expect("honest proof verifies");
+    PythonStatement::new("u64", &program, &public_input).assert_accepts(&raw);
 
     let mut wrong = public_input;
     wrong[0] += F64::ONE;

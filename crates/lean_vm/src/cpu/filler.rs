@@ -29,10 +29,21 @@ use crate::tables::N_TABLES;
 /// largest block and then one per set bit of the remainder.
 pub const SIZES: [usize; 8] = [128, 64, 32, 16, 8, 4, 2, 1];
 
-/// Least rows a table can be proven over. Only `BLAKE2s` has one above `1`: flock sizes
-/// its argument to at least eight instances, so filling that table below the floor
-/// would leave it padded up to it, which is the padding this exists to avoid.
-pub const MIN_ROWS: [usize; N_TABLES] = [1, 1, 1, 1, 1, 8];
+/// Least rows a table can be proven over. Only the flock-backed tables have one above
+/// `1`: flock sizes a batch to at least eight instances and its zerocheck to a cube of
+/// at least `2^13` bits, which is thirty-two instances of the adder's small block
+/// ([`crate::arith_flock::n_blocks_log`]). Filling such a table below its floor would
+/// leave it padded up to it, which is the padding this exists to avoid.
+pub const MIN_ROWS: [usize; N_TABLES] = [
+    1,
+    1,
+    1,
+    1,
+    1,
+    8,
+    1 << crate::arith_flock::n_blocks_log(crate::arith_flock::Op::Add, 1),
+    1 << crate::arith_flock::n_blocks_log(crate::arith_flock::Op::Mul, 1),
+];
 
 /// The `JUMP` table's index in [`crate::cpu::Stats::TABLES`]. Every traversal of every
 /// block lands its closing jump here, so this table is solved last, absorbing the cost
@@ -71,6 +82,8 @@ fn dummy(t: usize) -> Op {
             out: 0,
             md: 0,
         },
+        6 => Op::AddU64 { a: 0, b: 0, c: 0 },
+        7 => Op::MulU64 { a: 0, b: 0, c: 0 },
         _ => unreachable!("table {t}"),
     }
 }
@@ -231,12 +244,12 @@ mod tests {
         let cases: [[usize; N_TABLES]; 6] = [
             [0; N_TABLES],
             [1; N_TABLES],
-            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000],
+            [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 90_000, 70_000],
             // Tables already exactly on a power of two, the awkward case: the closing
             // jumps of every other table's traversals still have to fit somewhere.
-            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8],
-            [1, 2, 3, 4, 5, 6],
-            [0, 0, 0, 0, 1 << 20, 0],
+            [1 << 17, 1 << 12, 1000, 1 << 19, 1 << 16, 8, 1 << 10, 1 << 11],
+            [1, 2, 3, 4, 5, 6, 7, 8],
+            [0, 0, 0, 0, 1 << 20, 0, 0, 0],
         ];
         for base in cases {
             let plan = solve(base).unwrap_or_else(|| panic!("no plan for {base:?}"));
@@ -253,7 +266,7 @@ mod tests {
     /// remainders.
     #[test]
     fn fill_uses_bulk_blocks() {
-        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000];
+        let base = [125_000, 286_000, 341_000, 508_000, 114_000, 130_000, 90_000, 70_000];
         let plan = solve(base).expect("solvable");
         let fill: usize = delivered(&plan).iter().sum();
         assert!(

@@ -56,6 +56,17 @@ pub(crate) enum LOp {
         b: Off,
         c: Off,
     },
+    /// The same three cells read as unsigned integers, the result wrapping.
+    AddU64 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
+    MulU64 {
+        a: Off,
+        b: Off,
+        c: Off,
+    },
     Deref {
         o1: Off,
         o2: Off,

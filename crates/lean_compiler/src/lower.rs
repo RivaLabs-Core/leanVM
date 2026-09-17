@@ -90,6 +90,17 @@ const FOLD_MAX: u128 = 1 << lean_vm::cpu::MIN_LOG_MEM;
 enum PureOp {
     Xor,
     Mul,
+    AddU64,
+    MulU64,
+}
+
+/// The instruction behind `add_u64` / `mul_u64`.
+fn u64_builtin(f: &str) -> Option<PureOp> {
+    match f {
+        "add_u64" => Some(PureOp::AddU64),
+        "mul_u64" => Some(PureOp::MulU64),
+        _ => None,
+    }
 }
 
 /// How an inlined `@inline` tail-return value binds into the caller
@@ -349,6 +360,14 @@ impl FnLower<'_> {
     /// So these stay out: the zero cell an `assert a == b` XORs into, the
     /// `g^{k-1}` a range check multiplies into, `assert a != b`'s product, a
     /// division's back-solve, and `expr_into`'s caller-chosen destination.
+    /// The two scalar operands of `add_u64` / `mul_u64`, left first.
+    fn u64_operands(&mut self, f: &str, args: &[Expr]) -> (Off, Off) {
+        let [a, b] = args else {
+            self.fail(format!("{f}(a, b) takes two words"))
+        };
+        (self.expr(a), self.expr(b))
+    }
+
     fn pure(&mut self, op: PureOp, a: Off, b: Off) -> Off {
         let key = (op, a.min(b), a.max(b));
         if let Some(&o) = self.scope.pure_cells.get(&key) {
@@ -358,6 +377,8 @@ impl FnLower<'_> {
         self.emit(match op {
             PureOp::Xor => LOp::Xor64 { a, b, c: o },
             PureOp::Mul => LOp::Mul64 { a, b, c: o },
+            PureOp::AddU64 => LOp::AddU64 { a, b, c: o },
+            PureOp::MulU64 => LOp::MulU64 { a, b, c: o },
         });
         self.scope.pure_cells.insert(key, o);
         o
@@ -904,6 +925,11 @@ impl FnLower<'_> {
                 let (la, lb) = (self.expr(a), self.expr(b));
                 self.pure(PureOp::Mul, la, lb)
             }
+            // `add_u64(a, b)` and `mul_u64(a, b)`: the words as unsigned integers.
+            Expr::Call(f, args) if u64_builtin(f).is_some() => {
+                let (la, lb) = self.u64_operands(f, args);
+                self.pure(u64_builtin(f).expect("guarded above"), la, lb)
+            }
             Expr::FieldDiv(a, b) => {
                 // q = a / b via the MUL write-once back-solve: emit `a = q * b`
                 // with the quotient `q` the unset operand. Witness-gen fills
@@ -1072,6 +1098,13 @@ impl FnLower<'_> {
                     let (la, lb) = (self.expr(a), self.expr(b));
                     self.emit(LOp::Mul64 { a: la, b: lb, c: dst });
                 }
+            }
+            Expr::Call(f, args) if u64_builtin(f).is_some() => {
+                let (a, b) = self.u64_operands(f, args);
+                self.emit(match u64_builtin(f).expect("guarded above") {
+                    PureOp::AddU64 => LOp::AddU64 { a, b, c: dst },
+                    _ => LOp::MulU64 { a, b, c: dst },
+                });
             }
             // A call writes its single return value straight into `dst` (an
             // aliased inline return materializes, then copies into `dst`).

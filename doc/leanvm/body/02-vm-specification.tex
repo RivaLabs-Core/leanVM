@@ -51,7 +51,7 @@ The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at t
   \mem[\fp\cdot o],\qquad \fp\cdot o\;=\;\gen^{\mathrm{base}}\cdot\gen^{\,j}\;=\;\gen^{\,\mathrm{base}+j}.
 \]
 
-\paragraph{Instruction set.} The machine implements six instructions.
+\paragraph{Instruction set.} The machine implements eight instructions.
 \begin{center}
 \begin{tabularx}{\textwidth}{@{}llX@{}}
 \hline
@@ -63,6 +63,8 @@ Instruction & Operands & Semantics\\
 \texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}\cdot o_2]\gets\srcsel{\dmode}$ (see below)\\
 \texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
 \texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
+\texttt{ADD\_U64}       & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}\bmod 2^{64}$ (integer addition, see below)\\
+\texttt{MUL\_U64}       & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}\bmod 2^{64}$ (integer multiplication)\\
 \hline
 \end{tabularx}
 \end{center}
@@ -90,4 +92,6 @@ Instruction & Operands & Semantics\\
   \md_0=\mathit{counter}_{64},\qquad \md_1=\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
 \]
 
+\vspace{5mm}
 
+\texttt{ADD\_U64} and \texttt{MUL\_U64} read a memory word as an unsigned $64$-bit integer, bit $i$ of the integer being the coefficient of $x^{i}$ (so the integer is the word's hex writing above), and write back the sum or the product reduced modulo $2^{64}$. They are the integer counterparts of \texttt{XOR64} and \texttt{MUL64}, whose arithmetic is that of $\K$.

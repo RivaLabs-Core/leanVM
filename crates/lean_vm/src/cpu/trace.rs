@@ -30,7 +30,7 @@ impl Access {
     };
 }
 
-/// `XOR64` or `MUL64` row: the three cells are `fp·g^{a,b,c}`.
+/// `XOR64`, `MUL64`, `ADD_U64` or `MUL_U64` row: the three cells are `fp·g^{a,b,c}`.
 pub(crate) struct Xrow {
     pub(crate) pc: u32,
     pub(crate) fp: u32, // frame base: address = fp + offset, operand = g^offset
@@ -94,6 +94,8 @@ pub(crate) struct Trace {
     pub(crate) deref: Vec<Drow>,
     pub(crate) jump: Vec<Jrow>,
     pub(crate) blake2s: Vec<Brow>,
+    pub(crate) add_u64: Vec<Xrow>,
+    pub(crate) mul_u64: Vec<Xrow>,
     /// Per cell, the timestamp `g^y` of its last access; `g^0` if never touched.
     pub(crate) mem_ts: Vec<F64>,
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
@@ -114,6 +116,8 @@ impl Trace {
             self.deref.len(),
             self.jump.len(),
             self.blake2s.len(),
+            self.add_u64.len(),
+            self.mul_u64.len(),
         ]
     }
 }

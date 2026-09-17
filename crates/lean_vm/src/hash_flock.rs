@@ -402,7 +402,7 @@ mod tests {
         let committed = crate::pcs::commit(&mut ps, &stacked.q, stacked.shape, crate::pcs::TEST_LOG_INV_RATE);
         let (_z, reduced) = prove_reduction(&blocks, &mut ps);
         let ring = ring_switch_open(blocks.len(), offset, &reduced);
-        crate::pcs::open(&mut ps, &committed, &stacked.q, &points, &ring);
+        crate::pcs::open(&mut ps, &committed, &stacked.q, &points, std::slice::from_ref(&ring));
         let bundle = ps.into_proof();
 
         let run = |label: &'static [u8], points: &[crate::pcs::SlotClaim]| -> Result<(), &'static str> {
@@ -413,7 +413,7 @@ mod tests {
             crate::pcs::verify(
                 &mut vs,
                 points,
-                &ring,
+                std::slice::from_ref(&ring),
                 stacked.shape,
                 crate::pcs::TEST_LOG_INV_RATE,
                 &root,

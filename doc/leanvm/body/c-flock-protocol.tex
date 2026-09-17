@@ -1,7 +1,7 @@
 % !TeX root = ../drafts/c-flock-protocol.tex
 \section{The Flock protocol}\label{annex:flock}
 
-Flock~\cite{Flock26} proves many executions of one Boolean circuit at once, in our case the BLAKE2s compression. Since we do not follow their protocol exactly, we describe our version here.
+Flock~\cite{Flock26} proves many executions of one Boolean circuit at once. We use it for three circuits: the BLAKE2s compression, and the addition and the multiplication of two $64$-bit integers modulo $2^{64}$ (\S\ref{flock:u64}). Each circuit gets its own run of the protocol, over its own witness. Since we do not follow their protocol exactly, we describe our version here, for BLAKE2s; the other two differ in the block size $\kblock$ and in the position $\jconst$ of the constant wire alone, which \S\ref{flock:u64} gives.
 
 \subsection{Statement and commitment}\label{flock:statement}
 
@@ -25,7 +25,7 @@ We also enforce the position $512$ of every block to be $1$ (preventing the all-
 z(0,0,0,0,0,0,0,0,0,1,0,0,0,0,\,t)=1\qquad\text{for every }t\in\cube{\kbatch}
 \end{equation}
 
-This second condition is enforced by lincheck (\S\ref{flock:lincheck}), and position $512=\jconst$ is where every circuit below puts its constant wire. Since it is asked of every block, the prover pads the batch out to $2^{\kbatch}$ with copies of a genuine witness block rather than with zeros.
+This second condition is enforced by lincheck (\S\ref{flock:lincheck}), and position $512=\jconst$ is where the BLAKE2s circuit puts its constant wire. Since it is asked of every block, the prover pads the batch out to $2^{\kbatch}$ with copies of a genuine witness block rather than with zeros.
 
 Set $\kskip=6$ and $\nflock=\kbool-\kskip$. The prover commits to $z$ by packing its low $\kskip$ coordinates, $64$ bits, to a $\K$-element, following Ring-Switching (Annex~\ref{annex:rs}). The resulting multilinear $\qflock:\cube{\nflock}\to\K$ is committed as one region of the stack (\S\ref{sec:stacking}).
 
@@ -249,6 +249,38 @@ Run the following procedure independently for $X=A$ and $X=B$. Initialize the ou
 \]
 so add $\chg{w}^{X}$ to the existing coefficient $\chg{u}^{X}$ of every predecessor $u\in S_w$.
 \end{itemize}
+
+\subsection{The u64 circuits}\label{flock:u64}
+
+\texttt{ADD\_U64} and \texttt{MUL\_U64} (\S\ref{sec:tab-u64}) are two more circuits in the sense of Definition~\ref{def:circuit}, with one block layout: the input $a$ at positions $[0,64)$, the input $b$ at $[64,128)$, the result at $[128,192)$, the constant wire at $\jconst=192$, then the $\wedge$ wires in the order the circuit makes them. The result bits are $\oplus$ wires, committed so that they leave the circuit. Bit $i$ of an integer sits at position $i$ of its range, so each of the three is one packed $\K$-element, equal to the memory word it stands for.
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\hline
+Circuit & $\kblock$ & $\jconst$ & $\wedge$ wires & positions used\\
+\hline
+BLAKE2s & $14$ & $512$ & $14{,}720$ & \\
+addition & $8$ & $192$ & $63$ & $256$\\
+multiplication & $12$ & $192$ & $2{,}143$ & $2{,}336$\\
+\hline
+\end{tabular}
+\end{center}
+
+\paragraph{Addition.} A ripple-carry adder. With $c_0=0$, the carry into position $i+1$ is the majority of $a_i,b_i,c_i$,
+\[
+c_{i+1}=(a_i\oplus c_i)(b_i\oplus c_i)\oplus c_i ,
+\]
+one $\wedge$ wire, and the result bit $a_i\oplus b_i\oplus c_i$ is affine in the wires before it. The carry out of position $63$ falls off the modulus, which leaves $63$ products, and the block is full: $192+1+63=2^{8}$.
+
+\paragraph{Multiplication.} A schoolbook multiplier would pay one product per partial product $a_ib_j$ before summing them. Over $\Ftwo$ the partial products are free: with $e_{ij}=1\oplus a_i\oplus b_j$, one has $2a_ib_j=a_i+b_j-1+e_{ij}$ over the integers. Summing over $i,j$, with $\bar a=2^{64}-1-a$ the complement,
+\[
+2ab=\sum_{i<64}r_i\,2^{i}+\bar a+\bar b+(a+b)\,2^{64}+1-2^{128},\qquad r_i=\begin{cases}b&a_i=1\\ \bar b&a_i=0,\end{cases}
+\]
+whose right side is a sum of rows of bits each affine in the inputs. Its column $0$ is $e_{00}+\bar a_0+\bar b_0+1=2+2g$ with $g=\bar a_0\bar b_0$, so after that one product the identity halves: $ab\bmod2^{64}$ is $1+g$ plus the other columns shifted down one place, which is $66$ rows, the $64$ rows $r_i$ and one each for $a$ and $b$, with $1$ and $g$ in the empty low positions of two of them.
+
+Carry-save steps then compress the rows. A step replaces three rows by their sum row, the position-wise $\oplus$, and their carry row, the position-wise majority shifted up one place: a majority costs one product where at least two of the three rows have a bit, except that where exactly two do and the carry row is still free at that position, one of the two bits moves into it for nothing. Each step takes the three rows that end lowest. After $64$ steps two rows remain, and the adder above finishes. The carry out of the top position falls off the modulus, so it is never a product. In all, $2{,}143$ products.
+
+\paragraph{Batch size.} The zerocheck of \S\ref{flock:zerocheck} fixes seven coordinates of its point beyond the $\kskip$ skipped ones, so it needs $\kbool\ge13$, and lincheck works on batches of at least eight blocks, $\kbatch\ge3$. For BLAKE2s and the multiplier the second bound is the binding one; for the adder it is the first, $\kbatch\ge5$. Lincheck runs $\kblock-\kskip$ rounds: $8$ for BLAKE2s, $2$ for the adder and $6$ for the multiplier.
 
 \subsection{Soundness analysis}\label{flock:soundness}
 
