@@ -32,8 +32,11 @@ pub(crate) struct Row {
     pub(crate) taken: bool,
     /// What the destination register held before the write.
     pub(crate) vd_old: u64,
-    /// `rs1`, `rs2`, `rd`.
-    pub(crate) acc: [Access; 3],
+    /// The RAM cell a load or a store accessed: its bus address, what it held and
+    /// what it holds. Zeros for another class.
+    pub(crate) ram: crate::rv::machine::RamAccess,
+    /// `rs1`, `rs2`, `rd`, then the RAM access if the class has one.
+    pub(crate) acc: [Access; 4],
     pub(crate) bytecode_read: F64,
 }
 
@@ -44,6 +47,9 @@ pub(crate) struct Trace {
     /// never touched.
     pub(crate) reg_fin: Vec<F64>,
     pub(crate) reg_ts: Vec<F64>,
+    /// The same for RAM.
+    pub(crate) ram_fin: Vec<F64>,
+    pub(crate) ram_ts: Vec<F64>,
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
     /// Final read counts of the two range arrays' entries.
     pub(crate) range_lo_count: Vec<F64>,

@@ -45,6 +45,115 @@ fn sext32_if(c: &mut Builder, word: Wire, x: &[Wire]) -> Word {
         .collect()
 }
 
+/// `x + y`, the carry out of the top bit dropped.
+fn add(c: &mut Builder, x: &[Wire], y: &[Wire]) -> Word {
+    let (sum, _) = flock::arith::add::Adder::build(c, x, y);
+    sum
+}
+
+/// `x` shifted by `8·amount` bits, `amount` being three bits: left, or right.
+fn shift_bytes(c: &mut Builder, x: &[Wire], amount: &[Wire], left: bool) -> Word {
+    let mut x = x.to_vec();
+    for (stage, &bit) in amount.iter().enumerate() {
+        let by = 8 << stage;
+        let from = |x: &[Wire], i: usize| {
+            if left {
+                i.checked_sub(by).and_then(|j| x[j])
+            } else {
+                x.get(i + by).copied().flatten()
+            }
+        };
+        x = (0..64).map(|i| c.mux(bit, from(&x, i), x[i])).collect();
+    }
+    x
+}
+
+/// The width thresholds of a load or a store, from the two bits of `log2` of its
+/// width in bytes: at least 2, at least 4, exactly 8.
+fn width_thresholds(c: &mut Builder, log_width: &[Wire]) -> [Wire; 3] {
+    [
+        c.or(log_width[0], log_width[1]),
+        log_width[1],
+        c.and(log_width[0], log_width[1]),
+    ]
+}
+
+/// [`super::semantics::bus_address`]: the low three bits are the ones misaligning the access.
+fn bus_address(c: &mut Builder, address: &[Wire], thresholds: [Wire; 3]) -> Word {
+    (0..64)
+        .map(|i| {
+            if i < 3 {
+                c.and(address[i], thresholds[i])
+            } else {
+                address[i]
+            }
+        })
+        .collect()
+}
+
+/// [`super::Class::Load`]'s circuit: `(v1, imm, flags, cell) -> (address, out)`, the
+/// address being what goes on the memory bus and `cell` the word read there.
+pub fn load() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 3, 64], &[64, 64]);
+    let (v1, imm, flags, cell) = (c.input(0), c.input(1), c.input(2), c.input(3));
+    let address = add(&mut c, &v1, &imm);
+    let [ge2, ge4, eq8] = width_thresholds(&mut c, &flags[..2]);
+    let bus = bus_address(&mut c, &address, [ge2, ge4, eq8]);
+    let value = shift_bytes(&mut c, &cell, &address[..3], false);
+    // The extension: the value's top bit, which the width places, if the load is signed.
+    let (w1, w2, w4) = (c.not(ge2), c.xor(ge2, ge4), c.xor(ge4, eq8));
+    let sign = [(w1, 7), (w2, 15), (w4, 31)]
+        .into_iter()
+        .fold(None, |acc, (width, bit)| {
+            let term = c.and(width, value[bit]);
+            c.xor(acc, term)
+        });
+    let extension = c.and(flags[2], sign);
+    for (i, &wire) in bus.iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    for i in 0..64 {
+        let keeps = match i {
+            0..8 => None,
+            8..16 => Some(ge2),
+            16..32 => Some(ge4),
+            _ => Some(eq8),
+        };
+        let wire = keeps.map_or(value[i], |keeps| c.mux(keeps, value[i], extension));
+        c.output(1, i, wire);
+    }
+    c.finish()
+}
+
+/// [`super::Class::Store`]'s circuit: `(v1, v2, imm, flags, cell) -> (address, new cell,
+/// out)`. `out` is what the row writes to its destination, the sink: zero.
+pub fn store() -> Circuit {
+    let mut c = Builder::new(&[64, 64, 64, 2, 64], &[64, 64, 64]);
+    let (v1, v2, imm, flags, cell) = (c.input(0), c.input(1), c.input(2), c.input(3), c.input(4));
+    let address = add(&mut c, &v1, &imm);
+    let [ge2, ge4, eq8] = width_thresholds(&mut c, &flags);
+    let bus = bus_address(&mut c, &address, [ge2, ge4, eq8]);
+    let value = shift_bytes(&mut c, &v2, &address[..3], true);
+    // Byte `j` is written when it shares the access's block: bit `k` of `j` equals bit
+    // `k` of the address wherever the width does not already span both.
+    let spans: [[Wire; 2]; 3] = std::array::from_fn(|k| {
+        let (is_zero, threshold) = (c.not(address[k]), [ge2, ge4, eq8][k]);
+        [c.or(is_zero, threshold), c.or(address[k], threshold)]
+    });
+    for (i, &wire) in bus.iter().enumerate() {
+        c.output(0, i, wire);
+    }
+    for j in 0..8 {
+        let low = c.and(spans[0][j & 1], spans[1][(j >> 1) & 1]);
+        let written = c.and(low, spans[2][j >> 2]);
+        for i in 8 * j..8 * j + 8 {
+            let wire = c.mux(written, value[i], cell[i]);
+            c.output(1, i, wire);
+        }
+    }
+    c.finish()
+}
+
 /// [`super::Class::Alu`]'s ports.
 pub mod alu_ports {
     /// Input words: the two register values, the immediate, the flags.
@@ -177,6 +286,61 @@ mod tests {
                     [out, taken as u64],
                     "flags {flags:#x} on {v1:#x}, {v2:#x}, {imm:#x}"
                 );
+            }
+        }
+    }
+
+    #[test]
+    fn load_and_store_are_their_references() {
+        let (load, store) = (load(), store());
+        assert_eq!(
+            (load.k_log(), store.k_log()),
+            (10, 10),
+            "an instance is 16 packed words"
+        );
+        let mut rng = Rng(0xA3);
+        for round in 0..4000 {
+            let (v1, imm, v2, cell) = (rng.word(), rng.next() % 4096, rng.word(), rng.next());
+            let address = semantics::address(v1, imm);
+            for &flags in &crate::rv::load::LEGAL {
+                let log_width = flags & crate::rv::load::LOG_WIDTH;
+                // Aligned every other round, which a random address seldom is.
+                let v1 = if round % 2 == 0 {
+                    v1 & !((1 << log_width) - 1)
+                } else {
+                    v1
+                };
+                let imm = if round % 2 == 0 { imm & !7 } else { imm };
+                let address = if round % 2 == 0 {
+                    semantics::address(v1, imm)
+                } else {
+                    address
+                };
+                assert_eq!(
+                    run(&load, &[v1, imm, flags, cell], 4..6),
+                    [
+                        semantics::bus_address(address, log_width),
+                        semantics::load(cell, address, flags)
+                    ],
+                    "load {flags:#x} at {address:#x} of {cell:#x}"
+                );
+            }
+            for &flags in &crate::rv::store::LEGAL {
+                let got = run(&store, &[v1, v2, imm, flags, cell], 5..8);
+                assert_eq!(
+                    got[0],
+                    semantics::bus_address(address, flags),
+                    "store {flags:#x} at {address:#x}"
+                );
+                assert_eq!(got[2], 0);
+                // A misaligned store names no cell, so what it would write is nobody's business.
+                if semantics::is_aligned(address, flags) {
+                    assert_eq!(
+                        got[1],
+                        semantics::store(cell, address, v2, flags),
+                        "store {flags:#x} at {address:#x}"
+                    );
+                }
             }
         }
     }

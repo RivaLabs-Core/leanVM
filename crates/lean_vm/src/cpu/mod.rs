@@ -33,12 +33,17 @@ pub(crate) use trace::{Access, Row, Trace};
 /// verifier rejects any announcement exceeding them before running a reduction.
 const MAX_LOG_ROWS: usize = 32;
 
-/// The Fiat-Shamir IV: the program's digest, as its four words. It commits to
-/// everything public and fixed about the statement ([`Program::new`]), so all
-/// challenges depend on it before anything else; the run's public output seeds the
-/// transcript beside it.
-pub fn fs_seed(program: &Program) -> [F64; 4] {
-    fiat_shamir::digest_words(&program.digest)
+/// The Fiat-Shamir IV: the program's digest, which commits to everything public and
+/// fixed about the statement ([`Program::new`]), hashed with the run's public input.
+/// All challenges depend on it before anything else; the run's public output seeds
+/// the transcript beside it.
+pub fn fs_seed(program: &Program, input: &[u64; rv::INPUT_WORDS]) -> [F64; 4] {
+    let mut h = primitives::hash::Hasher::new();
+    h.update(&program.digest);
+    for word in input {
+        h.update(&word.to_le_bytes());
+    }
+    fiat_shamir::digest_words(&h.finalize())
 }
 
 /// Announce the prover's sizes (every table's log height, the PCS rate) by writing
@@ -62,7 +67,11 @@ fn announce_public(ps: &mut ProverState, taus: [usize; tables::N_TABLES], log_in
 /// Verifier side of [`announce_public`]: read the announced sizes and PCS rate from
 /// the stream, validate them, and reconstruct the public [`Layout`] from the program
 /// and those sizes. Nothing the program fixes is read from the prover.
-fn read_public(vs: &mut VerifierState, prog: &Program) -> Result<(Layout, usize), CpuError> {
+fn read_public(
+    vs: &mut VerifierState,
+    prog: &Program,
+    input: &[u64; rv::INPUT_WORDS],
+) -> Result<(Layout, usize), CpuError> {
     let read_size = |vs: &mut VerifierState| -> Result<usize, CpuError> {
         let word = vs.next_scalar().map_err(CpuError::Transcript)?;
         if word.c1 != 0 || word.c2 != 0 {
@@ -96,7 +105,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program) -> Result<(Layout, usize)
     if !floors_hold || ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err() {
         return Err(CpuError::PublicInput);
     }
-    let l = layout(&prog.rv, taus, F64(ts_final.c0));
+    let l = layout(&prog.rv, input, taus, F64(ts_final.c0));
     // The caps bound each announced log on its own; what the PCS is configured for
     // is the stacked size they imply, which they do not bound.
     if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
@@ -193,9 +202,9 @@ type TableSpans = Vec<(usize, usize)>;
 
 /// Blocks sourced from a table's height belong to it; the boundary, register,
 /// bytecode and range blocks belong to none and keep their own column claims at ζ.
-fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
+fn block_owners(log_bytecode: usize, log_ram: usize, sides: [usize; 3]) -> BlockOwners {
     let sch = schema();
-    let src = block_kappa_sources(log_bytecode);
+    let src = block_kappa_sources(log_bytecode, log_ram);
     let mut it = src
         .into_iter()
         .map(|(source, _)| source.checked_sub(1).map(|t| (t, sch.base[t])));
@@ -208,6 +217,7 @@ fn block_owners(log_bytecode: usize, sides: [usize; 3]) -> BlockOwners {
 fn bus_wiring(program: &Program, l: &Layout) -> (BlockOwners, TableSpans) {
     let owners = block_owners(
         crate::log2_strict_usize(program.rv.entries.len()),
+        program.rv.log_ram,
         [l.push.len(), l.pull.len(), l.count.len()],
     );
     (owners, table_spans())
@@ -360,13 +370,17 @@ impl Stats {
     }
 }
 
-/// Prove a run of the program: execute it (witness generation), then emit everything
-/// the verifier needs through the returned [`Proof`] (scalar stream + PCS commitment /
-/// opening hints). Returns the proof, the run's public output (`a0..a3` at the exit)
+/// Prove a run of the program on `input`, RAM's first words: execute it (witness
+/// generation), then emit everything the verifier needs through the returned [`Proof`]
+/// (scalar stream + PCS commitment / opening hints). Returns the proof, the run's public output (`a0..a3` at the exit)
 /// and its [`Stats`], or the trap if the run has no proof. `log_inv_rate` selects the
 /// PCS rate and is announced in the Fiat-Shamir transcript before the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
-pub fn prove(program: &Program, log_inv_rate: usize) -> Result<(Proof, [u64; 4], Stats), rv::Trap> {
+pub fn prove(
+    program: &Program,
+    input: [u64; rv::INPUT_WORDS],
+    log_inv_rate: usize,
+) -> Result<(Proof, [u64; 4], Stats), rv::Trap> {
     ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
@@ -374,21 +388,26 @@ pub fn prove(program: &Program, log_inv_rate: usize) -> Result<(Proof, [u64; 4],
     // The returned `Proof` is system-allocated (`ps.into_proof()` builds `Vec`s),
     // so it survives the next phase.
     let _phase = zk_alloc::enter_phase();
-    let exec = crate::stage!("Execute program", || program.execute())?;
-    let (proof, stats) = prove_execution(program, &exec, log_inv_rate);
+    let exec = crate::stage!("Execute program", || program.execute(input))?;
+    let (proof, stats) = prove_execution(program, &exec, &input, log_inv_rate);
     Ok((proof, exec.output, stats))
 }
 
 /// [`prove`] from a finished run. Split out so a test can hand it a run no honest
 /// machine produced.
-fn prove_execution(program: &Program, exec: &Execution, log_inv_rate: usize) -> (Proof, Stats) {
+fn prove_execution(
+    program: &Program,
+    exec: &Execution,
+    input: &[u64; rv::INPUT_WORDS],
+    log_inv_rate: usize,
+) -> (Proof, Stats) {
     let cycles = exec.cycles;
-    let w = crate::stage!("Build witness", || program.build(exec));
+    let w = crate::stage!("Build witness", || program.build(exec, input));
     let counts = w.layout.taus.map(|t| 1usize << t);
     let committed_size = w.committed_size();
     // The public statement (program digest + output) seeds the transcript, so
     // every challenge depends on the exact program and what the run claims to return.
-    let mut ps = ProverState::new(fs_seed(program), exec.output.map(F64));
+    let mut ps = ProverState::new(fs_seed(program, input), exec.output.map(F64));
 
     // Announce the prover's sizes, then commit, before sampling any challenge.
     announce_public(&mut ps, w.layout.taus, log_inv_rate, w.ts_final);
@@ -509,12 +528,17 @@ fn final_register_claim(reg: u8, value: u64) -> ColumnClaim {
     }
 }
 
-/// Verify a proof against the public statement, that the program exits returning
-/// `output`: replay the transcript, reconstruct the public layout from the announced
+/// Verify a proof against the public statement, that the program run on `input` exits
+/// returning `output`: replay the transcript, reconstruct the public layout from the announced
 /// sizes, read every scalar the prover wrote and pull the PCS hints, then assert the
 /// stream was fully consumed. Takes only public inputs, never the prover's witness.
-pub fn verify(program: &Program, output: &[u64; 4], proof: &Proof) -> Result<(), CpuError> {
-    verify_to_raw(program, output, proof).map(|_| ())
+pub fn verify(
+    program: &Program,
+    input: &[u64; rv::INPUT_WORDS],
+    output: &[u64; 4],
+    proof: &Proof,
+) -> Result<(), CpuError> {
+    verify_to_raw(program, input, output, proof).map(|_| ())
 }
 
 /// [`verify`], returning the proof it accepted with every query's Merkle path
@@ -522,11 +546,12 @@ pub fn verify(program: &Program, output: &[u64; 4], proof: &Proof) -> Result<(),
 #[tracing::instrument(name = "Verify", skip_all)]
 pub fn verify_to_raw(
     program: &Program,
+    input: &[u64; rv::INPUT_WORDS],
     output: &[u64; 4],
     proof: &Proof,
 ) -> Result<fiat_shamir::transcript::RawProof, CpuError> {
-    let mut vs = VerifierState::new(fs_seed(program), proof, output.map(F64));
-    let (l, log_inv_rate) = read_public(&mut vs, program)?;
+    let mut vs = VerifierState::new(fs_seed(program, input), proof, output.map(F64));
+    let (l, log_inv_rate) = read_public(&mut vs, program, input)?;
     let root = pcs::read_commitment(&mut vs).map_err(CpuError::Transcript)?;
 
     let (owners, spans) = bus_wiring(program, &l);
@@ -608,6 +633,8 @@ mod tests {
     use crate::rv::asm::*;
     use primitives::field::g_pow;
 
+    const INPUT: [u64; 4] = [0; 4];
+
     /// Reassign every range read's count, as a prover would after changing a gap, so
     /// that the range arrays balance and what is left to judge is the registers.
     fn recount_range_reads(exec: &mut Execution) {
@@ -615,13 +642,58 @@ mod tests {
         let mut lo = vec![F64::ONE; 1 << tables::RANGE_LOG];
         let mut hi = lo.clone();
         let t = &mut exec.trace;
-        for a in t.rows.iter_mut().flatten().flat_map(|r| r.acc.iter_mut()) {
+        let accesses = t.rows.iter_mut().enumerate().flat_map(|(table, rows)| {
+            let n = tables::CLASSES[table].n_accesses();
+            rows.iter_mut().flat_map(move |r| r.acc[..n].iter_mut())
+        });
+        for a in accesses {
             let (l, h) = ((a.gap & mask) as usize, (a.gap >> tables::RANGE_LOG) as usize);
             (a.count_lo, a.count_hi) = (lo[l], hi[h]);
             lo[l] = primitives::field::mul_by_g(lo[l]);
             hi[h] = primitives::field::mul_by_g(hi[h]);
         }
         (t.range_lo_count, t.range_hi_count) = (lo, hi);
+    }
+
+    /// An honest run's bus balances tuple by tuple, which says more than the proof
+    /// failing would: the blocks left unmatched are named.
+    #[test]
+    fn an_honest_run_balances() {
+        let text = Asm::new().i("addi", A0, ZERO, 5).exit().finish();
+        let program = Program::new(&text, rv::TEXT_BASE, vec![], 2);
+        let w = program.build(&program.execute(INPUT).unwrap(), &INPUT);
+        let unmatched = leaf::unmatched_leaves(&w.layout.push, &w.layout.pull, &w.columns());
+        assert!(
+            unmatched.is_empty(),
+            "unmatched (side, block, row): {:?}",
+            &unmatched[..unmatched.len().min(12)]
+        );
+    }
+
+    /// A load cannot return what its cell does not hold. The forged run is consistent
+    /// everywhere else (the circuit's instance, the register written, the output), so
+    /// what is left unmatched is RAM's: the load pulls a tuple no store pushed.
+    #[test]
+    fn a_forged_load_unbalances_the_bus() {
+        let text = Asm::new()
+            .li(T0, rv::RAM_BASE + 32)
+            .i("addi", T1, ZERO, 5)
+            .store("sd", T1, 0, T0)
+            .load("ld", A0, 0, T0)
+            .exit()
+            .finish();
+        let program = Program::new(&text, rv::TEXT_BASE, vec![], 3);
+        let mut forged = program.execute(INPUT).unwrap();
+        assert_eq!(forged.output, [5, 0, 0, 0]);
+        let load = tables::table_of(rv::Class::Load).unwrap();
+        let row = forged.trace.rows[load].iter_mut().find(|r| !r.ts.is_zero()).unwrap();
+        (row.ram.old, row.ram.new, row.out) = (7, 7, 7);
+        forged.trace.reg_fin[A0 as usize] = F64(7);
+        forged.trace.ram_fin[4] = F64(7);
+        let w = program.build(&forged, &INPUT);
+        let unmatched = leaf::unmatched_leaves(&w.layout.push, &w.layout.pull, &w.columns());
+        // The load's pull and the store's push, which it should have met.
+        assert_eq!(unmatched.len(), 2, "{unmatched:?}");
     }
 
     /// The point of the timestamps: a register written twice cannot be read as of its
@@ -638,13 +710,13 @@ mod tests {
             .r("add", A0, T0, T1)
             .exit()
             .finish();
-        let program = Program::new(&text, rv::TEXT_BASE, vec![], 0);
-        let honest = program.execute().unwrap();
+        let program = Program::new(&text, rv::TEXT_BASE, vec![], 2);
+        let honest = program.execute(INPUT).unwrap();
         assert_eq!(honest.output, [12, 0, 0, 0]);
-        let (proof, _) = prove_execution(&program, &honest, RATE);
-        verify(&program, &honest.output, &proof).expect("the honest run verifies");
+        let (proof, _) = prove_execution(&program, &honest, &INPUT, RATE);
+        verify(&program, &INPUT, &honest.output, &proof).expect("the honest run verifies");
 
-        let mut forged = program.execute().unwrap();
+        let mut forged = program.execute(INPUT).unwrap();
         let row = &mut forged.trace.rows[0][3];
         // The read happens at cycle 4; the first write happened at cycle 1, the second at 2.
         let (stride, write_slot) = (tables::CLOCK_STRIDE, tables::REG_SLOTS[2]);
@@ -661,7 +733,7 @@ mod tests {
         forged.output[0] = 8;
         forged.trace.reg_fin[A0 as usize] = F64(8);
         recount_range_reads(&mut forged);
-        let refused = std::panic::catch_unwind(|| prove_execution(&program, &forged, RATE).0)
+        let refused = std::panic::catch_unwind(|| prove_execution(&program, &forged, &INPUT, RATE).0)
             .expect_err("a stale read was proven");
         let message = refused.downcast_ref::<String>().map(String::as_str).unwrap_or("");
         assert!(
@@ -671,9 +743,9 @@ mod tests {
 
         // The same forgery with an honest read is a no-op: recounting alone changes
         // no product, so the refusal above is the stale read's.
-        let mut recounted = program.execute().unwrap();
+        let mut recounted = program.execute(INPUT).unwrap();
         recount_range_reads(&mut recounted);
-        let (proof, _) = prove_execution(&program, &recounted, RATE);
-        verify(&program, &recounted.output, &proof).expect("recounting is harmless");
+        let (proof, _) = prove_execution(&program, &recounted, &INPUT, RATE);
+        verify(&program, &INPUT, &recounted.output, &proof).expect("recounting is harmless");
     }
 }

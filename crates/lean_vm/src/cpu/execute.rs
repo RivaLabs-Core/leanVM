@@ -2,8 +2,8 @@
 //! for every access, what the memory argument needs ([`Trace`]).
 
 use super::*;
-use crate::rv::{self, LOG_REGS, Machine, Trap, semantics};
-use crate::tables::{CLOCK_STRIDE, RANGE_LOG, REG_SLOTS};
+use crate::rv::{self, LOG_REGS, Machine, RAM_BASE, Trap, machine::compute};
+use crate::tables::{CLOCK_STRIDE, RAM_SLOT, RANGE_LOG, REG_SLOTS};
 use primitives::field::{F64, mul_by_g};
 
 pub struct Execution {
@@ -81,22 +81,34 @@ fn padding_access(ranges: &mut Ranges) -> Access {
     }
 }
 
+/// The access a row does not make: its columns do not exist, so nothing reads it.
+fn padding_access_unread() -> Access {
+    Access {
+        x: F64::ZERO,
+        gap: 0,
+        count_lo: F64::ZERO,
+        count_hi: F64::ZERO,
+    }
+}
+
 /// `ts·g^k`.
 fn advance(ts: F64, k: u32) -> F64 {
     (0..k).fold(ts, |t, _| mul_by_g(t))
 }
 
 impl Program {
-    /// Run the program, recording every row, then write out the padding rows that
-    /// bring each table to a power of two ([`filler`]). A run that traps has no proof.
-    pub fn execute(&self) -> Result<Execution, Trap> {
+    /// Run the program on `input`, recording every row, then write out the padding
+    /// rows that bring each table to a power of two ([`filler`]). A run that traps has
+    /// no proof.
+    pub fn execute(&self, input: [u64; rv::INPUT_WORDS]) -> Result<Execution, Trap> {
         let p = &self.rv;
-        let mut m = Machine::new(p);
+        let mut m = Machine::new(p, input);
         let mut ranges = Ranges {
             lo: vec![F64::ONE; 1 << RANGE_LOG],
             hi: vec![F64::ONE; 1 << RANGE_LOG],
         };
         let mut regs = Cells::new(1 << LOG_REGS);
+        let mut ram = Cells::new(1 << p.log_ram);
         // Per-pc bytecode execution count (g^{count}).
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; p.entries.len()];
         let mut fetch = |index: usize| {
@@ -120,10 +132,17 @@ impl Program {
             let e = &p.entries[step.index];
             let table = crate::tables::table_of(e.class)
                 .unwrap_or_else(|| panic!("no table proves {:?} yet (pc {:#x})", e.class, p.pc_of(step.index)));
-            let acc = [e.a1, e.a2, e.ad].map(|cell| cell as usize);
-            let acc = std::array::from_fn(|i| {
-                regs.access(&mut ranges, acc[i], tick + REG_SLOTS[i], advance(ts, REG_SLOTS[i]))
+            // The register accesses, then the RAM access if the class has one. Their
+            // order here is the order of their columns, not of their clock slots.
+            let cells = [e.a1, e.a2, e.ad].map(|cell| cell as usize);
+            let mut acc: [Access; 4] = std::array::from_fn(|i| match cells.get(i) {
+                Some(&cell) => regs.access(&mut ranges, cell, tick + REG_SLOTS[i], advance(ts, REG_SLOTS[i])),
+                None => padding_access_unread(),
             });
+            if let Some(access) = step.ram {
+                let cell = ((access.address - RAM_BASE) / 8) as usize;
+                acc[3] = ram.access(&mut ranges, cell, tick + RAM_SLOT, advance(ts, RAM_SLOT));
+            }
             rows[table].push(Row {
                 index: step.index as u32,
                 ts,
@@ -132,6 +151,7 @@ impl Program {
                 out: step.out,
                 taken: step.taken,
                 vd_old: step.vd_old,
+                ram: step.ram.unwrap_or_default(),
                 acc,
                 bytecode_read: fetch(step.index),
             });
@@ -146,17 +166,15 @@ impl Program {
         let base_counts: [usize; crate::tables::N_TABLES] = std::array::from_fn(|t| rows[t].len());
 
         // The padding rows, written out rather than executed: they sit at clock zero
-        // and touch no register, every read holding zero and the write rewriting what
-        // it writes (`filler`). Their circuit instance is an honest one, on those zeros.
+        // and touch nothing, every read holding zero and every write rewriting what it
+        // writes (`filler`). Their circuit instance is an honest one, on those zeros.
         for (first, size, traversals) in super::filler::cycles(&self.filler, base_counts) {
             for _ in 0..traversals {
                 for index in first..=first + size {
                     let e = &p.entries[index];
                     let table = crate::tables::table_of(e.class).expect("a fill block's class has a table");
-                    let (out, taken) = match e.class {
-                        rv::Class::Alu => semantics::alu(0, 0, e.imm, e.flags),
-                        class => unreachable!("no fill block of {class:?}"),
-                    };
+                    let (out, taken, access) = compute(e, 0, 0, 0);
+                    let n_accesses = crate::tables::CLASSES[table].n_accesses();
                     rows[table].push(Row {
                         index: index as u32,
                         ts: F64::ZERO,
@@ -165,7 +183,14 @@ impl Program {
                         out,
                         taken,
                         vd_old: if e.link { p.pc_of(index) + 4 } else { out },
-                        acc: std::array::from_fn(|_| padding_access(&mut ranges)),
+                        ram: access,
+                        acc: std::array::from_fn(|i| {
+                            if i < n_accesses {
+                                padding_access(&mut ranges)
+                            } else {
+                                padding_access_unread()
+                            }
+                        }),
                         bytecode_read: fetch(index),
                     });
                 }
@@ -177,6 +202,8 @@ impl Program {
             rows,
             reg_fin: m.regs.iter().map(|&r| F64(r)).collect(),
             reg_ts: regs.last_ts,
+            ram_fin: m.ram.iter().map(|&w| F64(w)).collect(),
+            ram_ts: ram.last_ts,
             bytecode_count,
             range_lo_count: ranges.lo,
             range_hi_count: ranges.hi,

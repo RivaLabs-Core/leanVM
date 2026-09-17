@@ -47,6 +47,10 @@ pub enum Coord {
     /// its MLE directly, so it raises no claim. Shared rather than owned: push and
     /// pull carry the same ten columns, tens of megabytes at production sizes.
     Public(Arc<Vec<F64>>),
+    /// A public column that is zero outside a few blocks (RAM as the run finds it,
+    /// §sec:memchan): the verifier evaluates it in time proportional to the blocks,
+    /// not to the column.
+    Sparse(Arc<SparseColumn>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
     /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
@@ -55,6 +59,62 @@ pub enum Coord {
     /// only a table's blocks may carry one: the table sumcheck settles them,
     /// while a framework block has to split into per-column openings.
     Sum(Vec<Coord>),
+}
+
+/// A public column of `2^log_len` words given by its nonzero stretches, each cut into
+/// ALIGNED blocks: a power of two of words, at an offset that is a multiple of it. Such
+/// a block's share of the column's multilinear extension is its own extension in the
+/// low variables times the indicator of its offset's bits in the high ones.
+#[derive(Debug)]
+pub struct SparseColumn {
+    log_len: usize,
+    blocks: Vec<(usize, Vec<F64>)>,
+    /// The column written out, which only the prover needs.
+    dense: std::sync::OnceLock<Vec<F64>>,
+}
+
+impl SparseColumn {
+    /// From `(offset, words)` stretches, which must not overlap.
+    pub fn new(log_len: usize, stretches: &[(usize, &[u64])]) -> Self {
+        let mut blocks = Vec::new();
+        for &(mut at, mut words) in stretches {
+            assert!(at + words.len() <= 1 << log_len, "a stretch runs past the column");
+            while !words.is_empty() {
+                // The largest aligned block starting here that the stretch still fills.
+                let aligned = if at == 0 { usize::MAX } else { 1 << at.trailing_zeros() };
+                let size = aligned.min(1 << words.len().ilog2());
+                blocks.push((at, words[..size].iter().map(|&w| F64(w)).collect()));
+                (at, words) = (at + size, &words[size..]);
+            }
+        }
+        Self {
+            log_len,
+            blocks,
+            dense: std::sync::OnceLock::new(),
+        }
+    }
+
+    fn dense(&self) -> &[F64] {
+        self.dense.get_or_init(|| {
+            let mut column = vec![F64::ZERO; 1 << self.log_len];
+            for (at, words) in &self.blocks {
+                column[*at..at + words.len()].copy_from_slice(words);
+            }
+            column
+        })
+    }
+
+    /// The column's multilinear extension at `point`.
+    fn eval(&self, point: &[F192]) -> F192 {
+        assert_eq!(point.len(), self.log_len);
+        self.blocks.iter().fold(F192::ZERO, |acc, (at, words)| {
+            let k = words.len().ilog2() as usize;
+            let selector = point[k..].iter().enumerate().fold(F192::ONE, |s, (j, &z)| {
+                s * if (at >> (k + j)) & 1 == 1 { z } else { z + F192::ONE }
+            });
+            acc + selector * primitives::multilinear::mle_eval(words, &point[..k])
+        })
+    }
 }
 
 /// A flushing rule: `2^kappa` rows, each a tuple of coordinates. Every one of them is a
@@ -165,6 +225,45 @@ pub fn layout(blocks: &[Block]) -> Layout {
     }
 }
 
+/// The leaves one side leaves unmatched on the other, as `(side, block, row)`, under
+/// one fixed fingerprint: what to look at when a bus does not balance.
+#[cfg(test)]
+pub(crate) fn unmatched_leaves(push: &[Block], pull: &[Block], cols: &[&[F64]]) -> Vec<(&'static str, usize, usize)> {
+    let alphas: Vec<F192> = (0..N_TUPLE_BITS as u64)
+        .map(|i| F192::new(3 + i, 5 + 7 * i, 11))
+        .collect();
+    let (w, beta) = (fingerprint_weights(&alphas), F192::new(13, 17, 19));
+    let powers = power_tables([push, pull, &[]]);
+    let longest = push.iter().chain(pull).map(|b| b.kappa).max().unwrap_or(0);
+    let gpow = primitives::field::g_powers(1 << longest);
+    let side = |blocks: &[Block]| {
+        let lay = layout(blocks);
+        let leaves = build_leaves(blocks, &lay, cols, &w, beta, &gpow, &powers);
+        let mut at = Vec::new();
+        for (b, block) in blocks.iter().enumerate() {
+            at.extend((0..1usize << block.kappa).map(|z| (leaves[lay.offsets[b] + z], b, z)));
+        }
+        at
+    };
+    let (pushed, pulled) = (side(push), side(pull));
+    let key = |leaf: &F192| (leaf.c0, leaf.c1, leaf.c2);
+    let mut counts: HashMap<_, i64> = HashMap::new();
+    for (leaf, ..) in &pushed {
+        *counts.entry(key(leaf)).or_default() += 1;
+    }
+    for (leaf, ..) in &pulled {
+        *counts.entry(key(leaf)).or_default() -= 1;
+    }
+    let unmatched = |name: &'static str, leaves: &[(F192, usize, usize)]| {
+        leaves
+            .iter()
+            .filter(|(leaf, ..)| counts[&key(leaf)] != 0)
+            .map(|&(_, b, z)| (name, b, z))
+            .collect::<Vec<_>>()
+    };
+    [unmatched("push", &pushed), unmatched("pull", &pulled)].concat()
+}
+
 /// A non-constant coordinate as `(source, coefficient)`: its leaf contribution is
 /// the mixed product `coeff · source(z)` with `source(z) ∈ K`, `coeff ∈ E`.
 /// `GCol` folds the `g^k` factor into the coefficient.
@@ -219,6 +318,7 @@ fn push_terms<'a>(c: &'a Coord, w: F192, powers: &'a PowerTables, terms: &mut Ve
             terms.push(Term::Public(table, w));
         }
         Coord::Public(vals) => terms.push(Term::Public(vals.as_slice(), w)),
+        Coord::Sparse(column) => terms.push(Term::Public(column.dense(), w)),
         Coord::Sum(cs) => {
             for c in cs {
                 push_terms(c, w, powers, terms, constant);
@@ -425,7 +525,7 @@ fn accumulate_form(c: &Coord, w: F192, base: usize, form: &mut BusForm) {
                 accumulate_form(c, w, base, form);
             }
         }
-        Coord::Index | Coord::IntIndex { .. } | Coord::Powers { .. } | Coord::Public(_) => {
+        Coord::Index | Coord::IntIndex { .. } | Coord::Powers { .. } | Coord::Public(_) | Coord::Sparse(_) => {
             unreachable!("a table's bus block carries no virtual coordinate")
         }
     }
@@ -501,6 +601,7 @@ fn decompose_formula<F: FnMut(usize, &[F192]) -> Result<F192, Error>>(
                     unreachable!("only a table's bus block carries a degree-2 coordinate")
                 }
                 Coord::Public(vals) => public_eval(vals, zeta_lo, public),
+                Coord::Sparse(column) => column.eval(zeta_lo),
             };
             inner += w[i] * coord_val;
         }
@@ -968,7 +1069,25 @@ pub fn verify_balance(
 
 #[cfg(test)]
 mod tests {
-    use super::soundness_bits;
+    use super::{F64, F192, SparseColumn, soundness_bits};
+
+    /// A sparse column's block-wise evaluation is its dense multilinear extension,
+    /// whatever the stretches' offsets and lengths.
+    #[test]
+    fn sparse_column_evaluates_as_its_dense_form() {
+        let words: Vec<u64> = (1..=37).map(|i| i * 0x9e37_79b9_7f4a_7c15).collect();
+        let column = SparseColumn::new(9, &[(0, &words[..4]), (5, &words[4..17]), (300, &words[17..])]);
+        assert_eq!(
+            column.dense()[5..18],
+            words[4..17].iter().map(|&w| F64(w)).collect::<Vec<_>>()
+        );
+        assert_eq!(column.dense().iter().filter(|w| !w.is_zero()).count(), words.len());
+        let point: Vec<F192> = (0..9).map(|i| F192::new(3 + i, 5 * i + 1, 7)).collect();
+        assert_eq!(
+            column.eval(&point),
+            primitives::multilinear::mle_eval(column.dense(), &point)
+        );
+    }
 
     /// The bound is `(N_TUPLE_BITS + 1)·2^mu` plus the GKR terms: only the bus
     /// DEPTH costs bits now, the multilinear fingerprint having fixed each factor's

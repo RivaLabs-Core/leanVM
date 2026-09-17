@@ -59,8 +59,9 @@ const fn g_pow(k: usize) -> F64 {
     acc
 }
 
-// Domain separators (coordinate 0 of every bus tuple). `g^1` is RAM's.
+// Domain separators (coordinate 0 of every bus tuple).
 pub(crate) const SEP_STATE: F64 = g_pow(0);
+pub(crate) const SEP_MEM: F64 = g_pow(1);
 pub(crate) const SEP_BYTECODE: F64 = g_pow(2);
 pub(crate) const SEP_RANGE_LO: F64 = g_pow(3);
 pub(crate) const SEP_RANGE_HI: F64 = g_pow(4);
@@ -75,8 +76,11 @@ pub const CLOCK_STRIDE: u32 = 4;
 /// The clock the run starts on: cycle 1, so the first access is strictly after the
 /// seeds' `g^0`.
 pub const CLOCK_START: F64 = g_pow(CLOCK_STRIDE as usize);
-/// A row's clock slots: `rs1`, `rs2`, then `rd` last. Slot 2 is the RAM access's.
+/// A row's clock slots: `rs1`, `rs2`, then `rd` last, after the RAM access if there is one.
 pub const REG_SLOTS: [u32; 3] = [0, 1, 3];
+pub const RAM_SLOT: u32 = 2;
+/// The slots of a row's accesses in the order of their columns: the registers', then RAM's.
+const ACCESS_SLOTS: [u32; 4] = [REG_SLOTS[0], REG_SLOTS[1], REG_SLOTS[2], RAM_SLOT];
 
 /// The low range array's addresses `g^{j+1}`: the `+1` is the strictness of `x < y`.
 pub fn range_lo_first() -> F64 {
@@ -332,6 +336,21 @@ pub enum Word {
     Out,
     /// Whether the branch is taken, 0 or 1.
     Taken,
+    /// A load's or a store's bus address, the RAM cell it names, and for a store
+    /// what the cell holds afterwards.
+    Address,
+    Cell,
+    CellNew,
+}
+
+/// How a class uses RAM.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Ram {
+    None,
+    /// One cell read, in clock slot 2.
+    Read,
+    /// One cell read and rewritten.
+    Write,
 }
 
 /// What specializes the class table to one instruction class.
@@ -342,6 +361,7 @@ pub struct ClassSpec {
     /// circuit's `taken` word. Without them the next `pc` is `pc + 4` and `rd`
     /// receives `out`.
     pub control: bool,
+    pub ram: Ram,
     pub circuit: fn() -> Circuit,
     /// `log2` of the bits one instance of the circuit occupies. A constant, because
     /// the layout needs it before any circuit is built; [`crate::class_flock`] checks it.
@@ -351,20 +371,60 @@ pub struct ClassSpec {
     pub n_inputs: usize,
 }
 
+impl ClassSpec {
+    /// Accesses per row: the three registers', and RAM's if the class has one.
+    pub const fn n_accesses(&self) -> usize {
+        match self.ram {
+            Ram::None => 3,
+            _ => 4,
+        }
+    }
+}
+
 pub static ALU: ClassSpec = ClassSpec {
     class: Class::Alu,
     name: "ALU",
     control: true,
+    ram: Ram::None,
     circuit: rv::circuits::alu,
     k_log: 10,
     ports: &[Word::V1, Word::V2, Word::Imm, Word::Flags, Word::Out, Word::Taken],
     n_inputs: 4,
 };
+pub static LOAD: ClassSpec = ClassSpec {
+    class: Class::Load,
+    name: "LOAD",
+    control: false,
+    ram: Ram::Read,
+    circuit: rv::circuits::load,
+    k_log: 10,
+    ports: &[Word::V1, Word::Imm, Word::Flags, Word::Cell, Word::Address, Word::Out],
+    n_inputs: 4,
+};
+pub static STORE: ClassSpec = ClassSpec {
+    class: Class::Store,
+    name: "STORE",
+    control: false,
+    ram: Ram::Write,
+    circuit: rv::circuits::store,
+    k_log: 10,
+    ports: &[
+        Word::V1,
+        Word::V2,
+        Word::Imm,
+        Word::Flags,
+        Word::Cell,
+        Word::Address,
+        Word::CellNew,
+        Word::Out,
+    ],
+    n_inputs: 5,
+};
 
 /// The tables, in the order of `row_counts` / `taus` throughout `cpu`. Table `t`'s
 /// class tag in the bytecode is `g^t`.
-pub const N_TABLES: usize = 1;
-pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU];
+pub const N_TABLES: usize = 3;
+pub static CLASSES: [&ClassSpec; N_TABLES] = [&ALU, &LOAD, &STORE];
 
 /// The table running `class`, if it has one yet.
 pub fn table_of(class: Class) -> Option<usize> {
@@ -379,7 +439,7 @@ pub fn tables() -> [&'static dyn Table; N_TABLES] {
 
 /// The local column of each of table `t`'s circuit words, in port order.
 pub(crate) fn word_columns(t: usize) -> Vec<usize> {
-    let cols = Cols::new(CLASSES[t].control);
+    let cols = Cols::new(CLASSES[t]);
     CLASSES[t].ports.iter().map(|&w| cols.word(w)).collect()
 }
 
@@ -403,13 +463,16 @@ struct Cols {
     v2: usize,
     out: usize,
     taken: Option<usize>,
+    /// The bus address and the cell, then what a store leaves in the cell.
+    ram: Option<usize>,
     acc: Acc,
     /// The bytecode read's count, the last column.
     rbc: usize,
 }
 
 impl Cols {
-    fn new(control: bool) -> Self {
+    fn new(spec: &ClassSpec) -> Self {
+        let control = spec.control;
         let mut next = 0;
         let mut take = |n: usize| {
             next += n;
@@ -419,7 +482,13 @@ impl Cols {
         let control_at = control.then(|| take(3));
         let (vd_old, flags, imm, v1, v2, out) = (take(1), take(1), take(1), take(1), take(1), take(1));
         let taken = control.then(|| take(1));
-        let acc = Acc { base: take(15), n: 3 };
+        let ram = match spec.ram {
+            Ram::None => None,
+            Ram::Read => Some(take(2)),
+            Ram::Write => Some(take(3)),
+        };
+        let n = spec.n_accesses();
+        let acc = Acc { base: take(5 * n), n };
         Self {
             pc,
             ts,
@@ -435,6 +504,7 @@ impl Cols {
             v2,
             out,
             taken,
+            ram,
             acc,
             rbc: take(1),
         }
@@ -448,12 +518,15 @@ impl Cols {
             Word::V2 => self.v2,
             Word::Out => self.out,
             Word::Taken => self.taken.expect("only a control class has a taken word"),
+            Word::Address => self.ram.expect("only a load or a store has an address"),
+            Word::Cell => self.ram.expect("only a load or a store has a cell") + 1,
+            Word::CellNew => self.ram.expect("only a store rewrites its cell") + 2,
         }
     }
 }
 
 /// The table of one instruction class (§sec:tables): the state step, the bytecode
-/// read, two register reads and one register write.
+/// read, two register reads, the RAM access of a load or a store, and one register write.
 struct ClassTable {
     index: usize,
     spec: &'static ClassSpec,
@@ -464,7 +537,7 @@ struct ClassTable {
 impl ClassTable {
     fn new(index: usize) -> Self {
         let spec = CLASSES[index];
-        let cols = Cols::new(spec.control);
+        let cols = Cols::new(spec);
         assert_eq!(cols.rbc, cols.acc.end(), "the counts are the table's last columns");
         Self {
             index,
@@ -491,7 +564,7 @@ impl Table for ClassTable {
         self.cols.acc.n
     }
     fn constraint_weights(&self, pows: &[F192]) -> Vec<F192> {
-        access_weights(pows, &REG_SLOTS)
+        access_weights(pows, &ACCESS_SLOTS[..self.cols.acc.n])
     }
     fn eval_constraint(&self, w: &[F192], cols: &[F192], _quadratic: bool) -> F192 {
         self.eval(w, cols)
@@ -538,6 +611,12 @@ impl Table for ClassTable {
         f.access(SEP_REG, Col(c.a1), c.ts, c.acc, 0, s1, Col(c.v1), Col(c.v1));
         f.access(SEP_REG, Col(c.a2), c.ts, c.acc, 1, s2, Col(c.v2), Col(c.v2));
         f.access(SEP_REG, Col(c.ad), c.ts, c.acc, 2, sd, Col(c.vd_old), vd);
+        // The cell a load or a store names is the circuit's word, so an access outside
+        // RAM, or a misaligned one, pulls a tuple nothing pushed.
+        if let Some(address) = c.ram {
+            let (cell, new) = (address + 1, address + if self.spec.ram == Ram::Write { 2 } else { 1 });
+            f.access(SEP_MEM, Col(address), c.ts, c.acc, 3, RAM_SLOT, Col(cell), Col(new));
+        }
     }
     fn fill(&self, ctx: &FillCtx, out: &mut [ColumnOut]) {
         let c = &self.cols;
@@ -574,6 +653,12 @@ impl Table for ClassTable {
         });
         if let Some(taken) = c.taken {
             ctx.col(out, rows, taken, |r| F64(r.taken as u64));
+        }
+        if let Some(address) = c.ram {
+            ctx.cols(out, rows, address, |r| [F64(r.ram.address), F64(r.ram.old)]);
+            if self.spec.ram == Ram::Write {
+                ctx.col(out, rows, address + 2, |r| F64(r.ram.new));
+            }
         }
         ctx.accesses(out, rows, c.acc, |r| &r.acc);
         ctx.col(out, rows, c.rbc, |r| r.bytecode_read);

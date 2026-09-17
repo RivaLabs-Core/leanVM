@@ -67,6 +67,9 @@ fn word_of(word: Word, row: &Row, entry: &Entry) -> u64 {
         Word::V2 => row.v2,
         Word::Out => row.out,
         Word::Taken => row.taken as u64,
+        Word::Address => row.ram.address,
+        Word::Cell => row.ram.old,
+        Word::CellNew => row.ram.new,
     }
 }
 

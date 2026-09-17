@@ -1,7 +1,8 @@
 //! The interpreter: the reference semantics of a [`Program`], one [`Step`] at a time.
 
 use super::{
-    Class, Entry, LOG_REGS, MAX_LOG_RAM, MAX_LOG_TEXT, OUTPUT_REGS, RAM_BASE, SYS_EXIT, SYSCALL_REG, TEXT_BASE,
+    Class, Entry, INPUT_WORDS, LOG_REGS, MAX_LOG_RAM, MAX_LOG_TEXT, OUTPUT_REGS, RAM_BASE, SYS_EXIT, SYSCALL_REG,
+    TEXT_BASE,
 };
 use super::{Target, decode, load, semantics, store};
 
@@ -12,7 +13,8 @@ pub struct Program {
     /// is the halt slot, which is illegal, as is every slot holding no instruction.
     pub entries: Vec<Entry>,
     pub entry_pc: u64,
-    /// RAM's first words. The rest of its `2^log_ram` words are zero.
+    /// RAM's words after the [`INPUT_WORDS`] the public input takes. The rest of its
+    /// `2^log_ram` words are zero.
     pub image: Vec<u64>,
     pub log_ram: usize,
 }
@@ -33,8 +35,8 @@ impl Program {
             "the text exceeds 2^{MAX_LOG_TEXT} instructions"
         );
         assert!(
-            log_ram <= MAX_LOG_RAM && image.len() <= 1 << log_ram,
-            "RAM exceeds its region"
+            (2..=MAX_LOG_RAM).contains(&log_ram) && INPUT_WORDS + image.len() <= 1 << log_ram,
+            "RAM is too small for its image, or exceeds its region"
         );
         Self {
             entries,
@@ -111,9 +113,10 @@ impl std::fmt::Display for Trap {
 }
 
 /// The RAM cell a step accessed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RamAccess {
-    /// The word's byte address.
+    /// What goes on the memory bus ([`semantics::bus_address`]): the word's byte
+    /// address, for an aligned access.
     pub address: u64,
     pub old: u64,
     pub new: u64,
@@ -136,6 +139,40 @@ pub struct Step {
     pub npc: u64,
 }
 
+/// What entry `e` computes from the registers it reads and, for a load or a store, the
+/// RAM cell it names: `(out, taken, RAM access)`, whether or not a run could make
+/// that access.
+pub fn compute(e: &Entry, v1: u64, v2: u64, cell: u64) -> (u64, bool, RamAccess) {
+    let address = semantics::address(v1, e.imm);
+    let ram = |new: u64, log_width: u64| RamAccess {
+        address: semantics::bus_address(address, log_width),
+        old: cell,
+        new,
+    };
+    let none = RamAccess::default();
+    match e.class {
+        Class::Alu => {
+            let (out, taken) = semantics::alu(v1, v2, e.imm, e.flags);
+            (out, taken, none)
+        }
+        Class::Shift => (semantics::shift(v1, v2, e.imm, e.flags), false, none),
+        Class::Mul => (semantics::mul(v1, v2, e.flags), false, none),
+        Class::Mulh => (semantics::mulh(v1, v2, e.flags), false, none),
+        Class::Div => (semantics::div(v1, v2, e.flags), false, none),
+        Class::Load => (
+            semantics::load(cell, address, e.flags),
+            false,
+            ram(cell, e.flags & load::LOG_WIDTH),
+        ),
+        Class::Store => (
+            0,
+            false,
+            ram(semantics::store(cell, address, v2, e.flags), e.flags & store::LOG_WIDTH),
+        ),
+        Class::Illegal => (0, false, none),
+    }
+}
+
 pub struct Machine<'a> {
     pub program: &'a Program,
     /// `x0..x31`, then [`super::SINK`].
@@ -145,8 +182,10 @@ pub struct Machine<'a> {
 }
 
 impl<'a> Machine<'a> {
-    pub fn new(program: &'a Program) -> Self {
-        let mut ram = program.image.clone();
+    /// The machine about to run `program` on `input`.
+    pub fn new(program: &'a Program, input: [u64; INPUT_WORDS]) -> Self {
+        let mut ram = input.to_vec();
+        ram.extend(&program.image);
         ram.resize(1 << program.log_ram, 0);
         Self {
             program,
@@ -175,45 +214,22 @@ impl<'a> Machine<'a> {
         let index = self.program.index_of(pc).ok_or(Trap::Illegal { pc })?;
         let e = self.program.entries[index];
         let (v1, v2) = (self.regs[e.a1 as usize], self.regs[e.a2 as usize]);
-        let (mut taken, mut ram) = (false, None);
-        let out = match e.class {
-            Class::Alu => {
-                let (out, t) = semantics::alu(v1, v2, e.imm, e.flags);
-                taken = t;
-                out
-            }
-            Class::Shift => semantics::shift(v1, v2, e.imm, e.flags),
-            Class::Mul => semantics::mul(v1, v2, e.flags),
-            Class::Mulh => semantics::mulh(v1, v2, e.flags),
-            Class::Div => semantics::div(v1, v2, e.flags),
+        let cell = match e.class {
             Class::Load | Class::Store => {
                 let address = semantics::address(v1, e.imm);
-                let log_width = e.flags
-                    & if e.class == Class::Load {
-                        load::LOG_WIDTH
-                    } else {
-                        store::LOG_WIDTH
-                    };
-                if !semantics::is_aligned(address, log_width) {
+                if !semantics::is_aligned(address, e.flags & load::LOG_WIDTH) {
                     return Err(Trap::Misaligned { pc, address });
                 }
-                let cell = self.cell(address)?;
-                let old = self.ram[cell];
-                let (new, out) = if e.class == Class::Load {
-                    (old, semantics::load(old, address, e.flags))
-                } else {
-                    (semantics::store(old, address, v2, e.flags), 0)
-                };
-                self.ram[cell] = new;
-                ram = Some(RamAccess {
-                    address: address & !7,
-                    old,
-                    new,
-                });
-                out
+                Some(self.cell(address)?)
             }
             Class::Illegal => return Err(Trap::Illegal { pc }),
+            _ => None,
         };
+        let (out, taken, access) = compute(&e, v1, v2, cell.map_or(0, |cell| self.ram[cell]));
+        let ram = cell.map(|cell| {
+            self.ram[cell] = access.new;
+            access
+        });
         let pc4 = pc.wrapping_add(4);
         let vd = if e.link { pc4 } else { out };
         let vd_old = std::mem::replace(&mut self.regs[e.ad as usize], vd);
@@ -486,10 +502,10 @@ mod tests {
             let program = Program::new(
                 &[word],
                 TEXT_BASE,
-                (0..1 << LOG_RAM).map(|_| rng.next()).collect(),
+                (INPUT_WORDS..1 << LOG_RAM).map(|_| rng.next()).collect(),
                 LOG_RAM,
             );
-            let mut m = Machine::new(&program);
+            let mut m = Machine::new(&program, [0; 4]);
             for r in 1..32 {
                 m.regs[r] = rng.word();
             }
@@ -510,7 +526,7 @@ mod tests {
     }
 
     fn run(text: &[u32], image: Vec<u64>) -> Result<[u64; 4], Trap> {
-        Machine::new(&Program::new(text, TEXT_BASE, image, LOG_RAM)).run(1 << 20)
+        Machine::new(&Program::new(text, TEXT_BASE, image, LOG_RAM), [7, 0, 0, 0]).run(1 << 20)
     }
 
     #[test]
@@ -544,12 +560,13 @@ mod tests {
         assert_eq!(run(&text, vec![]), Ok([2_880_067_194_370_816_120, 0, 0, 0]));
 
         // Bubble sort of eight words through a stack frame, then a0 <- the median pair's sum.
+        const DATA: u64 = RAM_BASE + 8 * INPUT_WORDS as u64;
         let data = [5u64, 3, 9, 1, 8, 2, 7, 4];
         let text = Asm::new()
             .li(SP, RAM_BASE + RAM_BYTES)
-            .li(A0, RAM_BASE)
+            .li(A0, DATA)
             .jal(RA, "sort")
-            .li(T0, RAM_BASE)
+            .li(T0, DATA)
             .load("ld", A0, 24, T0)
             .load("ld", A1, 32, T0)
             .r("add", A0, A0, A1)
@@ -581,9 +598,9 @@ mod tests {
             .jalr(ZERO, RA, 0)
             .finish();
         let program = Program::new(&text, TEXT_BASE, data.to_vec(), LOG_RAM);
-        let mut m = Machine::new(&program);
+        let mut m = Machine::new(&program, [0; 4]);
         assert_eq!(m.run(1 << 20), Ok([4 + 5, 0, 0, 0]));
-        assert_eq!(m.ram[..8], [1, 2, 3, 4, 5, 7, 8, 9]);
+        assert_eq!(m.ram[INPUT_WORDS..][..8], [1, 2, 3, 4, 5, 7, 8, 9]);
         assert_eq!(m.regs[0], 0, "x0");
     }
 

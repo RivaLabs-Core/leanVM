@@ -1,14 +1,15 @@
 //! leanVM: a minimal zkVM for RISC-V (rv64im). A [`Program`] is built from its text
 //! ([`Program::new`], with [`asm`] for writing one by hand), [`prove`] runs it and
-//! proves the run, [`verify`] checks the proof against the program and the output the
-//! run claims: `a0..a3` when it called `exit`.
+//! proves the run on a public input, RAM's first four words, [`verify`] checks the proof
+//! against the program, that input and the output the run claims: `a0..a3` when it
+//! called `exit`.
 //!
 //! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM/blob/main/tests/api.rs).
 
 pub use lean_vm::{
     cpu::{CpuError, Program, Proof, Stats, prove, verify},
     pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE},
-    rv::{TEXT_BASE, Trap, asm},
+    rv::{RAM_BASE, TEXT_BASE, Trap, asm},
 };
 
 /// Call once before [`verify`]. Idempotent, and [`setup_prover`] does it for you.

@@ -59,6 +59,9 @@ pub struct Block {
 fn nop(class: Class) -> u32 {
     match class {
         Class::Alu => asm::i_type(0x13, 0, 0, 0, 0),
+        // A load and a store of the byte at address zero, which clock zero never checks.
+        Class::Load => asm::i_type(0x03, 0, 0, 0, 0),
+        Class::Store => asm::s_type(0x23, 0, 0, 0, 0),
         class => unreachable!("no fill block of {class:?}"),
     }
 }
@@ -198,18 +201,28 @@ mod tests {
     use super::*;
 
     /// Whatever the shape of the run, every table comes out an exact power of two at or
-    /// above its floor, a gap of a single row included.
+    /// above its floor, and no further than the next one: a gap of a single row included,
+    /// which the closing jumps of the other tables' fills can leave `ALU` with.
     #[test]
     fn solve_reaches_power_of_two_floors() {
-        for rows in [0, 1, 7, 8, 9, 125_000, (1 << 17) - 1, 1 << 17, (1 << 17) + 1] {
-            let base = [rows; N_TABLES];
-            let got = filled(base, &solve(base));
+        let mut cases = vec![[0; N_TABLES], [1; N_TABLES], [125_000; N_TABLES], [1 << 17; N_TABLES]];
+        for alu in [(1 << 17) - 3, (1 << 17) - 2, (1 << 17) - 1] {
+            let mut base = [1 << 10; N_TABLES];
+            base[JUMP] = alu;
+            cases.push(base);
+        }
+        for base in cases {
+            let plan = solve(base);
+            let got = filled(base, &plan);
             assert!(is_filled(got), "{base:?} filled to {got:?}");
             for t in 0..N_TABLES {
-                assert!(
-                    got[t] >= base[t] && got[t] < 2 * base[t].max(min_rows(t)),
-                    "{base:?} filled to {got:?}"
-                );
+                let owed = base[t]
+                    + if t == JUMP {
+                        traversals(&plan) - plan[JUMP].iter().sum::<usize>()
+                    } else {
+                        0
+                    };
+                assert_eq!(got[t], ceil_pow2(owed.max(min_rows(t))), "{base:?} filled to {got:?}");
             }
         }
     }

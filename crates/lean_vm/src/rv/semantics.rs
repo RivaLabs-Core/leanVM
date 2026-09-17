@@ -70,6 +70,13 @@ pub fn address(v1: u64, imm: u64) -> u64 {
     v1.wrapping_add(imm)
 }
 
+/// What a load or a store puts on the memory bus for `address`: the byte address of
+/// its 64-bit cell, with the bits that misalign the access left in. A cell's address
+/// is a multiple of 8, so a misaligned access names no cell at all.
+pub fn bus_address(address: u64, log_width: u64) -> u64 {
+    (address & !7) | (address & ((1 << log_width) - 1))
+}
+
 /// Whether an access of `2^log_width` bytes at `address` is naturally aligned.
 pub fn is_aligned(address: u64, log_width: u64) -> bool {
     address & ((1 << log_width) - 1) == 0
