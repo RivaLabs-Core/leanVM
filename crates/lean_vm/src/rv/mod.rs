@@ -35,6 +35,11 @@ pub const MAX_LOG_TEXT: usize = 26;
 pub const RAM_BASE: u64 = 0x4000_0000;
 /// `log2` of the most 64-bit words RAM holds.
 pub const MAX_LOG_RAM: usize = 27;
+/// Where the advice sits: a second region of memory, read and written like RAM, whose
+/// contents before the run are the prover's rather than the statement's. What a
+/// guest reads from it, it has to check.
+pub const ADVICE_BASE: u64 = 0x2000_0000;
+pub const MAX_LOG_ADVICE: usize = 26;
 
 /// RAM's first words are the run's public input, and the program's image follows.
 pub const INPUT_WORDS: usize = 4;

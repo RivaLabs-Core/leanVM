@@ -11,7 +11,7 @@ pub use lean_vm::{
     cpu::{CpuError, Program, Proof, Stats, prove, verify},
     pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE},
     rv::ElfError,
-    rv::{RAM_BASE, TEXT_BASE, Trap, asm},
+    rv::{ADVICE_BASE, RAM_BASE, TEXT_BASE, Trap, asm},
 };
 
 /// Call once before [`verify`]. Idempotent, and [`setup_prover`] does it for you.

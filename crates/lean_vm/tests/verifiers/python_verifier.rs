@@ -32,13 +32,18 @@ impl PythonStatement {
             .flat_map(|w| w.0.to_le_bytes())
             .collect();
         std::fs::write(&statement.bytecode, &table).expect("write bytecode");
-        let public: Vec<u8> = [rv.entry_pc, rv.log_ram as u64, rv.image.len() as u64]
-            .iter()
-            .chain(&rv.image)
-            .chain(input)
-            .chain(output)
-            .flat_map(|w| w.to_le_bytes())
-            .collect();
+        let public: Vec<u8> = [
+            rv.entry_pc,
+            rv.log_ram as u64,
+            rv.log_advice as u64,
+            rv.image.len() as u64,
+        ]
+        .iter()
+        .chain(&rv.image)
+        .chain(input)
+        .chain(output)
+        .flat_map(|w| w.to_le_bytes())
+        .collect();
         std::fs::write(&statement.public, &public).expect("write the public words");
         statement
     }
@@ -101,7 +106,7 @@ impl Drop for PythonStatement {
 fn test_python_verifier() {
     let (program, _) = super::programs::fibonacci();
     let input = [0; 4];
-    let (proof, output, stats) = prove(&program, input, 1).expect("the run halts");
+    let (proof, output, stats) = prove(&program, input, &[], 1).expect("the run halts");
     // Python reads the RAW proof: same protocol, each query carrying its own
     // full Merkle path instead of one octopus over the batch. A Rust verify
     // expands the wire form, so the pruning is written once.

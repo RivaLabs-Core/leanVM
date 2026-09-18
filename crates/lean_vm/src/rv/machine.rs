@@ -1,12 +1,13 @@
 //! The interpreter: the reference semantics of a [`Program`], one [`Step`] at a time.
 
 use super::{
-    Class, Entry, INPUT_WORDS, LOG_REGS, MAX_LOG_RAM, MAX_LOG_TEXT, OUTPUT_REGS, RAM_BASE, SYS_EXIT, SYSCALL_REG,
-    TEXT_BASE,
+    ADVICE_BASE, Class, Entry, INPUT_WORDS, LOG_REGS, MAX_LOG_ADVICE, MAX_LOG_RAM, MAX_LOG_TEXT, OUTPUT_REGS, RAM_BASE,
+    SYS_EXIT, SYSCALL_REG, TEXT_BASE,
 };
 use super::{Target, decode, hash, load, semantics, store};
 
-/// A decoded program: its text, where it starts, and RAM as the run finds it.
+/// A decoded program: its text, where it starts, RAM as the run finds it, and the
+/// advice's size.
 #[derive(Clone, Debug)]
 pub struct Program {
     /// A power of two of entries, instruction `i` at [`Self::pc_of`]`(i)`. The last
@@ -17,11 +18,13 @@ pub struct Program {
     /// `2^log_ram` words are zero.
     pub image: Vec<u64>,
     pub log_ram: usize,
+    /// The advice region holds `2^log_advice` words ([`ADVICE_BASE`]).
+    pub log_advice: usize,
 }
 
 impl Program {
     /// Decode `text`, whose first word sits at [`TEXT_BASE`].
-    pub fn new(text: &[u32], entry_pc: u64, image: Vec<u64>, log_ram: usize) -> Self {
+    pub fn new(text: &[u32], entry_pc: u64, image: Vec<u64>, log_ram: usize, log_advice: usize) -> Self {
         let mut entries: Vec<Entry> = text
             .iter()
             .enumerate()
@@ -38,11 +41,13 @@ impl Program {
             (2..=MAX_LOG_RAM).contains(&log_ram) && INPUT_WORDS + image.len() <= 1 << log_ram,
             "RAM is too small for its image, or exceeds its region"
         );
+        assert!(log_advice <= MAX_LOG_ADVICE, "the advice exceeds its region");
         Self {
             entries,
             entry_pc,
             image,
             log_ram,
+            log_advice,
         }
     }
 
@@ -204,29 +209,50 @@ pub struct Machine<'a> {
     pub program: &'a Program,
     /// `x0..x31`, then [`super::SINK`].
     pub regs: [u64; 1 << LOG_REGS],
-    pub ram: Vec<u64>,
+    /// RAM's cells, then the advice's.
+    mem: Vec<u64>,
     pub pc: u64,
 }
 
 impl<'a> Machine<'a> {
-    /// The machine about to run `program` on `input`.
-    pub fn new(program: &'a Program, input: [u64; INPUT_WORDS]) -> Self {
-        let mut ram = input.to_vec();
-        ram.extend(&program.image);
-        ram.resize(1 << program.log_ram, 0);
+    /// The machine about to run `program` on `input`, RAM's first words, and `advice`,
+    /// the advice region's first words.
+    pub fn new(program: &'a Program, input: [u64; INPUT_WORDS], advice: &[u64]) -> Self {
+        assert!(
+            advice.len() <= 1 << program.log_advice,
+            "the advice does not fit its region"
+        );
+        let mut mem = input.to_vec();
+        mem.extend(&program.image);
+        mem.resize(1 << program.log_ram, 0);
+        mem.extend(advice);
+        mem.resize((1 << program.log_ram) + (1 << program.log_advice), 0);
         Self {
             program,
             regs: [0; 1 << LOG_REGS],
-            ram,
+            mem,
             pc: program.entry_pc,
         }
     }
 
-    /// The RAM cell holding `address`.
+    pub fn ram(&self) -> &[u64] {
+        &self.mem[..1 << self.program.log_ram]
+    }
+
+    pub fn advice(&self) -> &[u64] {
+        &self.mem[1 << self.program.log_ram..]
+    }
+
+    /// The cell holding `address`: RAM's, or past them the advice's.
     fn cell(&self, address: u64) -> Result<usize, Trap> {
-        let offset = address.wrapping_sub(RAM_BASE) / 8;
-        if address >= RAM_BASE && offset < self.ram.len() as u64 {
-            Ok(offset as usize)
+        let (ram, advice) = (
+            address.wrapping_sub(RAM_BASE) / 8,
+            address.wrapping_sub(ADVICE_BASE) / 8,
+        );
+        if address >= RAM_BASE && ram < 1 << self.program.log_ram {
+            Ok(ram as usize)
+        } else if address >= ADVICE_BASE && advice < 1 << self.program.log_advice {
+            Ok((1 << self.program.log_ram) + advice as usize)
         } else {
             Err(Trap::Unmapped { pc: self.pc, address })
         }
@@ -252,9 +278,9 @@ impl<'a> Machine<'a> {
             Class::Illegal => return Err(Trap::Illegal { pc }),
             _ => None,
         };
-        let (out, taken, access) = compute(&e, v1, v2, cell.map_or(0, |cell| self.ram[cell]));
+        let (out, taken, access) = compute(&e, v1, v2, cell.map_or(0, |cell| self.mem[cell]));
         let ram = cell.map(|cell| {
-            self.ram[cell] = access.new;
+            self.mem[cell] = access.new;
             access
         });
         let hash = match e.class {
@@ -297,9 +323,9 @@ impl<'a> Machine<'a> {
         for (k, cell) in cells.iter_mut().enumerate() {
             *cell = self.cell(base ^ (8 * k as u64))?;
         }
-        let access = compute_hash(cells.map(|cell| self.ram[cell]), t, flags);
+        let access = compute_hash(cells.map(|cell| self.mem[cell]), t, flags);
         for (j, &out) in access.out.iter().enumerate() {
-            self.ram[cells[hash::OUT as usize / 8 + j]] = out;
+            self.mem[cells[hash::OUT as usize / 8 + j]] = out;
         }
         Ok(access)
     }
@@ -556,8 +582,9 @@ mod tests {
                 TEXT_BASE,
                 (INPUT_WORDS..1 << LOG_RAM).map(|_| rng.next()).collect(),
                 LOG_RAM,
+                0,
             );
-            let mut m = Machine::new(&program, [0; 4]);
+            let mut m = Machine::new(&program, [0; 4], &[]);
             for r in 1..32 {
                 m.regs[r] = rng.word();
             }
@@ -566,19 +593,19 @@ mod tests {
                 m.regs[base as usize] = address.wrapping_sub(imm as i64 as u64);
             }
             let mut x: [u64; 32] = m.regs[..32].try_into().unwrap();
-            let mut mem: Vec<u8> = m.ram.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let mut mem: Vec<u8> = m.ram().iter().flat_map(|w| w.to_le_bytes()).collect();
             let mut pc = m.pc;
             spec_step(word, &mut x, &mut pc, &mut mem);
             m.step().unwrap_or_else(|trap| panic!("{word:#010x}: {trap}"));
             assert_eq!(m.regs[..32], x, "{word:#010x}: registers");
             assert_eq!(m.pc, pc, "{word:#010x}: pc");
-            let ram: Vec<u8> = m.ram.iter().flat_map(|w| w.to_le_bytes()).collect();
+            let ram: Vec<u8> = m.ram().iter().flat_map(|w| w.to_le_bytes()).collect();
             assert_eq!(ram, mem, "{word:#010x}: RAM");
         }
     }
 
     fn run(text: &[u32], image: Vec<u64>) -> Result<[u64; 4], Trap> {
-        Machine::new(&Program::new(text, TEXT_BASE, image, LOG_RAM), [7, 0, 0, 0]).run(1 << 20)
+        Machine::new(&Program::new(text, TEXT_BASE, image, LOG_RAM, 0), [7, 0, 0, 0], &[]).run(1 << 20)
     }
 
     #[test]
@@ -649,10 +676,10 @@ mod tests {
             .i("addi", SP, SP, 16)
             .jalr(ZERO, RA, 0)
             .finish();
-        let program = Program::new(&text, TEXT_BASE, data.to_vec(), LOG_RAM);
-        let mut m = Machine::new(&program, [0; 4]);
+        let program = Program::new(&text, TEXT_BASE, data.to_vec(), LOG_RAM, 0);
+        let mut m = Machine::new(&program, [0; 4], &[]);
         assert_eq!(m.run(1 << 20), Ok([4 + 5, 0, 0, 0]));
-        assert_eq!(m.ram[INPUT_WORDS..][..8], [1, 2, 3, 4, 5, 7, 8, 9]);
+        assert_eq!(m.ram()[INPUT_WORDS..][..8], [1, 2, 3, 4, 5, 7, 8, 9]);
         assert_eq!(m.regs[0], 0, "x0");
     }
 

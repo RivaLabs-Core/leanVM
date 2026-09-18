@@ -52,6 +52,9 @@ enum Command {
         /// The public input: up to four 64-bit words, decimal or 0x-prefixed.
         #[arg(long, value_delimiter = ',', value_parser = guest::parse_word)]
         input: Vec<u64>,
+        /// The advice: words the guest reads at `ADVICE_BASE`, which the statement does not cover.
+        #[arg(long, value_delimiter = ',', value_parser = guest::parse_word)]
+        advice: Vec<u64>,
     },
 }
 
@@ -64,7 +67,7 @@ fn main() {
     }
     match cli.command {
         Command::Fibonacci { n } => fibonacci::run_fibonacci(n, cli.log_inv_rate, plan),
-        Command::Guest { elf, input } => guest::run_guest(&elf, &input, cli.log_inv_rate, plan),
+        Command::Guest { elf, input, advice } => guest::run_guest(&elf, &input, &advice, cli.log_inv_rate, plan),
     }
     if std::env::var_os("ZK_ALLOC_STATS").is_some() {
         eprintln!("{}", zk_alloc::stats());

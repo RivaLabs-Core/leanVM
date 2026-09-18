@@ -10,15 +10,20 @@ pub fn parse_word(word: &str) -> Result<u64, std::num::ParseIntError> {
     }
 }
 
-pub fn run_guest(elf: &std::path::Path, input: &[u64], log_inv_rate: usize, plan: Plan) {
+pub fn run_guest(elf: &std::path::Path, input: &[u64], advice: &[u64], log_inv_rate: usize, plan: Plan) {
     let bytes = std::fs::read(elf).unwrap_or_else(|e| panic!("{}: {e}", elf.display()));
     let program = Program::from_elf(&bytes).unwrap_or_else(|e| panic!("{}: {e}", elf.display()));
     assert!(input.len() <= 4, "the public input is at most four words");
     let input: [u64; 4] = std::array::from_fn(|i| input.get(i).copied().unwrap_or(0));
+    assert!(
+        advice.len() <= 1 << program.rv.log_advice,
+        "the guest's advice region holds {} words",
+        1u64 << program.rv.log_advice
+    );
 
     let (result, prove_time) = plan.warm_then_measure(|last| {
         let _quiet = (!last).then(primitives::suppress_tracing);
-        prove(&program, input, log_inv_rate)
+        prove(&program, input, advice, log_inv_rate)
     });
     let (proof, output, stats) = result.unwrap_or_else(|trap| panic!("the run has no proof: {trap}"));
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|last| {

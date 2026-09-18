@@ -8,11 +8,17 @@ use lean_vm::cpu::{Program, prove, verify, verify_to_raw};
 use lean_vm::rv::{Guest, Machine};
 
 fn proves_and_verifies(tag: &str, elf: &[u8], input: [u64; 4], expected: [u64; 4]) {
+    proves_and_verifies_with(tag, elf, input, &[], expected);
+}
+
+fn proves_and_verifies_with(tag: &str, elf: &[u8], input: [u64; 4], advice: &[u64], expected: [u64; 4]) {
     let program = Program::from_elf(elf).expect("a guest");
-    let ran = Machine::new(&program.rv, input).run(1 << 24).expect("the run halts");
+    let ran = Machine::new(&program.rv, input, advice)
+        .run(1 << 24)
+        .expect("the run halts");
     assert_eq!(ran, expected, "{tag}: the interpreter");
 
-    let (proof, output, stats) = prove(&program, input, 1).expect("the run halts");
+    let (proof, output, stats) = prove(&program, input, advice, 1).expect("the run halts");
     assert_eq!(output, expected);
     let raw = verify_to_raw(&program, &input, &output, &proof).expect("honest proof verifies");
     PythonStatement::new(tag, &program, &input, &output).assert_accepts(&raw);
@@ -65,6 +71,28 @@ fn hash_guest() {
         "hash",
         include_bytes!("../../../../guests/elf/hash.elf"),
         [length, 0, 0, 0],
+        expected,
+    );
+}
+
+/// A digest of a message only the prover has: the advice region, read through the
+/// runtime, and the precompile on it.
+#[test]
+fn preimage_guest() {
+    let message: Vec<u8> = (0..300u32).map(|i| (i * 7 + 3) as u8).collect();
+    let mut advice = vec![message.len() as u64];
+    advice.extend(message.chunks(8).map(|chunk| {
+        let mut word = [0u8; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        u64::from_le_bytes(word)
+    }));
+    let digest = primitives::hash::hash(&message);
+    let expected = std::array::from_fn(|i| u64::from_le_bytes(digest[8 * i..8 * i + 8].try_into().unwrap()));
+    proves_and_verifies_with(
+        "preimage",
+        include_bytes!("../../../../guests/elf/preimage.elf"),
+        [0; 4],
+        &advice,
         expected,
     );
 }

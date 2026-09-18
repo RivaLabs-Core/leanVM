@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::leaf::SparseColumn;
-use crate::rv::{INPUT_WORDS, LOG_REGS, RAM_BASE, TEXT_BASE};
+use crate::rv::{ADVICE_BASE, INPUT_WORDS, LOG_REGS, RAM_BASE, TEXT_BASE};
 
 // ---- column schema -----------------------------------------------------------
 
@@ -12,20 +12,24 @@ use crate::rv::{INPUT_WORDS, LOG_REGS, RAM_BASE, TEXT_BASE};
 // committed: it rides the bytecode seed/finalize blocks as `Coord::Public`; only the
 // witness-dependent finalize counts are committed. So are the registers and RAM before
 // the run, zero and the program's image: what is committed is what they hold after it,
-// and each cell's last timestamp (§sec:memchan).
+// and each cell's last timestamp (§sec:memchan). The advice is the one array whose
+// initial words are committed as well: they are the prover's.
 pub const REG_FIN: usize = 0;
 pub const REG_FTS: usize = 1; // per-register final timestamp g^y, g^0 if never accessed
 pub const MEM_FIN: usize = 2;
 pub const MFTS: usize = 3;
-pub const BFCNT: usize = 4; // per-pc bytecode execution count, g^{A[pc]}
+pub const ADV_INIT: usize = 4;
+pub const ADV_FIN: usize = 5;
+pub const ADV_FTS: usize = 6;
+pub const BFCNT: usize = 7; // per-pc bytecode execution count, g^{A[pc]}
 // Per-entry read counts of the two range arrays (§sec:rangecheck).
-pub const RLO_CNT: usize = 5;
-pub const RHI_CNT: usize = 6;
+pub const RLO_CNT: usize = 8;
+pub const RHI_CNT: usize = 9;
 /// Then one packed flock witness per table, committed in the SAME stack as every
 /// other column (single PCS): `2^(k_log + tau - 6)` words, the SOLE copy of the
 /// table's circuit words, whose columns are virtual and route their claims here
 /// (§class_flock).
-pub const Q_BASE: usize = 7;
+pub const Q_BASE: usize = 10;
 pub const N_SHARED: usize = Q_BASE + tables::N_TABLES;
 
 /// The committed column holding table `t`'s packed witness.
@@ -136,19 +140,41 @@ impl Witness {
     }
 }
 
+/// The program's sizes the layout depends on: `log2` of its entries, of RAM's words,
+/// and of the advice's.
+#[derive(Clone, Copy)]
+pub struct Sizes {
+    pub log_bytecode: usize,
+    pub log_ram: usize,
+    pub log_advice: usize,
+}
+
+impl Sizes {
+    pub fn of(p: &rv::Program) -> Self {
+        Self {
+            log_bytecode: crate::log2_strict_usize(p.entries.len()),
+            log_ram: p.log_ram,
+            log_advice: p.log_advice,
+        }
+    }
+}
+
 /// The committed columns' kappa SOURCES. Per committed column: `Some((source, adj))` with
 /// kappa = value(source) + adj, where source 0 is the constant 0 (kappa = adj; used for
-/// the fixed-size columns and the program's two sizes, its length and its RAM's, which
-/// the caller passes), and source 1 + t is tau_t. `None` = virtual (never committed).
-/// `col_kappas` is derived from this, so the two cannot drift apart.
-pub fn col_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<Option<(usize, usize)>> {
+/// the fixed-size columns and the program's sizes, which the caller passes), and
+/// source 1 + t is tau_t. `None` = virtual (never committed). `col_kappas` is derived
+/// from this, so the two cannot drift apart.
+pub fn col_kappa_sources(sizes: Sizes) -> Vec<Option<(usize, usize)>> {
     let sch = schema();
     let mut k = vec![Some((0usize, 0usize)); sch.n];
     k[REG_FIN] = Some((0, LOG_REGS));
     k[REG_FTS] = Some((0, LOG_REGS));
-    k[MEM_FIN] = Some((0, log_ram));
-    k[MFTS] = Some((0, log_ram));
-    k[BFCNT] = Some((0, log_bytecode));
+    k[MEM_FIN] = Some((0, sizes.log_ram));
+    k[MFTS] = Some((0, sizes.log_ram));
+    k[ADV_INIT] = Some((0, sizes.log_advice));
+    k[ADV_FIN] = Some((0, sizes.log_advice));
+    k[ADV_FTS] = Some((0, sizes.log_advice));
+    k[BFCNT] = Some((0, sizes.log_bytecode));
     k[RLO_CNT] = Some((0, tables::RANGE_LOG));
     k[RHI_CNT] = Some((0, tables::RANGE_LOG));
     for (t, table) in tables::tables().iter().enumerate() {
@@ -167,13 +193,14 @@ pub fn col_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<Option<(usi
 }
 
 /// The framework blocks a side starts with, as `(source, adj)`: the state boundary, the
-/// registers, RAM, the bytecode, the two range arrays.
-fn framework_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<(usize, usize)> {
+/// registers, RAM, the advice, the bytecode, the two range arrays.
+fn framework_kappa_sources(sizes: Sizes) -> Vec<(usize, usize)> {
     vec![
         (0, 0),
         (0, LOG_REGS),
-        (0, log_ram),
-        (0, log_bytecode),
+        (0, sizes.log_ram),
+        (0, sizes.log_advice),
+        (0, sizes.log_bytecode),
         (0, tables::RANGE_LOG),
         (0, tables::RANGE_LOG),
     ]
@@ -183,8 +210,8 @@ fn framework_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<(usize, u
 /// count) exactly as the blocks are constructed below: per block
 /// `(source, adj)` with kappa = value(source) + adj, source 0 = the constant
 /// 0, 1 + t = tau_t. Keep in lockstep with the block construction in [`fn@layout`].
-pub fn block_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<(usize, usize)> {
-    let mut push = framework_kappa_sources(log_bytecode, log_ram);
+pub fn block_kappa_sources(sizes: Sizes) -> Vec<(usize, usize)> {
+    let mut push = framework_kappa_sources(sizes);
     let mut pull = push.clone();
     let mut count = Vec::new();
     for (t, table) in tables::tables().iter().enumerate() {
@@ -202,10 +229,10 @@ pub fn block_kappa_sources(log_bytecode: usize, log_ram: usize) -> Vec<(usize, u
 /// Column → log-size (`kappa`) map, derived from [`col_kappa_sources`] by
 /// substituting the announced sizes. `None` marks a **virtual** (uncommitted) column.
 /// Depends only on the public sizes, so the verifier can reconstruct the placements.
-fn col_kappas(log_bytecode: usize, log_ram: usize, taus: [usize; tables::N_TABLES]) -> Vec<Option<usize>> {
+fn col_kappas(sizes: Sizes, taus: [usize; tables::N_TABLES]) -> Vec<Option<usize>> {
     let mut values = vec![0usize];
     values.extend(taus);
-    col_kappa_sources(log_bytecode, log_ram)
+    col_kappa_sources(sizes)
         .iter()
         .map(|s| s.map(|(source, adj)| values[source] + adj))
         .collect()
@@ -265,7 +292,8 @@ pub fn bytecode_table(p: &rv::Program) -> Vec<F64> {
 /// two (`cpu::filler`), so `2^taus[t]` rows were all executed and no flush has padding
 /// tuples to divide back out of the bus.
 pub fn layout(p: &rv::Program, input: &[u64; INPUT_WORDS], taus: [usize; tables::N_TABLES], ts_final: F64) -> Layout {
-    let log_bytecode = crate::log2_strict_usize(p.entries.len());
+    let sizes = Sizes::of(p);
+    let log_bytecode = sizes.log_bytecode;
     let one = F64::ONE;
     // Shared between the seed and finalize blocks: a copy is tens of megabytes per
     // column at production sizes.
@@ -318,6 +346,19 @@ pub fn layout(p: &rv::Program, input: &[u64; INPUT_WORDS], taus: [usize; tables:
         p.log_ram,
         vec![Const(tables::SEP_MEM), word, Col(MFTS), Col(MEM_FIN)],
     ));
+    // The advice, the one array seeded from a committed column: the prover's words.
+    let word = IntIndex {
+        base: F64(ADVICE_BASE),
+        shift: 3,
+    };
+    push.push(blk(
+        p.log_advice,
+        vec![Const(tables::SEP_MEM), word.clone(), Const(one), Col(ADV_INIT)],
+    ));
+    pull.push(blk(
+        p.log_advice,
+        vec![Const(tables::SEP_MEM), word, Col(ADV_FTS), Col(ADV_FIN)],
+    ));
     // Bytecode seed + finalize, entry `i` at its `pc` (the program columns are public).
     let bytecode_block = |count: Coord| {
         let pc = IntIndex {
@@ -345,7 +386,7 @@ pub fn layout(p: &rv::Program, input: &[u64; INPUT_WORDS], taus: [usize; tables:
         push.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses.clone(), Const(one)]));
         pull.push(blk(tables::RANGE_LOG, vec![Const(sep), addresses, Col(count)]));
     }
-    debug_assert_eq!(push.len(), framework_kappa_sources(log_bytecode, p.log_ram).len());
+    debug_assert_eq!(push.len(), framework_kappa_sources(sizes).len());
 
     // Per-table blocks: each table declares its flushes and read-count columns in
     // local indices; offset them to the table's global columns.
@@ -367,7 +408,7 @@ pub fn layout(p: &rv::Program, input: &[u64; INPUT_WORDS], taus: [usize; tables:
         }
     }
 
-    let (placements, shape) = witness::placements_of(&col_kappas(log_bytecode, p.log_ram, taus));
+    let (placements, shape) = witness::placements_of(&col_kappas(sizes, taus));
     Layout {
         push,
         pull,
@@ -383,10 +424,7 @@ impl Program {
     /// can hold is capped ([`pcs::MAX_MU`]), so a run is checked before it is built.
     pub(crate) fn stack_log(&self, row_counts: [usize; tables::N_TABLES]) -> usize {
         let taus = row_counts.map(|rows| crate::log2_ceil_usize(rows.max(1)));
-        let log_bytecode = crate::log2_strict_usize(self.rv.entries.len());
-        witness::placements_of(&col_kappas(log_bytecode, self.rv.log_ram, taus))
-            .1
-            .mu
+        witness::placements_of(&col_kappas(Sizes::of(&self.rv), taus)).1.mu
     }
 
     pub(crate) fn build(&self, exec: &Execution, input: &[u64; INPUT_WORDS]) -> Witness {
@@ -466,15 +504,18 @@ impl Program {
                 let ctx = FillCtx::new(tr, &range_lo, &range_hi, p, 1 << l.taus[t], n);
                 tables::fill_table(*table, &ctx, &mut windows[base..base + n]);
             }
-            // Shared columns. These seven plus the flock witnesses below are every
+            // Shared columns. These ten plus the flock witnesses below are every
             // shared column, and each has to be written: the stack is uninitialized, so
             // one left out would be read as indeterminate bytes rather than caught by
             // a length mismatch.
-            const _: () = assert!(Q_BASE == 7, "a new shared column needs a fill here");
+            const _: () = assert!(Q_BASE == 10, "a new shared column needs a fill here");
             windows[REG_FIN].copy_from_slice(&tr.reg_fin);
             windows[REG_FTS].copy_from_slice(&tr.reg_ts);
             windows[MEM_FIN].copy_from_slice(&tr.ram_fin);
             windows[MFTS].copy_from_slice(&tr.ram_ts);
+            windows[ADV_INIT].copy_from_slice(&tr.adv_init);
+            windows[ADV_FIN].copy_from_slice(&tr.adv_fin);
+            windows[ADV_FTS].copy_from_slice(&tr.adv_ts);
             windows[BFCNT].copy_from_slice(&tr.bytecode_count); // counts ended at g^{A[pc]}
             windows[RLO_CNT].copy_from_slice(&tr.range_lo_count);
             windows[RHI_CNT].copy_from_slice(&tr.range_hi_count);

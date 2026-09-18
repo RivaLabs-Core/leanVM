@@ -36,14 +36,27 @@ global_asm!(
 static mut OUTPUT: [u64; 4] = [0; 4];
 
 unsafe extern "C" {
-    /// RAM's first four words (`link.ld`).
+    /// RAM's first four words, and the advice region's bounds (`link.ld`).
     static __input: [u64; 4];
+    static __advice: u64;
+    static __advice_top: u64;
 }
 
 /// The run's public input.
 pub fn input() -> [u64; 4] {
     // SAFETY: the linker script reserves these words, and nothing writes them.
     unsafe { core::ptr::read_volatile(&raw const __input) }
+}
+
+/// The advice: words the prover supplies, which the statement says nothing about, so
+/// a guest has to check what it reads here.
+pub fn advice() -> &'static [u64] {
+    // SAFETY: the region is the linker script's, holds whole words, and nothing in
+    // this crate writes it.
+    unsafe {
+        let (start, end) = (&raw const __advice, &raw const __advice_top);
+        core::slice::from_raw_parts(start, end.offset_from_unsigned(start))
+    }
 }
 
 /// Set the run's public output, which the run returns in `a0..a3` when `main` does.

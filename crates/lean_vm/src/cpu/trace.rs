@@ -86,9 +86,12 @@ pub(crate) struct Trace {
     /// never touched.
     pub(crate) reg_fin: Vec<F64>,
     pub(crate) reg_ts: Vec<F64>,
-    /// The same for RAM.
+    /// The same for RAM, and for the advice, whose initial words are committed too.
     pub(crate) ram_fin: Vec<F64>,
     pub(crate) ram_ts: Vec<F64>,
+    pub(crate) adv_init: Vec<F64>,
+    pub(crate) adv_fin: Vec<F64>,
+    pub(crate) adv_ts: Vec<F64>,
     pub(crate) bytecode_count: Vec<F64>, // per-pc running execution count g^{count}; final = g^{A[pc]}
     /// Final read counts of the two range arrays' entries.
     pub(crate) range_lo_count: Vec<F64>,

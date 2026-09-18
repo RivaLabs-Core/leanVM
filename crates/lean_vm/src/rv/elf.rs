@@ -2,7 +2,7 @@
 //! and RAM. Anything the machine could not run as the file means it to be run is
 //! refused here, not discovered as a trap.
 
-use super::{INPUT_WORDS, MAX_LOG_RAM, MAX_LOG_TEXT, RAM_BASE, TEXT_BASE};
+use super::{ADVICE_BASE, INPUT_WORDS, MAX_LOG_ADVICE, MAX_LOG_RAM, MAX_LOG_TEXT, RAM_BASE, TEXT_BASE};
 
 /// What a program is made from.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -13,6 +13,7 @@ pub struct Guest {
     /// RAM's words after the input's.
     pub image: Vec<u64>,
     pub log_ram: usize,
+    pub log_advice: usize,
 }
 
 /// Why a file is no guest.
@@ -38,8 +39,10 @@ const PF_X: u32 = 1;
 const PF_W: u32 = 2;
 const SHT_SYMTAB: u32 = 2;
 
-/// The symbol whose value is the end of RAM, which the linker script defines.
+/// The symbols whose values are the ends of RAM and of the advice region, which the
+/// linker script defines.
 const RAM_END_SYMBOL: &[u8] = b"__stack_top";
+const ADVICE_END_SYMBOL: &[u8] = b"__advice_top";
 
 /// Little-endian fields of `bytes`, every read checked.
 struct Reader<'a>(&'a [u8]);
@@ -72,8 +75,8 @@ fn place<const WORD: usize>(buffer: &mut Vec<u8>, offset: u64, bytes: &[u8]) {
 
 impl Guest {
     /// A static RV64 executable linked with the guests' linker script: its executable
-    /// segments are the text, every other loaded segment is RAM's image, and RAM ends
-    /// where the script says the stack starts.
+    /// segments are the text, every other loaded segment is RAM's image, RAM ends
+    /// where the script says the stack starts, and the advice region where it says.
     pub fn from_elf(elf: &[u8]) -> Result<Self, ElfError> {
         let r = Reader(elf);
         // 64-bit, little-endian, version 1.
@@ -141,6 +144,15 @@ impl Guest {
             return Err(ElfError("RAM's size is not a power of two"));
         }
         let log_ram = (ram_bytes / 8).trailing_zeros() as usize;
+        let advice_end = symbol(&r, ADVICE_END_SYMBOL)?.ok_or(ElfError("no __advice_top symbol"))?;
+        let advice_bytes = advice_end.wrapping_sub(ADVICE_BASE);
+        if advice_end <= ADVICE_BASE || !advice_bytes.is_power_of_two() || advice_bytes < 8 {
+            return Err(ElfError("the advice region's size is not a power of two"));
+        }
+        let log_advice = (advice_bytes / 8).trailing_zeros() as usize;
+        if log_advice > MAX_LOG_ADVICE {
+            return Err(ElfError("the advice region exceeds its bounds"));
+        }
         let text: Vec<u32> = text.as_chunks::<4>().0.iter().map(|&w| u32::from_le_bytes(w)).collect();
         let image: Vec<u64> = image
             .as_chunks::<8>()
@@ -156,6 +168,7 @@ impl Guest {
             entry_pc,
             image,
             log_ram,
+            log_advice,
         })
     }
 }

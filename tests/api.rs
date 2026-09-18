@@ -25,7 +25,7 @@ fn fibonacci() -> Program {
         .li(A2, 0)
         .exit()
         .finish();
-    Program::new(&text, TEXT_BASE, vec![], LOG_RAM)
+    Program::new(&text, TEXT_BASE, vec![], LOG_RAM, 0)
 }
 
 #[test]
@@ -35,7 +35,7 @@ fn public_api_end_to_end() {
     let input = [90, 0, 0, 0];
 
     // 1. Prove, then onto the wire and back to a receiver.
-    let (proof, output, _) = prove(&program, input, MIN_LOG_INV_RATE).expect("the run halts");
+    let (proof, output, _) = prove(&program, input, &[], MIN_LOG_INV_RATE).expect("the run halts");
     assert_eq!(output, [2_880_067_194_370_816_120, 0, 0, 0]);
     let bytes = bincode::serialize(&proof).unwrap();
     let received: Proof = bincode::deserialize(&bytes).unwrap();
@@ -49,7 +49,7 @@ fn public_api_end_to_end() {
     assert!(verify(&program, &input, &wrong_output, &received).is_err());
 
     // 3. One proof is one arena phase: the first proof outlives the second's phase.
-    let (second, _, _) = prove(&program, input, MIN_LOG_INV_RATE).expect("the run halts");
+    let (second, _, _) = prove(&program, input, &[], MIN_LOG_INV_RATE).expect("the run halts");
     verify(&program, &input, &output, &second).unwrap();
     verify(&program, &input, &output, &received).unwrap();
     let stats = zk_alloc::stats();

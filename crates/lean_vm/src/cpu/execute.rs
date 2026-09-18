@@ -2,7 +2,7 @@
 //! for every access, what the memory argument needs ([`Trace`]).
 
 use super::*;
-use crate::rv::{self, Class, LOG_REGS, Machine, RAM_BASE, Trap, hash, machine::compute};
+use crate::rv::{self, ADVICE_BASE, Class, LOG_REGS, Machine, RAM_BASE, Trap, hash, machine::compute};
 use crate::tables::{CLASSES, CLOCK_STRIDE, RAM_SLOT, RANGE_LOG, REG_SLOTS, block_slot};
 use primitives::field::{F64, mul_by_g};
 
@@ -97,18 +97,27 @@ fn advance(ts: F64, k: u32) -> F64 {
 }
 
 impl Program {
-    /// Run the program on `input`, recording every row, then write out the padding
-    /// rows that bring each table to a power of two ([`filler`]). A run that traps has
-    /// no proof.
-    pub fn execute(&self, input: [u64; rv::INPUT_WORDS]) -> Result<Execution, Trap> {
+    /// Run the program on `input` and `advice`, recording every row, then write out the
+    /// padding rows that bring each table to a power of two ([`filler`]). A run that
+    /// traps has no proof.
+    pub fn execute(&self, input: [u64; rv::INPUT_WORDS], advice: &[u64]) -> Result<Execution, Trap> {
         let p = &self.rv;
-        let mut m = Machine::new(p, input);
+        let mut m = Machine::new(p, input, advice);
+        let adv_init: Vec<F64> = m.advice().iter().map(|&w| F64(w)).collect();
         let mut ranges = Ranges {
             lo: vec![F64::ONE; 1 << RANGE_LOG],
             hi: vec![F64::ONE; 1 << RANGE_LOG],
         };
         let mut regs = Cells::new(1 << LOG_REGS);
-        let mut ram = Cells::new(1 << p.log_ram);
+        // RAM's cells, then the advice's, as the machine numbers them.
+        let mut ram = Cells::new((1 << p.log_ram) + (1 << p.log_advice));
+        let cell_of = |address: u64| -> usize {
+            if address >= RAM_BASE {
+                ((address - RAM_BASE) / 8) as usize
+            } else {
+                (1 << p.log_ram) + ((address - ADVICE_BASE) / 8) as usize
+            }
+        };
         // Per-pc bytecode execution count (g^{count}).
         let mut bytecode_count: Vec<F64> = vec![F64::ONE; p.entries.len()];
         let mut fetch = |index: usize| {
@@ -143,7 +152,7 @@ impl Program {
                 _ => padding_access_unread(),
             });
             if let Some(access) = step.ram {
-                let cell = ((access.address - RAM_BASE) / 8) as usize;
+                let cell = cell_of(access.address);
                 acc[3] = ram.access(&mut ranges, cell, tick + RAM_SLOT, advance(ts, RAM_SLOT));
             }
             // A hash row's block, word `k` at `v1 ^ 8k`, after its two register reads.
@@ -151,7 +160,7 @@ impl Program {
                 let mut all = [padding_access_unread(); 2 + hash::WORDS];
                 all[..2].copy_from_slice(&acc[..2]);
                 for k in 0..hash::WORDS {
-                    let cell = (((step.v1 ^ (8 * k as u64)) - RAM_BASE) / 8) as usize;
+                    let cell = cell_of(step.v1 ^ (8 * k as u64));
                     all[2 + k] = ram.access(&mut ranges, cell, tick + block_slot(k), advance(ts, block_slot(k)));
                 }
                 Box::new(HashRow {
@@ -227,12 +236,16 @@ impl Program {
         }
 
         let cycles = rows.iter().map(Vec::len).sum();
+        let (ram_ts, adv_ts) = ram.last_ts.split_at(1 << p.log_ram);
         let trace = Trace {
             rows,
             reg_fin: m.regs.iter().map(|&r| F64(r)).collect(),
             reg_ts: regs.last_ts,
-            ram_fin: m.ram.iter().map(|&w| F64(w)).collect(),
-            ram_ts: ram.last_ts,
+            ram_fin: m.ram().iter().map(|&w| F64(w)).collect(),
+            ram_ts: ram_ts.to_vec(),
+            adv_init,
+            adv_fin: m.advice().iter().map(|&w| F64(w)).collect(),
+            adv_ts: adv_ts.to_vec(),
             bytecode_count,
             range_lo_count: ranges.lo,
             range_hi_count: ranges.hi,

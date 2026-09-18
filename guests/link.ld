@@ -3,8 +3,9 @@
 ENTRY(_start)
 
 MEMORY {
-  TEXT (rx) : ORIGIN = 0x10000000, LENGTH = 256M
-  RAM (rw)  : ORIGIN = 0x40000000, LENGTH = 1M
+  TEXT (rx)   : ORIGIN = 0x10000000, LENGTH = 256M
+  ADVICE (rw) : ORIGIN = 0x20000000, LENGTH = 64K
+  RAM (rw)    : ORIGIN = 0x40000000, LENGTH = 1M
 }
 
 SECTIONS {
@@ -23,6 +24,9 @@ SECTIONS {
 
   /* The stack grows down from the end of RAM, which also tells the loader RAM's size. */
   __stack_top = ORIGIN(RAM) + LENGTH(RAM);
+  /* The advice region: nothing is loaded there, the prover fills it. Its end tells the loader its size. */
+  __advice = ORIGIN(ADVICE);
+  __advice_top = ORIGIN(ADVICE) + LENGTH(ADVICE);
 
   /DISCARD/ : { *(.eh_frame .eh_frame_hdr .comment .riscv.attributes) }
 }
