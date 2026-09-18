@@ -13,84 +13,34 @@ And fix a generator $\gen$ of the multiplicative group $\K^{\times}$, of order $
 
 An element of $\K$ is a polynomial in $x$ of degree below $64$, written in hex with the coefficient of $x^{i}$ in bit $i$, so $\mathtt{2}$ is $x$ and $\mathtt{3}$ is $x+1$. An element of $\E$ is three of those, its coefficients on $1,y,y^{2}$.
 
-An integer $i<2^{64}$ names the element $\intk{i}\in\K$ with that hex writing, the coefficient of $x^{k}$ being bit $k$ of $i$. This is how a register or a memory word holds an integer. It is a bijection and nothing more: $\intk{i+j}$ is not $\intk{i}+\intk{j}$ in general.
+An integer $i<2^{64}$ names the element $\intk{i}\in\K$ with that hex writing, the coefficient of $x^{k}$ being bit $k$ of $i$. This is how a register or a memory word holds an integer. It is a bijection and nothing more: $\intk{i+j}$ is not $\intk{i}+\intk{j}$ in general, the field sum being the XOR of the integers.
 
 \vspace{5mm}
 
-LeanVM ISA, also known as leanISA, is inspired by \cite{cairo}. The Virtual Machine takes as input a bytecode (padded to a power of two, $\nprog = 2^{\kbc}$) and some public input $\textsf{input} \in \cube{256} \simeq (\textsf{input}_0, \dots, \textsf{input}_3) \in (\cube{64})^4$. The Virtual Machine then initializes its two registers, which hold integers:
-\begin{itemize}
-  \item the program counter $\pc \xleftarrow{} 0$
-  \item the frame pointer $\fp \xleftarrow{} 0$
-\end{itemize}
+The machine is RISC-V: the RV64I base integer instruction set with the M extension~\cite{riscv}, plus one custom instruction, the BLAKE2s compression (below). We do not restate the instruction semantics, which are the specification's; this section fixes what the specification leaves to the execution environment, and nothing else. A program is a text of $32$-bit instruction words and an entry point, compiled by an ordinary RISC-V toolchain (the repository's guests are Rust, built for \texttt{riscv64im-unknown-none-elf}).
 
-Then, initialize the read-write memory: a buffer, of size $\nmem = 2^{\kmem}$, containing $\K$-valued \textit{memory words} (64 bits). The memory is indexed by the integers: the first memory word is $\mem[0] \in \K$, the second is $\mem[1]$, the third is $\mem[2]$, etc. The bytecode addressing follows the same convention. Each memory access beyond $\nmem - 1$ (resp. $\nprog - 1$ for the bytecode) is invalid. A pointer is a memory word holding an address, $\intk{i}$ for the cell $\mem[i]$, so a program computes one with \texttt{ADD\_U64}.
-
-The public input fixes the first four memory words, $\mem[i] = \textsf{input}_i \in \K$ for $i<4$, both when the execution starts and when it ends: an execution that leaves another value in one of them is invalid. The same four words therefore serve as public input, which the program reads, and as public output, which the program writes.
-
-The Virtual Machine execution loop is the following:
-\begin{enumerate}
-  \item fetch the instruction $\mathsf{inst}$ at address $\pc$.
-  \item execute $\mathsf{inst}$:
-    \begin{itemize}
-      \item read its source cells, then write its destination cell (e.g. $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ for \texttt{XOR64}). All the reads of an instruction come before its writes, so a destination may be one of the sources.
-      \item update $\pc$ and $\fp$ (all instructions except \texttt{JUMP} set $\pc \xleftarrow{} \pc + 1$, advancing to the next instruction, and leave $\fp \xleftarrow{} \fp$ unchanged)
-    \end{itemize}
-  \item if $\pc$ equals $\pc_{\textsf{final}} := \nprog - 1$, exit the loop (successful execution). Otherwise go back to $1.$
-\end{enumerate}
-
-\paragraph{Read-write memory}
-
-A memory word may be written any number of times, and a read returns the last value written, or the initial value if there was none. When proving the VM execution via a snark, the prover commits to the memory as it stands before the execution and as it stands after it, and every access in between is ordered by a clock (\S\ref{sec:memchan}).
-
-\paragraph{Non determinism}
-
-For a given pair of bytecode and public input, there is more than one valid execution.
-
-The memory log-size $\kmem$ is a non deterministic parameter, freely chosen at the beginning of execution, with the constraint $16\le\kmem\le 32$. So is the initial content of the memory, the four public words aside: the prover chooses what every other cell holds when the execution starts. A program therefore has to check whatever it reads before having written it, and this is the one channel through which advice can reach it.
-
-\paragraph{Operands and addressing.} An instruction is an opcode followed by a list of $\K$-valued operands. An operand is either an \emph{fp-relative reference}, an integer offset $o<2^{32}$ into the current frame, or the \emph{immediate} $k\in\K$ of \texttt{SET\_CONSTANT}. With the frame based at $\fp$, a reference names the cell $\loc{o}$, the sum being that of the integers.
-
-\paragraph{Instruction set.} The machine implements eight instructions.
+\paragraph{Memory map.} Memory holds $64$-bit words, word $z$ of a region being the bytes $8z,\dots,8z+7$ past its base, little-endian. Three regions exist, each at a base that is a multiple of the region's largest size, so that word $z$ sits at the byte address $\mathrm{base}\oplus 8z$ as well as $\mathrm{base}+8z$:
 \begin{center}
-\begin{tabularx}{\textwidth}{@{}llX@{}}
+\begin{tabularx}{\textwidth}{@{}lllX@{}}
 \hline
-Instruction & Operands & Semantics\\
+Region & Base & Size & Holds\\
 \hline
-\texttt{XOR64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}$ \quad(addition in $\K$)\\
-\texttt{MUL64}         & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}$ (multiplication in $\K$)\\
-\texttt{SET\_CONSTANT} & $[o,k]$ & $\loc{o}\gets k$\\
-\texttt{DEREF}         & $[o_1,o_2,o_3;\,\dmode]$ & $\mem[\loc{o_1}+o_2]\gets\srcsel{\dmode}$ (see below)\\
-\texttt{JUMP}          & $[o_c,o_d,o_f]$ & conditional jump (see below)\\
-\texttt{BLAKE2S}        & $[o_{m_0},o_{m_1},o_{m_2},o_{m_3},o_{\mathit{cv}},o_{\mathit{out}},o_{\md}]$ & BLAKE2s compression (see below)\\
-\texttt{ADD\_U64}       & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}+\loc{o_B}\bmod 2^{64}$ (integer addition, see below)\\
-\texttt{MUL\_U64}       & $[o_A,o_B,o_C]$ & $\loc{o_C}\gets\loc{o_A}\cdot\loc{o_B}\bmod 2^{64}$ (integer multiplication)\\
+text   & $\tbase=\mathtt{0x1000\_0000}$ & $\nprog=2^{\kbc}\le2^{26}$ instructions & the program, readable by fetches only\\
+advice & $\abase=\mathtt{0x2000\_0000}$ & $2^{\kadv}\le2^{26}$ words & what the prover supplies (below)\\
+RAM    & $\rbase=\mathtt{0x4000\_0000}$ & $2^{\kmem}$ words, $2\le\kmem\le27$ & data, the stack, the public input and the image\\
 \hline
 \end{tabularx}
 \end{center}
+The three sizes are constants of the program. Everything lies in one $2$\,GiB window below $\mathtt{0x7FFF\_F800}$, which is what the \texttt{medany} and \texttt{medlow} code models and \texttt{lui} can address. Loads and stores must be naturally aligned, each touching one word; the address of a load or a store is computed modulo $2^{64}$ as the specification says, and it is that address that has to fall in RAM or the advice. The text is not data: a load from it is an access outside memory.
 
+\paragraph{State.} The $32$ integer registers $\regs[0],\dots,\regs[31]$, each one word, and the program counter $\pc$, a byte address. Both parties know the initial state: every register is zero and $\pc$ is the program's entry point. A program sets its own stack pointer.
 
-\texttt{DEREF} reads the pointer $\loc{o_1}$ and the local cell $\loc{o_3}$, then writes, at the dereferenced address $\loc{o_1}+o_2$ (the pointer read as an integer), a value chosen by a \emph{store mode} $\dmode\in\{\texttt{deref\_cell}[o_3],\texttt{deref\_pc},\texttt{deref\_fp}\}$:
-\[
-  \srcsel{\dmode}\;=\;
-  \begin{cases}
-    \loc{o_3} & \dmode=\texttt{deref\_cell}[o_3] \quad(\text{the local cell at offset }o_3 \in \K),\\
-    \intk{\pc+2} & \dmode=\texttt{deref\_pc} \quad(\text{the current program counter advanced by two}),\\
-    \intk{\fp} & \dmode=\texttt{deref\_fp} \quad(\text{the current frame pointer}).
-  \end{cases}
-\]
+\paragraph{Input and output.} RAM's first four words are the run's public input, $\mem[i]=\textsf{input}_i$ for $i<4$; the words after them hold the program's \emph{image}, its initialized data, and the rest of RAM is zero. The run ends when it executes \texttt{ecall} with $\regs[17]=93$ (\texttt{a7} holding the number of the \texttt{exit} system call): its public output is then $\regs[10],\dots,\regs[13]$ (\texttt{a0} to \texttt{a3}), four words. An \texttt{ecall} with another number is a trap.
 
-\vspace{5mm}
+\paragraph{Advice.} The advice region holds what the prover chooses, $2^{\kadv}$ words read and written like RAM, and the statement says nothing about them: for one program and one input there is a valid execution per advice. A program therefore has to check whatever it reads there, and this is the one channel through which a witness reaches it.
 
+\paragraph{Traps.} An execution that traps is no execution at all, and has no proof: the prover is refused, not the verifier. The traps are an instruction the machine does not define (a reserved encoding, \texttt{ebreak}, the CSR and \texttt{fence.i} instructions, an unaligned or out-of-text $\pc$, or any $\pc$ in a slot the program left empty), a misaligned load or store, an access outside memory, and an \texttt{ecall} that is not \texttt{exit}. \texttt{fence} is a no-op.
 
-\texttt{JUMP} reads a condition $c=\loc{o_c}$, and branches on whether it is zero. When $c\neq0$ it transfers control, $\pc\gets\loc{o_d}$ and $\fp\gets\loc{o_f}$, both words read as integers; when $c=0$ it defaults to $\pc\gets\pc+1$ and $\fp\gets\fp$.
+\paragraph{The execution loop.} Fetch the instruction at $\pc$; read its source registers; make its memory access if it has one; write its destination register and the next $\pc$; stop if the instruction was \texttt{exit}. Every instruction reads two registers and writes one, an instruction with fewer reading $\regs[0]$, and one with no destination or with $\regs[0]$ as its destination writing a $33$rd cell, the $\sink$, which nothing reads: this is how $\regs[0]$ is hardwired to zero (\S\ref{sec:e2e-bc}). Reads come before the write, so \texttt{jalr ra, ra} returns to the address it linked from.
 
-\vspace{5mm}
-
-\texttt{BLAKE2S} is the standard BLAKE2s compression, consuming a $64$-byte message block and a $32$-byte chaining value and producing $32$ bytes. Memory holds these bytes as words: word $i$ of a byte string is its bytes $8i,\dots,8i+7$ read as a little-endian integer, so the block is eight words and the chaining value and the result are four each. The block splits into four $16$-byte message chunks, addressed \emph{independently} by references $o_{m_0},\dots,o_{m_3}$: chunk $i$ is the two consecutive cells $\loc{o_{m_i}},\loc{o_{m_i}+1}$. The chaining value is read from the four \emph{consecutive} cells $\loc{o_{\mathit{cv}}+k}$, $k<4$, and the result is written to the four consecutive cells $\loc{o_{\mathit{out}}+k}$. Finally $o_{\md}$ names two more cells, so each row accesses eighteen: fourteen reads, then the four writes of the result, which may land on cells the compression read. They hold the standard compression metadata, $\md_0=\loc{o_{\md}}$ and $\md_1=\loc{o_{\md}+1}$, little-endian:
-\[
-  \md_0=\mathit{counter}_{64},\qquad \md_1=\mathit{final}_{32}\;\Vert\;\mathit{last\_node}_{32}.
-\]
-
-\vspace{5mm}
-
-\texttt{ADD\_U64} and \texttt{MUL\_U64} read a memory word as an unsigned $64$-bit integer, bit $i$ of the integer being the coefficient of $x^{i}$ (so the integer is the word's hex writing above), and write back the sum or the product reduced modulo $2^{64}$. They are the integer counterparts of \texttt{XOR64} and \texttt{MUL64}, whose arithmetic is that of $\K$.
+\paragraph{The BLAKE2s compression.} The custom instruction \texttt{blake2s rs1, rs2} (opcode \texttt{custom-0}, \texttt{0x0b}, R-type, with \texttt{funct7} and \texttt{rd} zero) is the compression function of BLAKE2s~\cite{blake2}, on the $128$-byte \emph{block} at the address $\regs[\mathit{rs1}]$: its words $0$ to $3$ hold the $32$-byte chaining value $h$, its words $8$ to $15$ the $64$-byte message $m$, and the instruction writes the $32$-byte result to its words $4$ to $7$, leaving the rest as it found it. The byte counter $t$ is $\regs[\mathit{rs2}]$, and the finalization word $f_0$ is all ones when \texttt{funct3} is $1$ (the final block) and zero when it is $0$; the last-node flag $f_1$ is always zero. Word $k$ of the block is the cell at the address $\regs[\mathit{rs1}]\oplus 8k$, which is $\regs[\mathit{rs1}]+8k$ when the block is aligned to $128$ bytes, as the guest library ensures; an unaligned block permutes the words, deterministically, which is a guest bug rather than a soundness problem, and a base that is no word address traps like a misaligned load. A guest hashes a message by keeping $h$ and $t$ across the blocks and copying each result into $h$; the instruction reads $h$ and writes the result in different words because a proof's padding rows can rewrite a cell but not update it (\S\ref{sec:e2e-pad}).

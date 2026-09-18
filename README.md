@@ -38,10 +38,20 @@ leanVM is designed for security:
 Expect leanVM to change significantly:
 
 * **hash**: BLAKE2s is a placeholder. SHA2, SHA3, BLAKE3 are actively considered.
-* **ISA**: leanVM is moving from its own leanISA to RISC-V (rv64im). The machine, its registers and the add, compare, logic, branch and jump instructions are proven today; memory, shifts, multiplication, division and an ELF loader are in progress. Programs are hand-assembled for now.
+* **ISA**: leanVM proves RISC-V (rv64im) plus one custom instruction, the BLAKE2s compression. A run is one proof; continuations, for runs whose witness exceeds one commitment, are planned.
 * **zk**: Support for zero-knowledge is planned.
 
 **note**: Prior to binary fields leanVM used [KoalaBear](https://crates.io/crates/p3-koala-bear) and [Poseidon](https://eprint.iacr.org/2019/458). The historical design is in [this branch](https://github.com/leanEthereum/leanVM/tree/koalabear).
+
+## guests
+
+A guest is a `no_std` Rust program built for `riscv64im-unknown-none-elf` against the runtime crate in [`guests/rt`](./guests/rt/src/lib.rs), which gives it its public input (four words), its advice (a region of memory the prover fills, which the statement says nothing about), its output (four words) and a BLAKE2s hasher over the custom instruction. The linker script fixes the memory map. Build them with `guests/build.sh` (a nightly toolchain, for `-Zbuild-std`), then prove and verify a run:
+
+```bash
+cargo run --release -- guest guests/elf/preimage.elf --advice 5,0x6f6c6c6568
+```
+
+The statement a proof makes is the program (an ELF file), the four input words and the four output words; everything a guest reads from its advice it has to check itself, which is what makes a proof a proof of knowledge (`preimage` outputs the digest of a message only the prover has).
 
 ## benchmarks
 
@@ -146,11 +156,28 @@ cargo run --release -- fibonacci --n 2000000 --log-inv-rate 1 --repeat 3
 
 ```
 Fibonacci (modulo 2^64), N = 2,000,000
-  cycles (VM steps)           : 2,097,152
-    details                   : ALU 2^20.934 (100.0%)  TOTAL_COMMITTED 2^26.394
-  proof size                  : 305.7 KiB
-  proving                     : 1.298 s ± 15.7%   1,615,327 cycles/s      peak memory 11.923 GiB
-  verifying                   : 2.524 ms
+  cycles (VM steps)           : 2,097,208
+    details                   : ALU 2^20.934 (100.0%)  TOTAL_COMMITTED 2^26.395
+  proof size                  : 337.5 KiB
+  proving                     : 1.281 s ± 1.2%   1,636,564 cycles/s      peak memory 11.6 GiB
+  verifying                   : 6.186 ms
+```
+
+### BLAKE2s guest
+
+The `hash` guest hashes 50,000 bytes through the compression instruction, 782 compressions; most of its cycles generate the message.
+
+```bash
+cargo run --release -- guest guests/elf/hash.elf --input 50000 --repeat 3
+```
+
+```
+guests/elf/hash.elf
+  cycles (VM steps)           : 869,384
+    details                   : ALU 2^18.641 (59.8%)  SHIFT 2^16.61 (14.6%)  STORE 2^15.915 (9.0%)  MULH 2^15.61 (7.3%)  MUL 2^15.61 (7.3%)  LOAD 2^13.618 (1.8%)  HASH 2^9.611 (0.1%)  TOTAL_COMMITTED 2^25.49
+  proof size                  : 331.0 KiB
+  proving                     : 0.816 s ± 0.9%   1,065,522 cycles/s      peak memory 5.238 GiB
+  verifying                   : 7.796 ms
 ```
 
 ## SNARK machinery

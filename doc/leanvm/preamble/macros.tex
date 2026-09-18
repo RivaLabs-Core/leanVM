@@ -55,26 +55,30 @@
 \newcommand{\colmar}{M_{\mathrm{col}}}           % column marginal of one matrix, A_0 or B_0
 
 % ---------- VM ----------
-\newcommand{\loc}[1]{\mem[\fp+#1]}
 \newcommand{\intk}[1]{\underline{#1}}   % the integer #1 as the element of K with those bits
-\newcommand{\fpx}{\mathbf{fpx}}         % g^fp: the frame pointer's g-power, the third component of the VM state
-\newcommand{\expa}{\mathbf{Exp}}        % the exponentiation array, entry i holding g^i
-\newcommand{\dmode}{\mathsf{mode}}   % a DEREF store mode
 \newcommand{\pc}{\mathbf{pc}}
-\newcommand{\fp}{\mathbf{fp}}
-\newcommand{\nxt}[1]{\mathrm{next}(#1)}   % the successor of a register: next(pc), next(fp)
-\newcommand{\mem}{\mathbf{m}}
+\newcommand{\mem}{\mathbf{m}}           % RAM
+\newcommand{\regs}{\mathbf{x}}          % the register array: x0..x31, then the sink
+\newcommand{\adv}{\mathbf{a}}           % the advice region
+\newcommand{\tbase}{\mathsf{TEXT}}      % where the text sits
+\newcommand{\rbase}{\mathsf{RAM}}       % where RAM sits
+\newcommand{\abase}{\mathsf{ADVICE}}    % where the advice sits
+\newcommand{\sink}{\mathsf{sink}}       % the register cell an instruction with no destination writes
+\newcommand{\kadv}{\kappa_{\mathrm{adv}}}   % log advice length
+\newcommand{\qcls}[1]{q_{\mathsf{#1}}}   % the packed flock witness of one instruction class
 \newcommand{\addr}{\mathit{addr}}
 \newcommand{\val}{\mathit{val}}
 \newcommand{\cnt}{\mathit{count}}
-\newcommand{\md}{\mathrm{md}}       % BLAKE2s metadata: byte counter, final and last-node flags
 \newcommand{\cntfin}{\mathit{count}^{\mathrm{fin}}}  % committed finalize-count column
 \newcommand{\ts}{\mathbf{ts}}            % the clock: g^{4 cycle}, the last component of the VM state
 \newcommand{\tsfinal}{\ts_{\mathrm{final}}} % the clock the run ends on, announced by the prover
 \newcommand{\tsprev}{\mathit{prev}}      % the timestamp of a cell's previous access, a committed column
 \newcommand{\tsfin}{\mathit{ts}^{\mathrm{fin}}}  % committed column: each cell's last timestamp
-\newcommand{\meminit}{\mem^{\mathrm{init}}} % committed memory before the run
-\newcommand{\memfin}{\mem^{\mathrm{fin}}}   % committed memory after the run
+\newcommand{\meminit}{\mem^{\mathrm{init}}} % RAM before the run, a public column
+\newcommand{\memfin}{\mem^{\mathrm{fin}}}   % committed RAM after the run
+\newcommand{\regfin}{\regs^{\mathrm{fin}}}  % committed registers after the run
+\newcommand{\advinit}{\adv^{\mathrm{init}}} % committed advice before the run
+\newcommand{\advfin}{\adv^{\mathrm{fin}}}   % committed advice after the run
 \newcommand{\genhi}{\mathsf{h}}          % g^{2^16}: the step of the high range array
 \newcommand{\glo}{\mathit{lo}}           % low chunk of an access's gap, as the range-array address g^{d_lo + 1}
 \newcommand{\ghi}{\mathit{hi}}           % high chunk of the gap, as the range-array address h^{-d_hi}
@@ -92,7 +96,6 @@
 \newcommand{\acc}[1]{\dsep{access}_{#1}}    % a memory access in clock slot #1: pull, push and the gap's two range reads
 \newcommand{\dsep}[1]{\mathsf{#1}}
 \newcommand{\opc}[1]{\mathsf{op}_{\mathsf{#1}}}
-\newcommand{\srcsel}[1]{\mathsf{src}(#1)}
 \newcommand{\nprog}{N_{\mathrm{prog}}}   % program length
 \newcommand{\nmem}{N_{\mathrm{mem}}}    % memory length
 \newcommand{\kbc}{\kappa_{\mathrm{bc}}}   % log program length: nprog = 2^kbc 
