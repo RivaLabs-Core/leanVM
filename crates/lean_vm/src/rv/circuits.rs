@@ -48,13 +48,14 @@ fn sext32_if(c: &mut Builder, word: Wire, x: &[Wire]) -> Word {
 /// `x + y` over `x.len()` bits, the carry out of the top bit dropped: one product
 /// per bit but the top, the carry into bit `i + 1` being `maj(x_i, y_i, c_i)`.
 fn add(c: &mut Builder, x: &[Wire], y: &[Wire]) -> Word {
-    let mut carry = None;
-    let mut sum = Vec::with_capacity(x.len());
+    let (mut carry, width) = (None, x.len());
+    let mut sum = Vec::with_capacity(width);
     for (i, (&x, &y)) in x.iter().zip(y).enumerate() {
         let xc = c.xor(x, carry);
         let yc = c.xor(y, carry);
         sum.push(c.xor(xc, y));
-        if i + 1 < sum.capacity() {
+        // The carry out of the top bit falls off the modulus, so it is never a product.
+        if i + 1 < width {
             let maj = c.and(xc, yc);
             carry = c.xor(maj, carry);
         }

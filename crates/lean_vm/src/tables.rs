@@ -715,6 +715,9 @@ impl Table for ClassTable {
     fn constraint_weights(&self, pows: &[F192]) -> Vec<F192> {
         access_weights(pows, &self.spec.slots())
     }
+    // `quadratic` is ignored because `access_identities` is homogeneous of degree two:
+    // every term is a product of two columns, so the quadratic part IS the identity. A
+    // linear or constant term added there would have to be split out here.
     fn eval_constraint(&self, w: &[F192], cols: &[F192], _quadratic: bool) -> F192 {
         self.eval(w, cols)
     }

@@ -28,6 +28,23 @@ fn fibonacci() -> Program {
     Program::new(&text, TEXT_BASE, vec![], LOG_RAM, 0)
 }
 
+/// The `preimage` guest (see `guests/`): it hashes the message the prover puts in the
+/// advice and returns the digest, so one program, one input and two advices give two
+/// statements. Its rows cover the tables `fibonacci` does not: `HASH`, and the advice's
+/// side of memory.
+fn preimage(message: &[u8]) -> (Program, Vec<u64>, [u64; 4]) {
+    let program = Program::from_elf(include_bytes!("../guests/elf/preimage.elf")).expect("a guest");
+    let mut advice = vec![message.len() as u64];
+    advice.extend(message.chunks(8).map(|chunk| {
+        let mut word = [0u8; 8];
+        word[..chunk.len()].copy_from_slice(chunk);
+        u64::from_le_bytes(word)
+    }));
+    let digest = primitives::hash::hash(message);
+    let expected = std::array::from_fn(|i| u64::from_le_bytes(digest[8 * i..8 * i + 8].try_into().unwrap()));
+    (program, advice, expected)
+}
+
 #[test]
 fn public_api_end_to_end() {
     setup_prover();
@@ -52,6 +69,18 @@ fn public_api_end_to_end() {
     let (second, _, _) = prove(&program, input, &[], MIN_LOG_INV_RATE).expect("the run halts");
     verify(&program, &input, &output, &second).unwrap();
     verify(&program, &input, &output, &received).unwrap();
+    // 4. The same, over a guest whose rows include the hash table and the advice: with
+    // the arena engaged, a buffer that outlived its phase would show up here as a proof
+    // that stops verifying, and nowhere else (the verifier tests run the arena off).
+    for message in [b"leanVM".as_slice(), b""] {
+        let (guest, advice, digest) = preimage(message);
+        let (proof, output, _) = prove(&guest, [0; 4], &advice, MIN_LOG_INV_RATE).expect("the run halts");
+        assert_eq!(output, digest, "the guest hashed the advice");
+        verify(&guest, &[0; 4], &output, &proof).unwrap();
+        // The advice is the prover's alone: it is no part of what the verifier is told.
+        verify(&guest, &[0; 4], &output, &proof).unwrap();
+    }
+
     let stats = zk_alloc::stats();
     assert!(stats.phases >= 2, "expected one phase per proof, got {stats:?}");
     assert!(stats.peak_bytes > 0, "no buffer reached the arena: {stats:?}");

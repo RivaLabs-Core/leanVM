@@ -44,6 +44,12 @@ const SHT_SYMTAB: u32 = 2;
 const RAM_END_SYMBOL: &[u8] = b"__stack_top";
 const ADVICE_END_SYMBOL: &[u8] = b"__advice_top";
 
+/// `base + offset`, which a malformed header can wrap: a wrapped address would name
+/// a field inside the file that the header did not point at.
+fn at(base: u64, offset: u64) -> Result<u64, ElfError> {
+    base.checked_add(offset).ok_or(ElfError("a field's address wraps"))
+}
+
 /// Little-endian fields of `bytes`, every read checked.
 struct Reader<'a>(&'a [u8]);
 
@@ -100,16 +106,30 @@ impl Guest {
 
         let (mut text, mut image) = (Vec::new(), Vec::new());
         let (phoff, phentsize, phnum) = (r.u64(32)?, r.u16(54)? as u64, r.u16(56)? as u64);
+        // What a region may hold is capped by the map, but a buffer here is grown to a
+        // segment's own address, so a handful of bytes at the top of a region would
+        // allocate the whole of it. A program gets no more text and no more image than
+        // its file carries: the rest would be zeros, which is no instruction and no data
+        // the program did not write itself.
+        let file_len = elf.len() as u64;
         for i in 0..phnum {
-            let ph = phoff + i * phentsize;
-            let (kind, flags) = (r.u32(ph)?, r.u32(ph + 4)?);
+            let ph = at(
+                phoff,
+                i.checked_mul(phentsize).ok_or(ElfError("a header's address wraps"))?,
+            )?;
+            let (kind, flags) = (r.u32(ph)?, r.u32(at(ph, 4)?)?);
             if matches!(kind, PT_DYNAMIC | PT_INTERP | PT_TLS) {
                 return Err(ElfError("dynamic linking or thread-local storage"));
             }
             if kind != PT_LOAD {
                 continue;
             }
-            let (offset, vaddr, filesz, memsz) = (r.u64(ph + 8)?, r.u64(ph + 16)?, r.u64(ph + 32)?, r.u64(ph + 40)?);
+            let (offset, vaddr, filesz, memsz) = (
+                r.u64(at(ph, 8)?)?,
+                r.u64(at(ph, 16)?)?,
+                r.u64(at(ph, 32)?)?,
+                r.u64(at(ph, 40)?)?,
+            );
             let end = vaddr
                 .checked_add(memsz)
                 .ok_or(ElfError("a segment wraps the address space"))?;
@@ -121,6 +141,9 @@ impl Guest {
                 if vaddr < TEXT_BASE || vaddr % 4 != 0 || end > TEXT_BASE + (4 << MAX_LOG_TEXT) {
                     return Err(ElfError("an executable segment outside the text region"));
                 }
+                if vaddr - TEXT_BASE + bytes.len() as u64 > file_len {
+                    return Err(ElfError("more text than the file carries"));
+                }
                 place::<4>(&mut text, vaddr - TEXT_BASE, bytes);
             } else {
                 // RAM's first words are the input's: a segment may reserve them, not fill them.
@@ -129,6 +152,9 @@ impl Guest {
                     return Err(ElfError("a data segment outside RAM, or over the input words"));
                 }
                 if !bytes.is_empty() {
+                    if vaddr - first + bytes.len() as u64 > file_len {
+                        return Err(ElfError("more image than the file carries"));
+                    }
                     place::<8>(&mut image, vaddr - first, bytes);
                 }
             }
@@ -177,28 +203,31 @@ impl Guest {
 fn symbol(r: &Reader, name: &[u8]) -> Result<Option<u64>, ElfError> {
     let (shoff, shentsize, shnum) = (r.u64(40)?, r.u16(58)? as u64, r.u16(60)? as u64);
     for i in 0..shnum {
-        let sh = shoff + i * shentsize;
-        if r.u32(sh + 4)? != SHT_SYMTAB {
+        let sh = at(
+            shoff,
+            i.checked_mul(shentsize).ok_or(ElfError("a section's address wraps"))?,
+        )?;
+        if r.u32(at(sh, 4)?)? != SHT_SYMTAB {
             continue;
         }
         let (offset, size, link, entsize) = (
-            r.u64(sh + 24)?,
-            r.u64(sh + 32)?,
-            r.u32(sh + 40)? as u64,
-            r.u64(sh + 56)?,
+            r.u64(at(sh, 24)?)?,
+            r.u64(at(sh, 32)?)?,
+            r.u32(at(sh, 40)?)? as u64,
+            r.u64(at(sh, 56)?)?,
         );
         if entsize == 0 || link >= shnum {
             return Err(ElfError("a malformed symbol table"));
         }
-        let strings = shoff + link * shentsize;
-        let (str_offset, str_size) = (r.u64(strings + 24)?, r.u64(strings + 32)?);
+        let strings = at(shoff, link * shentsize)?;
+        let (str_offset, str_size) = (r.u64(at(strings, 24)?)?, r.u64(at(strings, 32)?)?);
         for s in 0..size / entsize {
-            let sym = offset + s * entsize;
-            let at = r.u32(sym)? as u64;
-            if at + (name.len() as u64) < str_size
-                && r.bytes(str_offset + at, name.len() as u64 + 1)? == [name, &[0]].concat()
+            let sym = at(offset, s * entsize)?;
+            let name_at = r.u32(sym)? as u64;
+            if name_at + (name.len() as u64) < str_size
+                && r.bytes(at(str_offset, name_at)?, name.len() as u64 + 1)? == [name, &[0]].concat()
             {
-                return r.u64(sym + 8).map(Some);
+                return r.u64(at(sym, 8)?).map(Some);
             }
         }
     }

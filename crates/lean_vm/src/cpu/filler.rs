@@ -72,6 +72,17 @@ fn nop(class: Class) -> u32 {
     }
 }
 
+/// Whether a text of `words` instructions still leaves room, inside the text region,
+/// for the illegal word and the padding blocks [`crate::cpu::Program::new`] appends,
+/// and for the pad to a power of two ([`crate::rv::Program::new`]).
+pub fn text_fits(words: usize) -> bool {
+    let mut blocks = Vec::new();
+    append_blocks(&mut blocks);
+    words
+        .checked_add(blocks.len() + 1 + 2)
+        .is_some_and(|total| total.next_power_of_two() <= 1 << crate::rv::MAX_LOG_TEXT)
+}
+
 /// Append every table's blocks to `text`, returning where each one landed.
 pub fn append_blocks(text: &mut Vec<u32>) -> Vec<Block> {
     let mut blocks = Vec::new();

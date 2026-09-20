@@ -140,6 +140,12 @@ impl Program {
     /// The program of a guest's ELF executable ([`rv::Guest::from_elf`]).
     pub fn from_elf(elf: &[u8]) -> Result<Self, rv::ElfError> {
         let guest = rv::Guest::from_elf(elf)?;
+        // The loader's cap is on the text alone, and [`Self::new`] appends to it, so a
+        // text that only just fits the region would leave the padding blocks nowhere to
+        // go and panic there. Refuse it here, where a malformed file is still an error.
+        if !filler::text_fits(guest.text.len()) {
+            return Err(rv::ElfError("the text leaves no room for the padding blocks"));
+        }
         Ok(Self::new(
             &guest.text,
             guest.entry_pc,

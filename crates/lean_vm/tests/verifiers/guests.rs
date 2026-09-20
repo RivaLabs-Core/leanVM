@@ -5,7 +5,7 @@
 
 use super::python_verifier::PythonStatement;
 use lean_vm::cpu::{Program, prove, verify, verify_to_raw};
-use lean_vm::rv::{Guest, Machine};
+use lean_vm::rv::{self, Guest, Machine};
 
 fn proves_and_verifies(tag: &str, elf: &[u8], input: [u64; 4], expected: [u64; 4]) {
     proves_and_verifies_with(tag, elf, input, &[], expected);
@@ -73,6 +73,33 @@ fn hash_guest() {
         [length, 0, 0, 0],
         expected,
     );
+}
+
+/// The lengths a block-based hash gets wrong: nothing, one byte, and the exact
+/// multiples of the block either side. Proving each would cost minutes, so these run on
+/// the interpreter, which is what the proofs above are checked against anyway.
+#[test]
+fn the_hash_guests_agree_with_the_host_at_every_block_boundary() {
+    let guests = [
+        (
+            "blake2s",
+            include_bytes!("../../../../guests/elf/blake2s.elf").as_slice(),
+        ),
+        ("hash", include_bytes!("../../../../guests/elf/hash.elf").as_slice()),
+    ];
+    for (name, elf) in guests {
+        let program = Program::from_elf(elf).expect("a guest");
+        for length in [0u64, 1, 55, 63, 64, 65, 127, 128, 129, 256] {
+            let message: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
+            let digest = primitives::hash::hash(&message);
+            let expected: [u64; 4] =
+                std::array::from_fn(|i| u64::from_le_bytes(digest[8 * i..8 * i + 8].try_into().unwrap()));
+            let ran = Machine::new(&program.rv, [length, 0, 0, 0], &[])
+                .run(1 << 24)
+                .unwrap_or_else(|trap| panic!("{name} on {length} bytes: {trap}"));
+            assert_eq!(ran, expected, "{name} on {length} bytes");
+        }
+    }
 }
 
 /// A digest of a message only the prover has: the advice region, read through the
@@ -145,4 +172,24 @@ fn malformed_elf_files_are_refused() {
         bad[at] = value;
         assert!(Guest::from_elf(&bad).is_err(), "{what}");
     }
+
+    // A file is read into buffers the size of what it says it holds, so what it says has
+    // to be bounded by what it carries: a segment at the top of a region would otherwise
+    // allocate the whole region, gigabytes from a few kilobytes. The two headers a
+    // malformed file can wrap are checked too, since a wrapped address reads a field the
+    // header never pointed at.
+    let word_at = |file: &[u8], at: usize| u64::from_le_bytes(file[at..at + 8].try_into().unwrap());
+    let phoff = word_at(elf, 32) as usize;
+    for (field, value, what) in [
+        (16, rv::TEXT_BASE + (4 << 20), "a segment past what the file carries"),
+        (16, rv::TEXT_BASE - 4, "a segment below the text"),
+        (16, rv::TEXT_BASE + 1, "a segment that is no instruction address"),
+    ] {
+        let mut bad = elf.to_vec();
+        bad[phoff + field..phoff + field + 8].copy_from_slice(&value.to_le_bytes());
+        assert!(Guest::from_elf(&bad).is_err(), "{what}");
+    }
+    let mut wrapped = elf.to_vec();
+    wrapped[40..48].copy_from_slice(&u64::MAX.to_le_bytes()); // the section headers' offset
+    assert!(Guest::from_elf(&wrapped).is_err(), "a wrapped section-header address");
 }

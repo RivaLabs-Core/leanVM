@@ -51,12 +51,13 @@ pub fn input() -> [u64; 4] {
 /// The advice: words the prover supplies, which the statement says nothing about, so
 /// a guest has to check what it reads here.
 pub fn advice() -> &'static [u64] {
-    // SAFETY: the region is the linker script's, holds whole words, and nothing in
-    // this crate writes it.
-    unsafe {
-        let (start, end) = (&raw const __advice, &raw const __advice_top);
-        core::slice::from_raw_parts(start, end.offset_from_unsigned(start))
-    }
+    // The two symbols bound the region without belonging to one object, so the length
+    // is address arithmetic rather than `offset_from`, which asks for one allocation.
+    let (start, end) = (&raw const __advice, &raw const __advice_top);
+    let words = (end as usize - start as usize) / size_of::<u64>();
+    // SAFETY: the linker script reserves the region, it holds whole words, and nothing
+    // in this crate writes it.
+    unsafe { core::slice::from_raw_parts(start, words) }
 }
 
 /// Set the run's public output, which the run returns in `a0..a3` when `main` does.

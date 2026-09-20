@@ -31,7 +31,9 @@ pub const TEXT_BASE: u64 = 0x1000_0000;
 /// `log2` of the most instructions a program holds.
 pub const MAX_LOG_TEXT: usize = 26;
 /// Where RAM sits: a multiple of the largest RAM, in the text's 2 GiB window (the
-/// medany code model), and below `0x7FFF_F800`, which `LUI` can still reach.
+/// medany code model). A maximal RAM ends at `0x8000_0000`, and its last 2 KiB are past
+/// what `LUI` can form, since `LUI` sign-extends bit 31 on RV64; medlow code stops short
+/// of them.
 pub const RAM_BASE: u64 = 0x4000_0000;
 /// `log2` of the most 64-bit words RAM holds.
 pub const MAX_LOG_RAM: usize = 27;

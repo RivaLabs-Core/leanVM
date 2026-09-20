@@ -89,6 +89,17 @@ impl PythonStatement {
             .expect("run native Python verifier")
     }
 
+    /// Python refused, and refused the way it should: through its own error path, not
+    /// through a traceback, which exits nonzero just the same and would hide a crash.
+    pub fn assert_rejects(output: &Output, what: &str) {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(!output.status.success(), "Python accepted {what}");
+        assert!(
+            stderr.starts_with("verification failed:"),
+            "Python crashed on {what} rather than rejecting it:\n{stderr}"
+        );
+    }
+
     pub fn assert_accepts(&self, raw: &RawProof) {
         let output = self.verify(raw);
         assert!(
@@ -128,8 +139,7 @@ fn test_python_verifier() {
     assert!(verify(&program, &input, &output, &malformed_announcement).is_err());
     let mut raw_announcement = raw.clone();
     raw_announcement.stream[0].c1 = 1;
-    let python = statement.verify(&raw_announcement);
-    assert!(!python.status.success(), "Python accepted a noncanonical announcement");
+    PythonStatement::assert_rejects(&statement.verify(&raw_announcement), "a noncanonical announcement");
 
     let mut malformed_root = proof.clone();
     // Past the announcement: the table heights, the rate, the final clock.
@@ -138,11 +148,7 @@ fn test_python_verifier() {
     assert!(verify(&program, &input, &output, &malformed_root).is_err());
     let mut raw_root = raw.clone();
     raw_root.stream[root_offset].c2 = 1;
-    let python = statement.verify(&raw_root);
-    assert!(
-        !python.status.success(),
-        "Python accepted a noncanonical commitment root"
-    );
+    PythonStatement::assert_rejects(&statement.verify(&raw_root), "a noncanonical commitment root");
 
     // A decoded table is RISC-V only if it says so: one whose first entry writes `x0`
     // is refused before anything is verified.
@@ -152,9 +158,10 @@ fn test_python_verifier() {
     writes_x0[8 * ad_slot * entries..][..8].copy_from_slice(&0u64.to_le_bytes());
     std::fs::write(&statement.bytecode, writes_x0).expect("write bytecode");
     let python = statement.verify(&raw);
+    PythonStatement::assert_rejects(&python, "a table that writes x0");
     assert!(
         String::from_utf8_lossy(&python.stderr).contains("misnames a register"),
-        "Python accepted a table that writes x0"
+        "Python refused a table that writes x0 for the wrong reason"
     );
     std::fs::write(&statement.bytecode, table).expect("restore bytecode");
 
