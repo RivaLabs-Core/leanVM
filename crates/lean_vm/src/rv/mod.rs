@@ -122,17 +122,10 @@ impl Entry {
     /// What both verifiers check of every entry: the `x0` and [`SINK`] rules are
     /// semantics, and the proof system is sound for any table, a malformed one included.
     pub fn is_well_formed(&self) -> bool {
-        let legal: &[u64] = match self.class {
-            Class::Alu => &alu::LEGAL,
-            Class::Shift => &shift::LEGAL,
-            Class::Load => &load::LEGAL,
-            Class::Store => &store::LEGAL,
-            Class::Mul => &mul::LEGAL,
-            Class::Mulh => &mulh::LEGAL,
-            Class::Div => &div::LEGAL,
-            Class::Hash => &hash::LEGAL,
-            Class::Illegal => return *self == Self::ILLEGAL,
-        };
+        if self.class == Class::Illegal {
+            return *self == Self::ILLEGAL;
+        }
+        let legal = legal_flags(self.class);
         let control = self.class == Class::Alu;
         // A hash row writes no register and reads no immediate: its table holds both at
         // their constants.
@@ -143,6 +136,23 @@ impl Entry {
             && legal.contains(&self.flags)
             && (control || (self.target == Target::Next && !self.link && !self.jalr))
             && (!hash || (self.ad == SINK && self.imm == 0))
+    }
+}
+
+/// The flag words a class defines, which are the only ones its circuit is written for
+/// and the only ones an entry may carry ([`Entry::is_well_formed`]). Empty for
+/// [`Class::Illegal`], which carries no flags at all.
+pub fn legal_flags(class: Class) -> &'static [u64] {
+    match class {
+        Class::Alu => &alu::LEGAL,
+        Class::Shift => &shift::LEGAL,
+        Class::Load => &load::LEGAL,
+        Class::Store => &store::LEGAL,
+        Class::Mul => &mul::LEGAL,
+        Class::Mulh => &mulh::LEGAL,
+        Class::Div => &div::LEGAL,
+        Class::Hash => &hash::LEGAL,
+        Class::Illegal => &[],
     }
 }
 

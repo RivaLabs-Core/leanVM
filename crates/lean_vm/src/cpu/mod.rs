@@ -31,7 +31,7 @@ pub(crate) use trace::{Access, HashRow, Row, Trace};
 /// the memory-soundness and count-non-wrap counting arguments are theorems only
 /// for instances whose total read-flush count stays far below `2^64`, so the
 /// verifier rejects any announcement exceeding them before running a reduction.
-const MAX_LOG_ROWS: usize = 32;
+pub const MAX_LOG_ROWS: usize = 32;
 
 /// The Fiat-Shamir IV: the program's digest, which commits to everything public and
 /// fixed about the statement ([`Program::new`]), hashed with the run's public input.

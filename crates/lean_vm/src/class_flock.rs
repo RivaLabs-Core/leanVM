@@ -24,7 +24,7 @@ use zk_alloc::ArenaVec;
 
 /// The zerocheck's cube has at least this many variables (flock's univariate skip
 /// plus its fixed-point dimensions), which floors the batch of a small circuit.
-const MIN_CUBE_LOG: usize = 13;
+pub const MIN_CUBE_LOG: usize = 13;
 
 /// `log2` of an instance's packed words: the stride between consecutive instances'
 /// same-port words.

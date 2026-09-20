@@ -574,7 +574,7 @@ pub(crate) fn word_columns(t: usize) -> Vec<(usize, usize)> {
 
 /// The slot of a bytecode tuple that holds a row's [`Word::Bad`]: past every field of
 /// an entry, where the program is zero.
-const BAD_SLOT: usize = 13;
+pub const BAD_SLOT: usize = 13;
 
 /// A class table's local columns: `pc, ts, a1, a2, pc4, v1, v2, flags`, then the
 /// optional groups in the order of the fields below, then the accesses and the

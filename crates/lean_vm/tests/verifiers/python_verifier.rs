@@ -173,3 +173,17 @@ fn test_python_verifier() {
         verification_time,
     );
 }
+
+/// The PCS rate changes WHIR's ladder: how many levels it folds through, how wide a leaf
+/// is and how many queries each level takes. Every other cross-check runs at the fastest
+/// rate, so the slowest one is checked here, where the two verifiers would otherwise
+/// agree only by never being asked.
+#[test]
+fn the_python_verifier_follows_the_slowest_rate() {
+    let (program, _) = super::programs::fibonacci();
+    let input = [0; 4];
+    let rate = lean_vm::pcs::MAX_LOG_INV_RATE;
+    let (proof, output, _) = prove(&program, input, &[], rate).expect("the run halts");
+    let raw = verify_to_raw(&program, &input, &output, &proof).expect("honest proof verifies");
+    PythonStatement::new("rate", &program, &input, &output).assert_accepts(&raw);
+}

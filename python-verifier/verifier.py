@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import sys
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from functools import cache, reduce
@@ -733,6 +734,12 @@ FLOCK_MIN_LOG_SIZE = 13
 TEXT_BASE = 0x1000_0000
 RAM_BASE = 0x4000_0000  # RAM's word z sits at RAM_BASE + 8z; its first INPUT_WORDS words are the public input
 ADVICE_BASE = 0x2000_0000  # the advice's word z sits at ADVICE_BASE + 8z; what it holds before the run is the prover's
+# What the regions hold at most, and the most rows a table may announce. These bound the counting arguments the
+# memory and lookup proofs rest on, so the verifier checks them before it runs any reduction.
+MAX_LOG_TEXT = 26
+MAX_LOG_RAM = 27
+MAX_LOG_ADVICE = 26
+MAX_LOG_ROWS = 32
 INPUT_WORDS = 4
 LOG_REGISTERS = 6
 SINK = 32
@@ -1723,12 +1730,15 @@ def build_layout(
 ) -> Layout:
     log_bytecode = log2_strict(len(bytecode)) - BUS_BITS
     require(
-        all(table.min_log_height <= log_height <= 32 for table, log_height in zip(TABLES, table_log_heights, strict=True))
-        and 0 <= log_bytecode <= 26,
+        all(table.min_log_height <= log_height <= MAX_LOG_ROWS for table, log_height in zip(TABLES, table_log_heights, strict=True))
+        and 0 <= log_bytecode <= MAX_LOG_TEXT,
         "invalid announced table sizes",
     )
-    require(2 <= log_ram <= 27 and all(offset + len(words) <= 2**log_ram for offset, words in ram), "RAM does not hold its image")
-    require(0 <= log_advice <= 26, "the advice exceeds its region")
+    require(
+        2 <= log_ram <= MAX_LOG_RAM and all(offset + len(words) <= 2**log_ram for offset, words in ram),
+        "RAM does not hold its image",
+    )
+    require(0 <= log_advice <= MAX_LOG_ADVICE, "the advice exceeds its region")
 
     push: list[BusBlock] = []
     pull: list[BusBlock] = []
@@ -1920,8 +1930,67 @@ def verify_execution(
     transcript.finish()
 
 
+def protocol_constants() -> str:
+    """Every constant this verifier shares with the Rust one, as sorted `name value` lines. The two are written out
+    twice on purpose, so something has to hold them together: `lean_vm`'s `constants_match_the_python_verifier`
+    renders the same lines from its own side and diffs them. Lists are comma-separated."""
+    scalars = {
+        "ADVICE_BASE": ADVICE_BASE,
+        "BAD_SLOT": BAD_SLOT,
+        "BUS_BITS": BUS_BITS,
+        "CLOCK_STRIDE": CLOCK_STRIDE,
+        "FLOCK_K_SKIP": FLOCK_K_SKIP,
+        "FLOCK_MIN_LOG_SIZE": FLOCK_MIN_LOG_SIZE,
+        "HASH_OUT_WORD": HASH_OUT_WORD,
+        "HASH_STRIDE": HASH_STRIDE,
+        "HASH_WORDS": HASH_WORDS,
+        "INITIAL_FOLDING_FACTOR": INITIAL_FOLDING_FACTOR,
+        "INPUT_WORDS": INPUT_WORDS,
+        "LOG_PACKING": LOG_PACKING,
+        "LOG_REGISTERS": LOG_REGISTERS,
+        "MAX_LOG_ADVICE": MAX_LOG_ADVICE,
+        "MAX_LOG_RAM": MAX_LOG_RAM,
+        "MAX_LOG_ROWS": MAX_LOG_ROWS,
+        "MAX_LOG_TEXT": MAX_LOG_TEXT,
+        "MAX_STACKED_LOG": MAX_STACKED_LOG,
+        "MIN_STACKED_LOG": MIN_STACKED_LOG,
+        "NUM_FRAMEWORK_COLUMNS": NUM_FRAMEWORK_COLUMNS,
+        "QUERY_GRINDING_BITS": QUERY_GRINDING_BITS,
+        "RAM_BASE": RAM_BASE,
+        "RAM_SLOT": RAM_SLOT,
+        "RANGE_LOG": RANGE_LOG,
+        "RESIDUAL_MAX_LOG": RESIDUAL_MAX_LOG,
+        "RS_DOMAIN_INITIAL_REDUCTION_FACTOR": RS_DOMAIN_INITIAL_REDUCTION_FACTOR,
+        "RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR": RS_DOMAIN_SUBSEQUENT_REDUCTION_FACTOR,
+        "SINK": SINK,
+        "SUBSEQUENT_FOLDING_FACTOR": SUBSEQUENT_FOLDING_FACTOR,
+        "SYSCALL_REGISTER": SYSCALL_REGISTER,
+        "SYS_EXIT": SYS_EXIT,
+        "TEXT_BASE": TEXT_BASE,
+    }
+    lines = [f"{name} {value}" for name, value in scalars.items()]
+    lines.append("OUTPUT_REGISTERS " + ",".join(str(r) for r in OUTPUT_REGISTERS))
+    lines.append("REGISTER_SLOTS " + ",".join(str(s) for s in REGISTER_SLOTS))
+    for table in TABLES:
+        prefix = f"TABLE.{table.name}"
+        lines.append(f"{prefix}.opcode {table.opcode}")
+        lines.append(f"{prefix}.k_log {table.circuit.log_size}")
+        lines.append(f"{prefix}.const_pos {table.circuit.constant_column}")
+        lines.append(f"{prefix}.slot_bits {table.slot_bits}")
+        lines.append(f"{prefix}.min_log_height {table.min_log_height}")
+        lines.append(f"{prefix}.ports {len(table.ports)}")
+        lines.append(f"{prefix}.width {table.width}")
+        lines.append(f"{prefix}.slots " + ",".join(str(s) for s in table.slots))
+        lines.append(f"{prefix}.legal_flags " + ",".join(str(f) for f in sorted(table.legal_flags)))
+    return "\n".join(sorted(lines))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
+
+    if list(argv if argv is not None else sys.argv[1:]) == ["--constants"]:
+        print(protocol_constants())
+        return 0
 
     parser = argparse.ArgumentParser(description="Verify a leanVM execution proof")
     parser.add_argument("bytecode", type=Path, help="stacked bytecode multilinear, little-endian 64-bit words")
