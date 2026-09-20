@@ -2432,12 +2432,7 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     // Only block and coordinate structure is used here; dummy instructions and
     // table sizes let us derive it before the guest's bytecode exists.
     let stand_in = vec![lean_vm::cpu::Op::Xor { a: 0, b: 0, c: 0 }; 1 << kbc];
-    let layout = lean_vm::cpu::layout(
-        &stand_in,
-        20,
-        [1usize << 10; lean_vm::tables::N_TABLES],
-        [F192::ZERO, F192::ZERO],
-    );
+    let layout = lean_vm::cpu::layout(&stand_in, 20, [10; lean_vm::tables::N_TABLES], [F192::ZERO, F192::ZERO]);
     let sides: [&[Block]; 3] = [&layout.push, &layout.pull, &layout.count];
     let lcrounds = flock::hash::K_LOG - 6;
 
