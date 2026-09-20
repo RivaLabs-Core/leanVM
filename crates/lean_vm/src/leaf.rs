@@ -53,8 +53,8 @@ pub enum Coord {
     Sparse(Arc<SparseColumn>),
     /// A sum of `Const`/`Col`/`GCol`/`Prod` terms: any degree-2 form over the
     /// table's columns, which is all §sec:m3 asks of a coordinate. This is what
-    /// carries a value a row DERIVES from its columns (an `XOR`/`MUL` result, a
-    /// `DEREF` store, a `JUMP` successor) without committing a column for it, and
+    /// carries a value a row DERIVES from its columns (a branch's successor, what a
+    /// jump writes to `rd`, a hash row's block addresses) without committing a column for it, and
     /// with it the identity that would have tied the two. Like [`Coord::Prod`],
     /// only a table's blocks may carry one: the table sumcheck settles them,
     /// while a framework block has to split into per-column openings.

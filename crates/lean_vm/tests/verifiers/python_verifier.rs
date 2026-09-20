@@ -19,7 +19,13 @@ pub struct PythonStatement {
 
 impl PythonStatement {
     pub fn new(tag: &str, program: &lean_vm::cpu::Program, input: &[u64; 4], output: &[u64; 4]) -> Self {
-        let directory = std::env::temp_dir().join(format!("leanvm-python-verifier-{tag}-{}", std::process::id()));
+        // One directory per statement, not per tag: the tests share a process, so two of
+        // them naming the same tag would write each other's files and check the wrong
+        // proof, which python would ACCEPT, silently proving nothing.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let unique = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let directory =
+            std::env::temp_dir().join(format!("leanvm-python-verifier-{tag}-{}-{unique}", std::process::id()));
         std::fs::create_dir_all(&directory).expect("create test directory");
         let statement = Self {
             bytecode: directory.join("bytecode.bin"),

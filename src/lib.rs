@@ -5,6 +5,12 @@
 //! against the program, that input and the output the run claims: `a0..a3` when it
 //! called `exit`.
 //!
+//! [`prove`] also takes the run's ADVICE, the words the program finds at
+//! [`ADVICE_BASE`]. The statement says nothing about them beyond how many the program's
+//! region holds, so a proof is a proof of knowledge of an advice: what a program reads
+//! there it has to check itself. Passing more words than the region holds is a
+//! programming error, and panics.
+//!
 //! End to end in [`tests/api.rs`](https://github.com/leanEthereum/leanVM/blob/main/tests/api.rs).
 
 pub use lean_vm::{

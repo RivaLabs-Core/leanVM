@@ -388,6 +388,10 @@ impl Stats {
 /// output (`a0..a3` at the exit) and its [`Stats`], or the trap if the run has no proof.
 /// `log_inv_rate` selects the PCS rate and is announced in the Fiat-Shamir transcript
 /// before the commitment.
+///
+/// Panics if `advice` holds more than the program's region does (`2^log_advice` words,
+/// which the program fixes) or if `log_inv_rate` is not a rate the PCS supports: both
+/// are the caller's to get right, like the program itself, and neither is a trap of the run.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
 pub fn prove(
     program: &Program,
