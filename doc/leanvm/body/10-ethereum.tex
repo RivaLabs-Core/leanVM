@@ -5,7 +5,7 @@ An aggregate proof certifies signature claims and the correct encoding of blob d
 
 \subsection{Recursive aggregation}\label{sec:recursion}\label{sec:xmss-agg}\label{sec:sphincs-agg}
 
-A signature claim identifies what was signed and by whom. For XMSS~\cite{rfc8391}, it is a public key, an epoch, and a message; each epoch has one message across the aggregate, and its keys form one group. For SPHINCS+~\cite{sphincs}, it is a $(\text{key},\text{message})$ pair.
+A signature claim identifies what was signed and by whom. For XMSS~\cite{rfc8391}, it is a public key, an epoch, and a message; the keys claiming one $(\text{epoch},\text{message})$ pair form one group, so an epoch signed at under several messages contributes one group per message. For SPHINCS+~\cite{sphincs}, it is a $(\text{key},\text{message})$ pair.
 
 A node may publish any subset of the signature claims supported by its raw signatures and verified children. The default is their sorted, deduplicated union. The essential condition is coverage: every published claim must be justified, either directly at this node or recursively through a child.
 

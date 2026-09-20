@@ -3231,8 +3231,8 @@ def cover_da_root(roots, cover, n_slots_g, mark):
 
 
 def main():
-    # One node of an aggregation tree: raw XMSS signatures grouped by the epoch they
-    # were made at (a RUNTIME number of groups), n_raw_sphincs SPHINCS signatures
+    # One node of an aggregation tree: raw XMSS signatures grouped by the (epoch,
+    # message) they claim (a RUNTIME number of groups), n_raw_sphincs SPHINCS signatures
     # and n_children sub-proofs OF THIS SAME BYTECODE. Each XMSS group carries its
     # own (epoch, message) pair, and each SPHINCS signature is against the message
     # in its own coverage slot. DA roots occupy a separate region of the same table.

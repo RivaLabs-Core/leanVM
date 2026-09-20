@@ -4,15 +4,15 @@
 //! A node verifies `n_raw_xmss` XMSS signatures, `n_raw_sphincs` SPHINCS
 //! signatures and `n_children` sub-proofs **of this same bytecode**, and
 //! by default publishes the sorted deduplicated union of their signer sets. The XMSS
-//! signers are grouped by epoch, each group
-//! carrying its own message. A SPHINCS
+//! signers are grouped by `(epoch, message)`, so one epoch may carry several
+//! messages, each its own group. A SPHINCS
 //! signer carries its own message, so that half of the statement is a list of
 //! `(key, message)` pairs. Coverage is what carries the security claim: a write-once slot per
 //! declared signer, written once by each raw signature and each child key, plus
 //! a final count, so every declared signer is backed by a real signature or a
 //! verified child.
 //!
-//! Those slots are one contiguous region per XMSS epoch group and one for
+//! Those slots are one contiguous region per XMSS group and one for
 //! SPHINCS, so the one range check a write already needs also keeps a
 //! signature off another group's declared keys, of either scheme: that is what
 //! makes the published split mean which scheme verified which key against
@@ -450,7 +450,7 @@ struct DeferredSubproof {
 /// to count distinct keys itself.
 #[derive(Clone, Debug)]
 pub struct EthereumProof {
-    /// The XMSS signers: strictly increasing epochs,
+    /// The XMSS signers: strictly increasing `(epoch, message)` pairs,
     /// each group non-empty and strictly sorted. May be empty. The claims of both schemes together are
     /// strictly fewer than [`MAX_KEYS`].
     xmss_signers: Vec<XmssClaimGroup>,
@@ -480,11 +480,8 @@ pub enum AggregateVerifyError {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AggregationError {
-    /// Two claims at one epoch, raw or through children, carry different
-    /// messages: within an aggregate the message is a function of the epoch.
-    ConflictingMessages,
-    /// The union of the epochs, over the raw signatures and the children,
-    /// exceeds [`MAX_EPOCHS`].
+    /// The union of the `(epoch, message)` groups, over the raw signatures and
+    /// the children, exceeds [`MAX_EPOCHS`].
     TooManyEpochs,
     /// A child aggregate does not verify.
     InvalidChild(AggregateVerifyError),
@@ -528,8 +525,7 @@ impl std::error::Error for AggregateVerifyError {}
 impl std::fmt::Display for AggregationError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::ConflictingMessages => write!(f, "two claims at one epoch carry different messages"),
-            Self::TooManyEpochs => write!(f, "more than MAX_EPOCHS ({MAX_EPOCHS}) epochs"),
+            Self::TooManyEpochs => write!(f, "more than MAX_EPOCHS ({MAX_EPOCHS}) XMSS groups"),
             Self::InvalidChild(_) => write!(f, "invalid child aggregate"),
             Self::Empty => write!(f, "no signature claims or DA roots to publish"),
             Self::NotCovered => write!(f, "a declared claim is not covered by the children and raw signatures"),
@@ -598,9 +594,9 @@ fn wire() -> impl bincode::Options {
 
 /// Reject a signer set that the coverage argument does not cover: strict sorting
 /// within each list is what stops one signer being counted many times: the XMSS
-/// list's length is a count of distinct `(epoch, key)` claims, the SPHINCS
-/// list's of distinct `(key, message)` claims. The epoch groups are strictly
-/// increasing, non-empty (an absent epoch is an absent group, the one
+/// list's length is a count of distinct `(epoch, message, key)` claims, the SPHINCS
+/// list's of distinct `(key, message)` claims. The groups are strictly increasing
+/// on `(epoch, message)`, non-empty (an absent pair is an absent group, the one
 /// encoding of each set) and at most [`MAX_EPOCHS`]. Either list may be empty;
 /// both may be empty for a blob proof. [`MAX_KEYS`] is exclusive here, as in the guest.
 fn check_signer_set(
@@ -610,7 +606,9 @@ fn check_signer_set(
     let total = xmss_signers.iter().map(|group| group.keys.len()).sum::<usize>() + sphincs_signers.len();
     if total >= MAX_KEYS
         || xmss_signers.len() > MAX_EPOCHS
-        || !xmss_signers.windows(2).all(|w| w[0].epoch < w[1].epoch)
+        || !xmss_signers
+            .windows(2)
+            .all(|w| (w[0].epoch, w[0].message) < (w[1].epoch, w[1].message))
         || xmss_signers
             .iter()
             .any(|group| group.keys.is_empty() || !group.keys.windows(2).all(|w| w[0] < w[1]))
@@ -650,8 +648,8 @@ impl EthereumProof {
         )
     }
 
-    /// Strictly increasing epochs, each group non-empty and strictly sorted.
-    /// May be empty, including in a blob-only proof.
+    /// Strictly increasing `(epoch, message)` pairs, each group non-empty and
+    /// strictly sorted. May be empty, including in a blob-only proof.
     pub fn xmss_signers(&self) -> &[XmssClaimGroup] {
         &self.xmss_signers
     }
@@ -677,7 +675,7 @@ impl EthereumProof {
     /// The declared claims, as many as the coverage table's declared slots.
     ///
     /// NOT a count of distinct signers: a SPHINCS key may hold several claims,
-    /// one per message it signed, and an XMSS key one per epoch it signed at
+    /// one per message it signed, and an XMSS key one per `(epoch, message)` it signed
     /// (see the notes on the two lists). A caller that wants signers has to
     /// deduplicate by key itself.
     pub fn num_signature_claims(&self) -> usize {
@@ -1783,39 +1781,22 @@ fn take_slot<K: Ord + Clone>(claims: &[K], claimed: &mut [bool], duplicates: &mu
     }
 }
 
-/// Record one epoch's message, rejecting a second, different one: within an
-/// aggregate the message is a function of the epoch.
-fn bind_message(
-    messages: &mut BTreeMap<xmss::Epoch, xmss::Message>,
-    epoch: xmss::Epoch,
-    message: xmss::Message,
-) -> Result<(), AggregationError> {
-    match messages.insert(epoch, message) {
-        Some(previous) if previous != message => Err(AggregationError::ConflictingMessages),
-        _ => Ok(()),
-    }
-}
-
 fn plan_coverage(
     raw_xmss: &[(XmssPublicKey, xmss::Epoch, xmss::Message)],
     raw_sphincs: &[SphincsClaim],
     children: &[EthereumProof],
     declare: Option<&SignatureClaims>,
 ) -> Result<Coverage, AggregationError> {
-    // The union, as `(epoch, key)` claims plus the epoch-to-message function
-    // every contributor must agree on, then grouped: consecutive equal epochs
-    // of the sorted deduplicated list are one group.
-    let mut messages: BTreeMap<xmss::Epoch, xmss::Message> = BTreeMap::new();
-    let mut claims: Vec<(xmss::Epoch, XmssPublicKey)> = Vec::with_capacity(raw_xmss.len());
+    // The union, as `(epoch, message, key)` claims, then grouped: consecutive
+    // equal `(epoch, message)` pairs of the sorted deduplicated list are one group.
+    let mut claims: Vec<(xmss::Epoch, xmss::Message, XmssPublicKey)> = Vec::with_capacity(raw_xmss.len());
     for (pk, epoch, message) in raw_xmss {
-        bind_message(&mut messages, *epoch, *message)?;
-        claims.push((*epoch, pk.clone()));
+        claims.push((*epoch, *message, pk.clone()));
     }
     let mut sphincs_signers = raw_sphincs.to_vec();
     for child in children {
         for XmssClaimGroup { epoch, message, keys } in &child.xmss_signers {
-            bind_message(&mut messages, *epoch, *message)?;
-            claims.extend(keys.iter().map(|pk| (*epoch, pk.clone())));
+            claims.extend(keys.iter().map(|pk| (*epoch, *message, pk.clone())));
         }
         sphincs_signers.extend_from_slice(&child.sphincs_signers);
     }
@@ -1825,26 +1806,23 @@ fn plan_coverage(
     sphincs_signers.sort();
     sphincs_signers.dedup();
     let mut union_groups: Vec<XmssClaimGroup> = Vec::new();
-    for (epoch, pk) in claims {
+    for (epoch, message, pk) in claims {
         match union_groups.last_mut() {
-            Some(group) if group.epoch == epoch => group.keys.push(pk),
+            Some(group) if (group.epoch, group.message) == (epoch, message) => group.keys.push(pk),
             _ => union_groups.push(XmssClaimGroup {
                 epoch,
-                message: messages[&epoch],
+                message,
                 keys: vec![pk],
             }),
         }
     }
     // Groups the declaration holds nothing of go last, so the declared ones are the
     // prefix the digest hashes. Claims are struck off, so leftovers are uncovered.
-    let mut wanted: BTreeSet<(xmss::Epoch, XmssPublicKey)> = BTreeSet::new();
+    let mut wanted: BTreeSet<(xmss::Epoch, xmss::Message, XmssPublicKey)> = BTreeSet::new();
     let mut wanted_sphincs: BTreeSet<SphincsClaim> = BTreeSet::new();
     if let Some(SignatureClaims { xmss, sphincs }) = declare {
         for XmssClaimGroup { epoch, message, keys } in xmss {
-            if messages.get(epoch) != Some(message) {
-                return Err(AggregationError::NotCovered);
-            }
-            wanted.extend(keys.iter().map(|key| (*epoch, key.clone())));
+            wanted.extend(keys.iter().map(|key| (*epoch, *message, key.clone())));
         }
         wanted_sphincs.extend(sphincs.iter().copied());
     }
@@ -1853,7 +1831,7 @@ fn plan_coverage(
     for mut group in union_groups {
         group
             .keys
-            .retain(|key| declare.is_none() || wanted.remove(&(group.epoch, key.clone())));
+            .retain(|key| declare.is_none() || wanted.remove(&(group.epoch, group.message, key.clone())));
         if group.keys.is_empty() {
             covered_only.push(group);
         } else {
@@ -1871,11 +1849,11 @@ fn plan_coverage(
             return Err(AggregationError::NotCovered);
         }
     }
-    // The table is no longer sorted by epoch.
-    let region_of: BTreeMap<xmss::Epoch, usize> = xmss_groups
+    // The table is no longer sorted by `(epoch, message)`.
+    let region_of: BTreeMap<(xmss::Epoch, xmss::Message), usize> = xmss_groups
         .iter()
         .enumerate()
-        .map(|(j, group)| (group.epoch, j))
+        .map(|(j, group)| ((group.epoch, group.message), j))
         .collect();
     let mut xmss_claimed: Vec<Vec<bool>> = xmss_groups.iter().map(|group| vec![false; group.keys.len()]).collect();
     let mut xmss_dups: Vec<Vec<XmssPublicKey>> = vec![Vec::new(); xmss_groups.len()];
@@ -1883,8 +1861,8 @@ fn plan_coverage(
     let mut sphincs_dups = Vec::new();
     let raw_xmss_slots: Vec<usize> = raw_xmss
         .iter()
-        .map(|(pk, epoch, _)| {
-            let g = region_of[epoch];
+        .map(|(pk, epoch, message)| {
+            let g = region_of[&(*epoch, *message)];
             take_slot(&xmss_groups[g].keys, &mut xmss_claimed[g], &mut xmss_dups[g], pk)
         })
         .collect();
@@ -1900,7 +1878,7 @@ fn plan_coverage(
                 .xmss_signers
                 .iter()
                 .map(|group| {
-                    let g = region_of[&group.epoch];
+                    let g = region_of[&(group.epoch, group.message)];
                     let offsets = group
                         .keys
                         .iter()
@@ -1920,7 +1898,7 @@ fn plan_coverage(
     }
     // Stable, so signatures within a group keep the order their slots were taken in.
     let mut raw_walk: Vec<usize> = (0..raw_xmss.len()).collect();
-    raw_walk.sort_by_key(|&i| region_of[&raw_xmss[i].1]);
+    raw_walk.sort_by_key(|&i| region_of[&(raw_xmss[i].1, raw_xmss[i].2)]);
     let cover = Coverage {
         xmss_groups,
         n_declared,
@@ -2020,8 +1998,8 @@ pub(crate) struct DaInput<'a> {
 /// Prove existence of signatures and valid encoding of PQ, potentially using recursive children.
 ///
 /// - `children`: child proofs; at most [`MAX_RECURSIONS`].
-/// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; one message per
-///   epoch across the whole result, at most [`MAX_EPOCHS`] epochs.
+/// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; at most
+///   [`MAX_EPOCHS`] distinct `(epoch, message)` pairs across the whole result.
 /// - `raw_sphincs`: list of `(public_key, message, signature)`, any order.
 /// - `blobs`: concatenated blobs, each containing [`BLOB_SYMBOLS`] little-endian `u64` symbols;
 ///   at most [`DA_MAX_ROWS`] blobs.
@@ -2116,13 +2094,11 @@ pub(crate) fn aggregate_tampered(
     }
 
     let guest = unified_guest();
-    // Sorted by `(epoch, key)` to group them; `Coverage::raw_walk` then puts the
-    // groups in the guest's order. Dedup is on the whole triple, so one
-    // `(epoch, key)` under two messages reaches `plan_coverage`, whose message
-    // binding rejects it.
+    // Sorted by `(epoch, message, key)` to group them; `Coverage::raw_walk` then
+    // puts the groups in the guest's order.
     let mut raw_xmss = raw_xmss;
-    raw_xmss.sort_by(|(a, ae, _, _), (b, be, _, _)| (ae, a).cmp(&(be, b)));
-    raw_xmss.dedup_by(|(a, ae, am, _), (b, be, bm, _)| ae == be && a == b && am == bm);
+    raw_xmss.sort_by(|(a, ae, am, _), (b, be, bm, _)| (ae, am, a).cmp(&(be, bm, b)));
+    raw_xmss.dedup_by(|(a, ae, am, _), (b, be, bm, _)| (ae, am, a) == (be, bm, b));
     // On the whole (key, message) pair, so a signer may appear once per message.
     let mut raw_sphincs = raw_sphincs;
     raw_sphincs.sort_by_key(|(pk, message, _)| (*pk, *message));
@@ -2192,7 +2168,12 @@ pub(crate) fn aggregate_tampered(
         entry.extend([
             count(group.keys.len()),
             count(cover.xmss_dups[j].len()),
-            count(raw_xmss.iter().filter(|(_, e, _, _)| *e == group.epoch).count()),
+            count(
+                raw_xmss
+                    .iter()
+                    .filter(|(_, e, m, _)| (*e, *m) == (group.epoch, group.message))
+                    .count(),
+            ),
         ]);
         hints.push("group", entry);
     }
@@ -4573,21 +4554,31 @@ def main():
         right_raw.extend(at_epoch(&at_b, XMSS_EPOCH_B));
         let right = aggregate(&[], right_raw, vec![], &[], None, LOG_INV_RATE).expect("right");
         right.verify().expect("the two-epoch leaf verifies");
-        // A claim at epoch A under B's message conflicts with `left`'s group:
-        // within an aggregate the message is a function of the epoch.
-        let (pk, _, _, sig) = at_epoch(&at_a[3..], XMSS_EPOCH_A).remove(0);
+        // A second message at epoch A is its own group, beside `left`'s.
+        let (sk, pk) = xmss::key_gen_from_seed([42; 32], XMSS_EPOCH_A, XMSS_EPOCH_A).expect("keygen");
+        let sig = xmss::sign(&sk, &message_for(XMSS_EPOCH_B), XMSS_EPOCH_A).expect("sign");
+        let crossed = aggregate(
+            std::slice::from_ref(&left),
+            vec![(pk.clone(), XMSS_EPOCH_A, message_for(XMSS_EPOCH_B), sig)],
+            vec![],
+            &[],
+            None,
+            LOG_INV_RATE,
+        )
+        .expect("two messages at one epoch aggregate");
+        crossed.verify().expect("the two-message leaf verifies");
         assert_eq!(
-            aggregate(
-                std::slice::from_ref(&left),
-                vec![(pk, XMSS_EPOCH_A, message_for(XMSS_EPOCH_B), sig)],
-                vec![],
-                &[],
-                None,
-                LOG_INV_RATE
-            )
-            .err(),
-            Some(AggregationError::ConflictingMessages)
+            crossed
+                .xmss_signers
+                .iter()
+                .map(|group| (group.epoch, group.message, group.keys.len()))
+                .collect::<Vec<_>>(),
+            vec![
+                (XMSS_EPOCH_A, message(), 3),
+                (XMSS_EPOCH_A, message_for(XMSS_EPOCH_B), 1)
+            ]
         );
+        assert_eq!(crossed.xmss_signers[1].keys, vec![pk]);
         let node = aggregate(&[left, right], vec![], vec![], &[], None, LOG_INV_RATE).expect("node");
         node.verify().expect("the two-epoch node verifies");
         let messages: Vec<xmss::Message> = node.xmss_signers.iter().map(|group| group.message).collect();

@@ -1,8 +1,7 @@
 use leanvm::*;
 
-const EPOCH_0: xmss::Epoch = 7;
-const EPOCH_1: xmss::Epoch = 9;
-const EPOCH_2: xmss::Epoch = 11;
+const EPOCH_A: xmss::Epoch = 7;
+const EPOCH_B: xmss::Epoch = 11;
 const MSG_0: xmss::Message = [0; xmss::MESSAGE_LEN];
 const MSG_1: xmss::Message = [1; xmss::MESSAGE_LEN];
 const MSG_2: xmss::Message = [2; xmss::MESSAGE_LEN];
@@ -12,9 +11,10 @@ fn public_api_end_to_end() {
     setup_prover();
     let rng = &mut rand::rng();
 
-    // 1. Eight XMSS signatures: three at the first (epoch, message), four at the second, one at the third.
+    // 1. Eight XMSS signatures over three (epoch, message) groups, three at the first,
+    //    four at the second, one at the third. A group is the whole pair, so the first two share an epoch.
     let mut xmss_input = Vec::new();
-    for (epoch, message, count) in [(EPOCH_0, MSG_0, 3), (EPOCH_1, MSG_1, 4), (EPOCH_2, MSG_2, 1)] {
+    for (epoch, message, count) in [(EPOCH_A, MSG_0, 3), (EPOCH_A, MSG_1, 4), (EPOCH_B, MSG_2, 1)] {
         for _ in 0..count {
             let (secret_key, pub_key) = xmss::key_gen(rng, epoch, epoch).unwrap();
             let signature = xmss::sign(&secret_key, &message, epoch).unwrap();
@@ -31,7 +31,7 @@ fn public_api_end_to_end() {
         sphincs_input.push((pub_key, message, signature));
     }
 
-    // 3. Two leaves, then a root over both. The leaves carry different epochs and the root's groups are their union.
+    // 3. Two leaves, then a root over both. The leaves share the second group and the root's groups are their union.
     let blobs: Vec<_> = (0..lean_da::BLOB_SYMBOLS).map(|i| i as u64).collect();
     let (commitment, _) = lean_da::commit(&blobs);
     let left = aggregate(
@@ -74,9 +74,9 @@ fn public_api_end_to_end() {
         .iter()
         .map(|group| (group.epoch, group.message))
         .collect();
-    assert_eq!(pairs, vec![(EPOCH_0, MSG_0), (EPOCH_1, MSG_1), (EPOCH_2, MSG_2)]);
+    assert_eq!(pairs, vec![(EPOCH_A, MSG_0), (EPOCH_A, MSG_1), (EPOCH_B, MSG_2)]);
 
-    // 5. Removing some signatures from the aggregate: `declare` is what we keep. Here the first epoch group goes whole.
+    // 5. Removing some signatures from the aggregate: `declare` is what we keep. Here the first group goes whole.
     let mut groups = received.xmss_signers().to_vec();
     let mut sphincs_signers = received.sphincs_signers().to_vec();
     let dropped_group = groups.remove(0);
