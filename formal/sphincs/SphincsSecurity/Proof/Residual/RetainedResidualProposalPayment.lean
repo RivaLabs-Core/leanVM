@@ -121,7 +121,7 @@ theorem expected_proposalStep_mass_terminalPotential (total : Nat) (payoff : Lis
 theorem expected_proposalRun_creationCost_le_mass_terminalPotential (total : Nat)
     {Result : Type} (computation : OracleComp (OracleWorld + SigningSpec) Result)
     (state : ProposalState inputs) (hvalid : MonitoredValid inputs state.2) (hinputs : sourceInputs key computation ⊆ inputs)
-    (hbudget : budget ≤ 2 ^ 127) (hinv : ProposalInvariant key total state) :
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (hinv : ProposalInvariant key total state) :
     (∑' result, Pr[= result | proposalRun key inputs hencoding words publicReplies selections rows budget required (proposalStop stopAfter) computation state] *
       result.2.2.2.creationCost) ≤ state.2.2.creationCost +
       ∑' result, Pr[= result | proposalRun key inputs hencoding words publicReplies selections rows budget required (proposalStop stopAfter) computation state] *

@@ -89,7 +89,7 @@ private theorem update_log_of_active (input : (OracleWorld + SigningSpec).Domain
 theorem exceptionStep_unstopped (input : (OracleWorld + SigningSpec).Domain) (state : ExceptionState) (hvalid : Valid state.1)
     (hworld : ∀ world, input = .inl world → hashInputs (liftM (OracleWorld.query world)) ⊆ inputs)
     (hsign : ∀ message, input = .inr message → hashInputs (publicDigestLoop parameter root message digestAttemptLimit) ⊆ inputs)
-    (hcons : Consistent parameter root state.1) (halive : state.1.2.stopped = false) (hbudget : budget ≤ 2 ^ 127)
+    (hcons : Consistent parameter root state.1) (halive : state.1.2.stopped = false) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (result : AdversaryStep input × ExceptionState)
     (hresult : exceptionStep parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
       (proposalStop (fun _ _ _ _ => false)) input state result ≠ 0)
@@ -178,7 +178,7 @@ variable (hauxiliary : ∀ seed : inputs → HashOutput,
 include hauxiliary in
 theorem exceptionRun_unstopped (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : ExceptionState) (hvalid : Valid state.1)
     (hcovered : CoveredRun parameter root otsSecret inputs computation state.1) (hcons : Consistent parameter root state.1)
-    (halive : state.1.2.stopped = false) (hbudget : budget ≤ 2 ^ 127) (result : AdversaryTrace × ExceptionState)
+    (halive : state.1.2.stopped = false) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (result : AdversaryTrace × ExceptionState)
     (hresult : exceptionRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
       (proposalStop (fun _ _ _ _ => false)) computation state result ≠ 0)
     (hcost : state.1.2.spent + result.1.1.2.hashCalls ≤ budget) (hlog : state.1.2.log.length + result.1.1.1.2.length ≤ signatureLimit)
@@ -220,7 +220,7 @@ theorem exceptionRun_unstopped (computation : OracleComp (OracleWorld + SigningS
 
 theorem exceptionWorldRun_unstopped {Result : Type} (computation : OracleComp OracleWorld Result) (state : ExceptionState)
     (hvalid : Valid state.1) (hinputs : hashInputs computation ⊆ inputs) (hcons : Consistent parameter root state.1)
-    (halive : state.1.2.stopped = false) (hbudget : budget ≤ 2 ^ 127) (result : ((Result × SigningBoundaryTrace) × Trace) × ExceptionState)
+    (halive : state.1.2.stopped = false) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (result : ((Result × SigningBoundaryTrace) × Trace) × ExceptionState)
     (hresult : exceptionWorldRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
       (proposalStop (fun _ _ _ _ => false)) computation state result ≠ 0)
     (hcost : state.1.2.spent + result.1.1.2.hashCalls ≤ budget) (hlog : state.1.2.log.length ≤ signatureLimit)
@@ -265,7 +265,7 @@ theorem exceptionWorldRun_unstopped {Result : Type} (computation : OracleComp Or
 include hauxiliary in
 theorem exceptionCompletedRun_unstopped (adversary : Adversary) (state : ExceptionState) (hvalid : Valid state.1)
     (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) state.1) (hcons : Consistent parameter root state.1)
-    (halive : state.1.2.stopped = false) (hbudget : budget ≤ 2 ^ 127) (result : Completed × ExceptionState)
+    (halive : state.1.2.stopped = false) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (result : Completed × ExceptionState)
     (hresult : exceptionCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
       (proposalStop (fun _ _ _ _ => false)) adversary state result ≠ 0)
     (hcost : state.1.2.spent + completedWork result.1 ≤ budget) (hlog : state.1.2.log.length + result.1.1.1.1.2.length ≤ signatureLimit)

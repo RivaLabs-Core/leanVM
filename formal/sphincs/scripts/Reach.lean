@@ -2,7 +2,7 @@ import SphincsSecurity
 import Lean
 
 /-!
-Reachability audit. `lake env lean scripts/Reach.lean` writes `reach.txt`, one line per local declaration with its module, source line range and whether the proof terms of the public theorems reach it. Declarations that reachability cannot see but the elaborator needs (rfl simp lemmas, instances, names used only in simp lists) must be kept when pruning by hand.
+`lake env lean scripts/Reach.lean` writes `reach.txt`, listing each local declaration, its source range and whether the proofs listed below use it. Declarations needed only by the elaborator, such as instances and simp lemmas, may still need to be kept when pruning.
 -/
 
 open Lean Elab Command in

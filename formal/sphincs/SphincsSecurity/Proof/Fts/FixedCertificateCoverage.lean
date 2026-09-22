@@ -21,7 +21,7 @@ theorem uniformWordAverage_eq_independent {α : Type} [SampleableType α] [Finty
 
 theorem expected_fixedCertificateGame_count_le_message_excess (adversary : Adversary)
     (q : Nat) (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) (baseline : ENNReal) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) (baseline : ENNReal) :
     (∑' result, Pr[= result | fixedCertificateGame adversary q required stopAfter] *
       certificateBankCount result.1.2.2.2.bank) ≤
         baseline * (∑' result, Pr[= result | fixedCertificateGame adversary q required stopAfter] *

@@ -84,7 +84,7 @@ theorem messageDigestFreshRate_ge_budget (key : SecretKey) (message : Message) (
     ((cachedMessageEntryCount_le_enncard cache key.parameter key.root message).trans hcache) le_rfl) le_rfl) _) le_rfl
 
 theorem messageDigestFreshRate_ne_zero (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ q) :
+    (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ q) :
     messageDigestFreshRate key message cache ≠ 0 := by
   apply ne_zero_of_lt (lt_of_lt_of_le (pos_iff_ne_zero.mpr ?_) (messageDigestFreshRate_ge_budget key message cache q hcache))
   apply digestRaceSuccessRate_ne_zero_of_budget_lt
@@ -102,13 +102,13 @@ theorem messageDigestReuseWeight_le (key : SecretKey) (message : Message) (cache
   ENNReal.div_le_div_left (messageDigestFreshRate_ge_budget key message cache q hcache) _
 
 theorem messageDigestReuseWeight_ne_top (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ q) :
+    (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ q) :
     messageDigestReuseWeight key message cache ≠ ⊤ :=
   ne_top_of_le_ne_top (digestReuseWeight_ne_top q hq) (messageDigestReuseWeight_le key message cache q hcache)
 
 theorem exactDigestReuseWeight_le_fresh_mul_messageReuseWeight
     (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ q) :
+    (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ q) :
     exactDigestReuseWeight key message cache ≤ freshDigestSelectionProbability key message cache * messageDigestReuseWeight key message cache := by
   have hcancel : messageDigestFreshRate key message cache * messageDigestReuseWeight key message cache =
       ((2 ^ randomnessBits : Nat) : ENNReal)⁻¹ := by

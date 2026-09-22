@@ -1,4 +1,5 @@
 import SphincsSecurity.Proof.Base.Prelude
+import SphincsSecurity.Proof.Base.ZeroForgery
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphHonest
 import SphincsSecurity.Proof.Hypertree.CanonicalGraphSampling
 import SphincsSecurity.Proof.Ots.EncodingInputs
@@ -90,11 +91,15 @@ theorem evalDist_boundaryGameCore_canonicalGraph (inputs : Finset HashInput)
   exact (evalDist_boundaryGameCore_frontier inputs dummy adversary hinputs).trans
     (evalDist_frontier_eq_canonicalGraph inputs hgraph dummy adversary)
 
+noncomputable def zeroForgeryInputs (parameter : PublicParameter) : Finset HashInput :=
+  Finset.univ.biUnion fun root : Digest =>
+    hashInputs (liftM (verify ⟨root, parameter⟩ zeroForgery.message zeroForgery.signature : OracleComp HashSpec _))
+
 noncomputable def canonicalGraphGameInputs (adversary : Adversary) : Finset HashInput :=
   (hashInputs (boundaryGameCore adversary) ∪ Finset.univ.biUnion canonicalGraphInputs) ∪
-    Finset.univ.biUnion canonicalEncodingInputs
+    (Finset.univ.biUnion canonicalEncodingInputs ∪ Finset.univ.biUnion zeroForgeryInputs)
 
-attribute [local irreducible] canonicalGraphGameInputs
+attribute [local irreducible] canonicalGraphGameInputs zeroForgeryInputs hashInputs zeroForgery
 
 theorem canonicalGraphInputs_subset_gameInputs (adversary : Adversary) (parameter : PublicParameter) :
     canonicalGraphInputs parameter ⊆ canonicalGraphGameInputs adversary := by
@@ -117,8 +122,29 @@ theorem canonicalEncodingInputs_subset_gameInputs (adversary : Adversary) (param
   intro input hinput
   rw [canonicalGraphGameInputs, Finset.mem_union]
   apply Or.inr
+  rw [Finset.mem_union]
+  apply Or.inl
   rw [Finset.mem_biUnion]
   simp only [Finset.mem_univ, true_and]
   exact ⟨parameter, hinput⟩
+
+theorem zeroForgeryInputs_subset_gameInputs (adversary : Adversary) (parameter : PublicParameter) :
+    zeroForgeryInputs parameter ⊆ canonicalGraphGameInputs adversary := by
+  intro input hinput
+  rw [canonicalGraphGameInputs, Finset.mem_union]
+  apply Or.inr
+  rw [Finset.mem_union]
+  apply Or.inr
+  rw [Finset.mem_biUnion]
+  exact ⟨parameter, Finset.mem_univ _, hinput⟩
+
+theorem zeroForgery_verify_inputs_subset (adversary : Adversary) (publicKey : PublicKey) :
+    hashInputs (liftM (verify publicKey zeroForgery.message zeroForgery.signature : OracleComp HashSpec _)) ⊆
+      canonicalGraphGameInputs adversary := by
+  apply Finset.Subset.trans _ (zeroForgeryInputs_subset_gameInputs adversary publicKey.parameter)
+  intro input hinput
+  rw [zeroForgeryInputs]
+  rw [Finset.mem_biUnion]
+  exact ⟨publicKey.root, Finset.mem_univ _, hinput⟩
 
 end SphincsSecurity.Concrete

@@ -60,7 +60,7 @@ theorem certificateCacheLength_run_hit {α : Type} (key : SecretKey) (budget : N
       exact ih record.output _ (certificateCacheMonitorUpdate_hit key budget required stopAfter input state length record hhit) result hr
 
 theorem proposalCacheBound_of_no_cache_exception (key : SecretKey) (cache : QueryCache HashSpec)
-    (hfinite : Finite cache) (spent : Nat) (hspent : spent ≤ 2 ^ 127)
+    (hfinite : Finite cache) (spent : Nat) (hspent : spent ≤ (2 ^ 127 + 2 ^ 64))
     (hcache : QueryCache.enncard cache ≤ spent) (hclean : ¬ CertificateCacheExceptional key cache) :
     ProposalCacheBound key cache spent :=
   ⟨hspent, hcache, fun h => hclean (Or.inl h),

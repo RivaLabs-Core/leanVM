@@ -94,7 +94,7 @@ theorem uniformWordAverage_full_price_excess_le :
       norm_num [ENNReal.toReal_mul, ENNReal.toReal_inv, ENNReal.toReal_div, ENNReal.toReal_pow]
 
 theorem expected_fixedCertificateGame_full_unit_count_le (adversary : Adversary) (q : Nat)
-    (stopAfter : SecretKey → CertificateStopRule) (hbudget : q ≤ 2 ^ 127)
+    (stopAfter : SecretKey → CertificateStopRule) (hbudget : q ≤ (2 ^ 127 + 2 ^ 64))
     (hbound : HasHashQueryBound scheme adversary q) :
     (∑' result, Pr[= result | fixedCertificateGame adversary q Finset.univ stopAfter] *
       certificateBankCount result.1.2.2.2.bank) ≤
@@ -107,7 +107,7 @@ theorem expected_fixedCertificateGame_full_unit_count_le (adversary : Adversary)
   exact mul_le_mul' le_rfl uniformWordAverage_full_price_excess_le
 
 theorem expected_certificateCacheGame_full_unit_count_le (adversary : Adversary) (q : Nat)
-    (stopAfter : SecretKey → CertificateStopRule) (hq : q ≤ 2 ^ 127)
+    (stopAfter : SecretKey → CertificateStopRule) (hq : q ≤ (2 ^ 127 + 2 ^ 64))
     (hbound : HasHashQueryBound scheme adversary q) :
     let law := certificateCacheGame adversary q Finset.univ
       (fun key input state length record => proposalPrefixStop input state length record ||

@@ -47,7 +47,7 @@ theorem targetProposalPrefix_length_le (completed total : Nat) (consumed : List 
 
 theorem reuseRawEnvelope_le_terminalProposalPotential (key : SecretKey)
     (spent queries completed total : Nat) (state : CoverLogState) (required : Finset FtsTree)
-    (consumed : List Index) (hqueries : spent + queries ≤ 2 ^ 127)
+    (consumed : List Index) (hqueries : spent + queries ≤ (2 ^ 127 + 2 ^ 64))
     (hcompleted : completed ≤ signatureLimit)
     (hcache : ∀ index : Index, cachedIndexMultiplicity key.parameter state.1 index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal))
@@ -66,7 +66,7 @@ theorem reuseRawEnvelope_le_terminalProposalPotential (key : SecretKey)
 
 theorem targetCreationPrice_le_terminalProposalPotential (key : SecretKey)
     (spent queries completed total : Nat) (state : CoverLogState) (required : Finset FtsTree)
-    (consumed : List Index) (hqueries : spent + queries ≤ 2 ^ 127)
+    (consumed : List Index) (hqueries : spent + queries ≤ (2 ^ 127 + 2 ^ 64))
     (hcompleted : completed ≤ signatureLimit)
     (hcache : ∀ index : Index, cachedIndexMultiplicity key.parameter state.1 index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal))
@@ -85,7 +85,7 @@ theorem targetCreationPrice_le_terminalProposalPotential (key : SecretKey)
 
 theorem certificateMonitorCharge_le_terminalPrice (key : SecretKey) (budget total : Nat)
     (required : Finset FtsTree) (input : (OracleWorld + SigningSpec).Domain)
-    (state : CertificateMonitorState) (consumed : List Index) (hbudget : budget ≤ 2 ^ 127)
+    (state : CertificateMonitorState) (consumed : List Index) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcompleted : state.2.log.length ≤ signatureLimit)
     (hcounts : ∀ index : Index,
       (signingSlotsAtIndex (observedOptionalSigningViews

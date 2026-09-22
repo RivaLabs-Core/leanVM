@@ -61,7 +61,7 @@ theorem expected_initialMonitoredSource_full_unit_count_le
     (q : Nat) (stopAfter : CertificateStopRule) (stopped : Bool)
     (hparameter : key.parameter ∈ support sampleParameter) (hencoding : encoding ∈ referenceEncodingAuxiliarySample.support)
     (hroot : key.root = knownRoot (initialKnown (referenceFamilyWords encoding.selections dummy) exposed))
-    (hq : HasHashQueryBound scheme adversary q) (hbudget : q ≤ 2 ^ 127) :
+    (hq : HasHashQueryBound scheme adversary q) (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) :
     (∑' result, Pr[= result | initialMonitoredSource key adversary encoding dummy exposed high q Finset.univ (proposalStop stopAfter) stopped] *
       certificateBankCount result.2.2.bank) ≤
         (2 ^ 128 : ENNReal)⁻¹ *

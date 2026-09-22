@@ -32,7 +32,7 @@ theorem certificateCacheExceptionPotential_bad (key : SecretKey) (remaining : Na
       _ ≤ _ := ENNReal.div_le_div_right
         ((cachedIndexExcessExceptional_moment_ge key.parameter cache hindex).trans le_self_add) _
 
-theorem certificateCacheExceptionPotential_initial_le (key : SecretKey) (q : Nat) (hq : q ≤ 2 ^ 127)
+theorem certificateCacheExceptionPotential_initial_le (key : SecretKey) (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64))
     (cache : QueryCache HashSpec)
     (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none) :
     certificateCacheExceptionPotential key q cache ≤ (q : ENNReal) / 2 ^ 223 + (q : ENNReal) / 2 ^ 170 := by

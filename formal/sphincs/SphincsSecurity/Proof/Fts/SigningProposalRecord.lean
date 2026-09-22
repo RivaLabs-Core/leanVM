@@ -108,7 +108,7 @@ theorem completedSigningRecord_index {ω : Type} [Monoid ω]
 theorem completedSigningRecord_index_le {ω : Type} [Monoid ω]
     (trace : (input : OracleWorld.Domain) → OracleWorld.Range input → ω)
     (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (spent : Nat) (hspent : spent ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ spent)
+    (spent : Nat) (hspent : spent ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ spent)
     (hclean : ¬ MessageDeficitExceptional key cache)
     (hindex : ∀ index, cachedIndexMultiplicity key.parameter cache index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal)) (index : Index) :
@@ -149,7 +149,7 @@ theorem signingBoundaryTrace_nonmessage (parameter : PublicParameter) (input : H
   simp only [signingBoundaryTrace, if_neg hinput]
 
 structure ProposalCacheBound (key : SecretKey) (cache : QueryCache HashSpec) (spent : Nat) : Prop where
-  spent_le : spent ≤ 2 ^ 127
+  spent_le : spent ≤ (2 ^ 127 + 2 ^ 64)
   cache_le : QueryCache.enncard cache ≤ spent
   no_deficit : ¬ MessageDeficitExceptional key cache
   index_le : ∀ index, cachedIndexMultiplicity key.parameter cache index ≤

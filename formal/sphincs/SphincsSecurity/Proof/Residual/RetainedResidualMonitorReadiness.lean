@@ -115,7 +115,7 @@ theorem monitoredRun_query_active {Result : Type} (input : (OracleWorld + Signin
     (hresult : monitoredRun key inputs hencoding words publicReplies selections rows budget required stopAfter
       (OracleSpec.query input >>= next) state result ≠ 0)
     (hcost : result.2.1.memory.external.hashCalls ≤ budget) (hlog : result.2.1.memory.log.length ≤ signatureLimit)
-    (hbudget : budget ≤ 2 ^ 127) (halive : state.2.stopped = false)
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (halive : state.2.stopped = false)
     (hclean : ¬ CertificateCacheExceptional key state.1.memory.external.cache) :
     CertificateMonitorActive key budget input (monitorView state) := by
   obtain ⟨hvalidStep, hmacro⟩ := monitoredRun_query_conditions key inputs hencoding words publicReplies selections rows budget required stopAfter

@@ -76,7 +76,7 @@ theorem certificateMonitorUpdate_ready (key : SecretKey) (budget : Nat)
     (input : (OracleWorld + SigningSpec).Domain) (state : CertificateMonitorState)
     (length : Nat) (record : ProposalExecutionRecord input)
     (hr : record ∈ (originalProposalRecord key input state.1).support)
-    (hactive : CertificateMonitorActive key budget input state) (hbudget : budget ≤ 2 ^ 127)
+    (hactive : CertificateMonitorActive key budget input state) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcost : state.2.spent + record.trace.hashCalls ≤ budget)
     (hclean : ¬ CertificateCacheExceptional key record.cache) :
     CertificateMonitorReady key budget

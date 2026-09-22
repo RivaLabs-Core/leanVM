@@ -244,7 +244,7 @@ theorem certificateContextGame_exception_le_cache_add_prefix (adversary : Advers
   probEvent_or_le (certificateContextGame adversary budget required stopAfter stopped) _ _
 
 theorem originalCertificateSource_full_le_original_message_add_prefix (adversary : Adversary) (q : Nat)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) :
     Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
       ((2 ^ 128 : ENNReal)⁻¹ + certificateCacheExceptionRate) * originalCertificateMessageCost adversary +
       (q : ENNReal) * fullCertificateExcessRate +
@@ -269,7 +269,7 @@ theorem original_primitive_add_full_certificate_le_small_budget_add_prefix (dumm
       primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
       Pr[fun result => ProposalPrefixExceptional result.2.2.2.2.1.proposals result.2.2.2.2.1.log.length |
         certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] := by
-  have hbudget : q ≤ 2 ^ 127 := hsmall.trans budgetSplit_le
+  have hbudget : q ≤ (2 ^ 127 + 2 ^ 64) := (hsmall.trans budgetSplit_le).trans (Nat.le_add_right _ _)
   have hcard : Fintype.card Digest = 2 ^ 128 := by simp [digestBits]
   have hp := referenceGraphContextGame_primitive_small_budget dummy adversary q hbound hsmall
   rw [hcard] at hp

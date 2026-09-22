@@ -74,7 +74,7 @@ theorem initialCertificateMonitor_bank_complete (key : SecretKey) (spent : Nat)
   contradiction
 
 theorem certificateCacheProposal_rest_clean_certificate (adversary : Adversary) (publicKey : PublicKey)
-    (key : SecretKey) (budget q spent : Nat) (required : Finset FtsTree) (hbudget : budget ≤ 2 ^ 127)
+    (key : SecretKey) (budget q spent : Nat) (required : Finset FtsTree) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (cache : QueryCache HashSpec)
     (hbound : HashQueryBound (simulateQ (expandedAdversaryImpl key)
       (retainedGameRestComputation adversary publicKey)) cache q) (hroom : spent + q ≤ budget)

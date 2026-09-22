@@ -14,7 +14,7 @@ theorem security127_of_small_budget (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ bud
   have hslots : (∑ slot ∈ Finset.range q, Pr[fun hit => hit = true | FtsGuessHash.forcedNearGame fixedReferenceDummy adversary slot]) ≤
       (q : ENNReal) * nearCertificateBound q := by
     refine (Finset.sum_le_card_nsmul _ _ _ fun slot _ =>
-      FtsGuessHash.forcedNearGame_le fixedReferenceDummy adversary q hbound hbudget slot).trans ?_
+      FtsGuessHash.forcedNearGame_le fixedReferenceDummy adversary q hbound (hbudget.trans (Nat.le_add_right _ _)) slot).trans ?_
     rw [Finset.card_range, nsmul_eq_mul]
   refine (forgeAdvantage_le_forcedNear_small_budget fixedReferenceDummy (fun _ _ _ => fixedReferenceDummyWord_valid) adversary q hbound
     hsmall).trans ?_

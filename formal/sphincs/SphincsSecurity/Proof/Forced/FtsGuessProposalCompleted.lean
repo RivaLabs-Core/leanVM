@@ -82,7 +82,7 @@ theorem monitoredWorldStep_invariant (total : Nat) (word : List Index) (input : 
 
 theorem expectedWorldPayment_charge_le_mass_terminalPotential (total : Nat) (word : List Index) {Result : Type}
     (computation : OracleComp OracleWorld Result) (state : MonitoredState) (hvalid : Valid state)
-    (hinputs : hashInputs computation ⊆ inputs) (hbudget : budget ≤ 2 ^ 127)
+    (hinputs : hashInputs computation ⊆ inputs) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hinv : ProposalInvariant parameter root total (word, state)) :
     expectedWorldPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required (proposalStop stopAfter)
       (certificateMonitorCharge (monitorKey parameter root) budget required) computation state ≤
@@ -191,7 +191,7 @@ theorem expected_proposalCompletedRun_creationCost (adversary : Adversary) (stat
 include hauxiliary in
 theorem expected_proposalCompletedRun_creationCost_le_mass_terminalPotential (total : Nat) (adversary : Adversary) (state : ProposalState)
     (hvalid : Valid state.2) (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) state.2)
-    (hbudget : budget ≤ 2 ^ 127) (hinv : ProposalInvariant parameter root total state) :
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (hinv : ProposalInvariant parameter root total state) :
     (∑' result, Pr[= result | proposalCompletedRun parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required
         (proposalStop stopAfter) adversary state] * result.2.2.2.creationCost) ≤
       state.2.2.creationCost +

@@ -13,7 +13,7 @@ set_option backward.isDefEq.respectTransparency false
 
 theorem initialCertificateMonitor_ready (key : SecretKey) (budget spent : Nat)
     (cache : QueryCache HashSpec) (stopped : Bool)
-    (hbudget : budget ≤ 2 ^ 127) (hspent : spent ≤ budget)
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (hspent : spent ≤ budget)
     (hcache : QueryCache.enncard cache ≤ spent)
     (hnone : ∀ input, FtsProbeSimulation.MessageHashInput key.parameter input → cache input = none) :
     CertificateMonitorReady key budget (cache, initialCertificateMonitor spent stopped) := by
@@ -30,7 +30,7 @@ theorem initialCertificateMonitor_ready (key : SecretKey) (budget spent : Nat)
   simp only [initialCertificateMonitor, List.not_mem_nil] at hentry
 
 theorem certificateCacheProposal_withSigningLog_clean {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (hbudget : budget ≤ 2 ^ 127)
+    (required : Finset FtsTree) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (computation : OracleComp (OracleWorld + SigningSpec) α) (q : Nat)
     (state : List Index × CertificateCacheMonitorState)
     (hbound : HashQueryBound (simulateQ (expandedAdversaryImpl key) computation) state.2.1 q)
@@ -49,7 +49,7 @@ theorem certificateCacheProposal_withSigningLog_clean {α : Type} (key : SecretK
     state.2 hbound hready halive hroom _ hm hvalid hhit hprefix
 
 theorem certificateCacheProposal_rest_clean (adversary : Adversary) (publicKey : PublicKey)
-    (key : SecretKey) (budget q : Nat) (required : Finset FtsTree) (hbudget : budget ≤ 2 ^ 127)
+    (key : SecretKey) (budget q : Nat) (required : Finset FtsTree) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (state : List Index × CertificateCacheMonitorState)
     (hbound : HashQueryBound (simulateQ (expandedAdversaryImpl key)
       (retainedGameRestComputation adversary publicKey)) state.2.1 q)

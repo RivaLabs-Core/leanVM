@@ -25,7 +25,7 @@ noncomputable def nearUniformDigestReuseWeight : ENNReal :=
   (1025 / 1024 : ENNReal) * ((2 ^ 118 : Nat) : ENNReal)⁻¹
 
 theorem exactDigestReuseWeight_le_near_uniform_of_clean_cache (key : SecretKey) (cache : QueryCache HashSpec)
-    (cap : Nat) (hcap : cap ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ cap)
+    (cap : Nat) (hcap : cap ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ cap)
     (hclean : ¬ MessageDeficitExceptional key cache) (message : Message) :
     exactDigestReuseWeight key message cache ≤ nearUniformDigestReuseWeight :=
   exactDigestReuseWeight_le_near_uniform_of_deficit key message cache cap hcap hcache
@@ -67,13 +67,13 @@ theorem targetProposalIndexRate_le_one : targetProposalIndexRate ≤ 1 := by
   norm_num [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, Index, totalHeight]
 
 theorem targetProposalRate_of_cache_bound (cache : ENNReal) (spent queries signatures bound : Nat)
-    (hqueries : spent + queries ≤ 2 ^ 127) (hsignatures : signatures ≤ signatureLimit) (hbound : bound ≤ 14)
+    (hqueries : spent + queries ≤ (2 ^ 127 + 2 ^ 64)) (hsignatures : signatures ≤ signatureLimit) (hbound : bound ≤ 14)
     (hcache : cache ≤ (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal)) :
     (Fintype.card Index : ENNReal)⁻¹ + nearUniformDigestReuseWeight *
       (cache + (queries : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + bound + signatures) ≤
         targetProposalIndexRate := by
   have hsize : cache + (queries : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + bound + signatures ≤
-      ((2 ^ 127 : Nat) : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ +
+      (((2 ^ 127 + 2 ^ 64) : Nat) : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ +
         ((2 ^ 80 : Nat) : ENNReal) + 14 + signatureLimit := by
     calc
       _ ≤ (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal) +
@@ -96,7 +96,7 @@ theorem targetProposalRate_of_cache_bound (cache : ENNReal) (spent queries signa
 
 theorem reuseRawEnvelope_le_proposalIndexAverage (key : SecretKey)
     (spent queries signatures bound : Nat) (state : CoverLogState) (remaining : Finset FtsTree)
-    (hqueries : spent + queries ≤ 2 ^ 127) (hsignatures : signatures ≤ signatureLimit)
+    (hqueries : spent + queries ≤ (2 ^ 127 + 2 ^ 64)) (hsignatures : signatures ≤ signatureLimit)
     (hdegree : remaining.card ≤ bound) (hbound : bound ≤ 14)
     (hcache : ∀ index : Index, cachedIndexMultiplicity key.parameter state.1 index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal)) :
@@ -122,7 +122,7 @@ theorem proposalIndexAverage_le_uniformAverage (signatures proposals degree : Na
 
 theorem reuseRawEnvelope_le_uniformProposalAverage (key : SecretKey)
     (spent queries signatures bound proposals : Nat) (state : CoverLogState) (remaining : Finset FtsTree)
-    (consumed : Index → Nat) (hqueries : spent + queries ≤ 2 ^ 127) (hsignatures : signatures ≤ signatureLimit)
+    (consumed : Index → Nat) (hqueries : spent + queries ≤ (2 ^ 127 + 2 ^ 64)) (hsignatures : signatures ≤ signatureLimit)
     (hdegree : remaining.card ≤ bound) (hbound : bound ≤ 14)
     (hcache : ∀ index : Index, cachedIndexMultiplicity key.parameter state.1 index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal))

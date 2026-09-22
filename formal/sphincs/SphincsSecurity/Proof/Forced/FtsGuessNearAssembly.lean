@@ -3,7 +3,7 @@ import SphincsSecurity.Proof.Residual.RetainedResidualTerminalCoverage
 import SphincsSecurity.Proof.Fts.NearCertificateBound
 import SphincsSecurity.Proof.Forced.Security127SmallBudgetArithmetic
 /-!
-The forced FTS near-certificate game is bounded slot by slot. One forced run is monitored by the certificate monitor of the retained residual chain, with the keygen debit, the fixed-length proposal word and the prefix stop rule, exactly as the original certificate games were. A near certificate on an unstopped monitor is a banked certificate, so its probability is at most the expected creation cost, which the proposal-word martingale bounds by the budget times the average terminal certificate price. A stopped monitor is a cache exception or a prefix exception, each of which is rare. The bound `nearCertificateBound` sums the two over the fourteen omitted trees.
+The forced FTS near-certificate game is bounded slot by slot. The retained residual certificate monitor follows a forced run using the keygen cost, the fixed-length proposal word and the prefix stop rule. A near certificate on an unstopped monitor is a banked certificate, so its probability is at most the expected creation cost, which the proposal-word martingale bounds by the budget times the average terminal certificate price. A stopped monitor is a cache exception or a prefix exception, each of which is rare. The bound `nearCertificateBound` sums the two over the fourteen omitted trees.
 -/
 
 namespace SphincsSecurity.Concrete.FtsGuessHash
@@ -58,7 +58,7 @@ theorem nearStart_valid (spent : Nat) (stopped : Bool) : Valid (nearStart spent 
 
 include hauxiliary in
 theorem near_alive_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (spent : Nat) (stopped : Bool) (total : Nat)
-    (hbudget : budget ≤ 2 ^ 127) (hpool : stopped = false → fixedProposalLength ≤ total)
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (hpool : stopped = false → fixedProposalLength ≤ total)
     (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart spent stopped))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
@@ -153,7 +153,7 @@ theorem near_alive_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree)
     _ = _ := by rw [hmartingale]
 
 include hauxiliary in
-theorem near_stopped_le (budget : Nat) (adversary : Adversary) (required : Finset FtsTree) (total : Nat) (hbudget : budget ≤ 2 ^ 127)
+theorem near_stopped_le (budget : Nat) (adversary : Adversary) (required : Finset FtsTree) (total : Nat) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart keygenHashCost (decide (total < fixedProposalLength))))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
@@ -251,7 +251,7 @@ theorem near_stopped_le (budget : Nat) (adversary : Adversary) (required : Finse
     exact proposalPrefixWeight_initial_le
 
 include hauxiliary in
-theorem near_omitting_total_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (total : Nat) (hbudget : budget ≤ 2 ^ 127)
+theorem near_omitting_total_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (total : Nat) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcovered : CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩) (nearStart keygenHashCost (decide (total < fixedProposalLength))))
     (hwork : ∀ result : Completed × CachedState,
       nearLaw parameter root otsSecret labels inputs hencoding selections rows dummy slot adversary result ≠ 0 →
@@ -283,7 +283,7 @@ theorem near_omitting_total_le (budget : Nat) (adversary : Adversary) (omitted :
       (Finset.univ.erase omitted) total hbudget hcovered hwork
 
 include hauxiliary in
-theorem near_omitting_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (hbudget : budget ≤ 2 ^ 127)
+theorem near_omitting_le (budget : Nat) (adversary : Adversary) (omitted : FtsTree) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcovered : ∀ monitor, CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩)
       ((∅, initialState PUnit.unit), monitor))
     (hwork : ∀ result : Completed × CachedState,
@@ -302,7 +302,7 @@ theorem near_omitting_le (budget : Nat) (adversary : Adversary) (omitted : FtsTr
   exact h.trans (add_le_add (mul_le_mul' le_rfl (uniformWordAverage_nearPrice _ hcard)) le_rfl)
 
 include hauxiliary in
-theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget : budget ≤ 2 ^ 127)
+theorem nearLaw_certificate_le (budget : Nat) (adversary : Adversary) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hcovered : ∀ monitor, CoveredRun parameter root otsSecret inputs (adversary.main ⟨root, parameter⟩)
       ((∅, initialState PUnit.unit), monitor))
     (hwork : ∀ result : Completed × CachedState,
@@ -340,7 +340,7 @@ set_option backward.isDefEq.respectTransparency false
 attribute [local irreducible] canonicalEncodingInputs canonicalGraphInputs canonicalGraphGameInputs instFintypePosition
 
 theorem cachedNearGame_le (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hbudget : q ≤ 2 ^ 127) (slot : Nat) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (slot : Nat) :
     Pr[fun hit => hit = true | cachedNearGame dummy adversary slot] ≤ nearCertificateBound q := by
   unfold cachedNearGame
   refine probEvent_bind_le_of_forall_le fun parameter _ => ?_
@@ -378,7 +378,7 @@ theorem cachedNearGame_le (dummy : OtsReferenceWords) (adversary : Adversary) (q
   simpa only [Function.comp_def, decide_eq_true_eq] using h
 
 theorem forcedNearGame_le (dummy : OtsReferenceWords) (adversary : Adversary) (q : Nat) (hbound : HasHashQueryBound scheme adversary q)
-    (hbudget : q ≤ 2 ^ 127) (slot : Nat) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (slot : Nat) :
     Pr[fun hit => hit = true | forcedNearGame dummy adversary slot] ≤ nearCertificateBound q := by
   rw [forcedNearGame_cached]
   exact cachedNearGame_le dummy adversary q hbound hbudget slot

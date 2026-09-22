@@ -125,7 +125,7 @@ theorem expected_certificateProposalImpl_mass_terminalPotential (key : SecretKey
 theorem expected_certificateProposal_creationCost_le_mass_terminalPotential {α : Type}
     (key : SecretKey) (budget total : Nat) (required : Finset FtsTree) (stopAfter : CertificateStopRule)
     (computation : OracleComp (OracleWorld + SigningSpec) α) (state : List Index × CertificateMonitorState)
-    (hbudget : budget ≤ 2 ^ 127) (hinv : CertificateProposalInvariant key total state) :
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) (hinv : CertificateProposalInvariant key total state) :
     (∑' result, Pr[= result | (simulateQ (certificateProposalImpl key budget required
       (fun input state length record => proposalPrefixStop input state length record || stopAfter input state length record))
       computation).run state] * result.2.2.2.creationCost) ≤
@@ -189,7 +189,7 @@ theorem expected_certificateTerminalGame_weight_payoff (adversary : Adversary) (
 
 theorem expected_certificateGame_creationCost_le_terminalPotential (adversary : Adversary)
     (budget total : Nat) (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule)
-    (hbudget : budget ≤ 2 ^ 127) :
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) :
     (∑' result, Pr[= result | certificateGame adversary budget required
       (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
       (decide (total < fixedProposalLength))] * result.2.2.2.creationCost) ≤
@@ -210,7 +210,7 @@ theorem expected_certificateGame_creationCost_le_terminalPotential (adversary : 
 
 theorem expected_certificateTerminalGame_count_le_mass_price (adversary : Adversary)
     (budget total : Nat) (required : Finset FtsTree) (stopAfter : SecretKey → CertificateStopRule)
-    (hbudget : budget ≤ 2 ^ 127) :
+    (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64)) :
     (∑' result, Pr[= result | certificateTerminalGame adversary budget required
       (fun key input state length record => proposalPrefixStop input state length record || stopAfter key input state length record)
       (decide (total < fixedProposalLength)) total] * certificateBankCount result.1.2.2.2.bank) ≤

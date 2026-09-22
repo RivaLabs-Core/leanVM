@@ -74,7 +74,7 @@ def OriginalFullCertificate (result : OriginalCertificateResult) : Prop :=
     ∃ input, TargetCertificateAt result.1 Finset.univ (result.2.2, result.2.1.1.2) input
 
 theorem certificateContextGame_full_count (adversary : Adversary) (q : Nat)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) (result : CertificateContextResult)
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) (result : CertificateContextResult)
     (hr : result ∈ (certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false).support)
     (hfull : OriginalFullCertificate result.original) (hclean : ¬CertificateGameExceptional result.2) :
     1 ≤ certificateBankCount result.2.2.2.2.1.bank := by
@@ -124,7 +124,7 @@ private theorem probEvent_probCompLift {Result : Type} (computation : ProbComp R
   rfl
 
 theorem originalCertificateSource_full_le_count_add_exception (adversary : Adversary) (q : Nat)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) :
     Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
       (∑' result, Pr[= result | certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] *
         certificateBankCount result.2.2.2.2.1.bank) +
@@ -150,7 +150,7 @@ theorem originalCertificateSource_full_le_count_add_exception (adversary : Adver
   exact certificateContextGame_full_count adversary q hbudget hbound result (by simpa only [law, SPMF.support_eq_support, SPMF.support_liftM] using hr) h.1 h.2
 
 theorem originalCertificateSource_full_le_message_add_exception (adversary : Adversary) (q : Nat)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) :
     Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
       (2 ^ 128 : ENNReal)⁻¹ *
         (∑' result, Pr[= result | certificateContextGame adversary q Finset.univ (fun _ => proposalPrefixStop) false] *
@@ -197,7 +197,7 @@ theorem certificateContextGame_messageCalls_le_original (adversary : Adversary) 
               (retainedGameRestComputation adversary generated.1.1)) generated.2)
 
 theorem originalCertificateSource_full_le_original_message_add_exception (adversary : Adversary) (q : Nat)
-    (hbudget : q ≤ 2 ^ 127) (hbound : HasHashQueryBound scheme adversary q) :
+    (hbudget : q ≤ (2 ^ 127 + 2 ^ 64)) (hbound : HasHashQueryBound scheme adversary q) :
     Pr[OriginalFullCertificate | originalCertificateSource adversary] ≤
       (2 ^ 128 : ENNReal)⁻¹ * originalCertificateMessageCost adversary + (q : ENNReal) * fullCertificateExcessRate +
       Pr[fun result => CertificateGameExceptional result.2 |

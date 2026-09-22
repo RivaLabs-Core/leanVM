@@ -1,10 +1,11 @@
 import SphincsSecurity.Scheme
 import VCVio.OracleComp.QueryTracking.WriterCost
+import SphincsSecurity.Proof.Base.QueryCap
 
 /-!
-# SPHINCS+ security statement
+# SPHINCS security statement
 
-Strong unforgeability under chosen-message attacks (SUF-CMA) in the classical random-oracle model, with a 127-bit security target for the scheme in `Scheme.lean`.
+Strong unforgeability under chosen-message attacks (SUF-CMA) in the classical random-oracle model for the scheme in `Scheme.lean`.
 -/
 
 open OracleComp OracleSpec ENNReal
@@ -19,18 +20,18 @@ structure Forgery where
   signature : Signature
 deriving DecidableEq
 
-/-- A signing request is a message alone, the scheme being stateless, and the answer is a signature or `none` if the signer fails. -/
+/-- A signing request returns a signature or `none`. -/
 abbrev SigningSpec := Message →ₒ Option Signature
 
 namespace SigningTranscript
 
-/-- A signing transcript is valid exactly when the key signed at most `q_s` messages. Repeated messages receive the same signature or failure. -/
+/-- At most `signatureLimit` signing requests, including repeats and failures. -/
 def Valid (log : QueryLog SigningSpec) : Prop := log.length ≤ signatureLimit
 
 instance (log : QueryLog SigningSpec) : Decidable (Valid log) :=
   inferInstanceAs (Decidable (log.length ≤ signatureLimit))
 
-/-- The signer returned the claimed forgery exactly when the transcript contains the same message answered by the same signature. A different signature for a signed message is therefore a valid strong forgery. -/
+/-- The signer returned this exact message-signature pair. -/
 def Contains (log : QueryLog SigningSpec) (forgery : Forgery) : Prop :=
   ∃ entry ∈ log, entry.1 = forgery.message ∧ entry.2 = some forgery.signature
 
@@ -42,7 +43,7 @@ end SigningTranscript
 
 namespace Security
 
-/-- A probabilistic adaptive adversary with private randomness and access to hashing and signing. -/
+/-- A terminating adaptive adversary with private randomness, hashing and signing. -/
 structure Adversary where
   main : PublicKey → OracleComp (OracleWorld + SigningSpec) Forgery
 
@@ -60,24 +61,64 @@ noncomputable def gameCore (adversary : Adversary) : OracleComp OracleWorld Bool
   let verified ← liftM (Concrete.verify pk forgery.message forgery.signature : OracleComp HashSpec Bool)
   return decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified
 
-/-- Forward private sampling for free; answer hash queries consistently and count every call, including cache hits. -/
-noncomputable def countedOracle :=
-  (unifFwdImpl HashSpec + (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp))).withAddCost
-    (fun | .inl _ => (0 : Nat) | .inr _ => 1)
+/-- A hash query made by the adversary. -/
+def IsAdversaryHash : (OracleWorld + SigningSpec).Domain → Prop
+  | .inl (.inr _) => True
+  | _ => False
 
-/-- Run the game from an empty random-oracle cache, recording success and the total number of hash calls. -/
-noncomputable def experiment (adversary : Adversary) : ProbComp (Bool × Nat) :=
-  (simulateQ countedOracle (gameCore adversary)).run.run' ∅
+instance : DecidablePred IsAdversaryHash := fun input => by
+  cases input with
+  | inl input => cases input <;> simp only [IsAdversaryHash] <;> infer_instance
+  | inr _ => simp only [IsAdversaryHash]; infer_instance
+
+def IsHash : OracleWorld.Domain → Prop
+  | .inl _ => False
+  | .inr _ => True
+
+instance : DecidablePred IsHash := fun input => by
+  cases input <;> simp only [IsHash] <;> infer_instance
+
+/-- Hash calls by the adversary and final verifier, including cache hits. -/
+structure HashQueries where
+  adversary : Nat
+  verification : Nat
+deriving DecidableEq
+
+def HashQueries.total (queries : HashQueries) : Nat :=
+  queries.adversary + queries.verification
+
+noncomputable def countAdversary {α : Type} (sign : QueryImpl SigningSpec (OracleComp OracleWorld))
+    (computation : OracleComp (OracleWorld + SigningSpec) α) :
+    OracleComp OracleWorld ((α × Nat) × QueryLog SigningSpec) :=
+  (simulateQ (QueryImpl.ofLift OracleWorld (WriterT (QueryLog SigningSpec) (OracleComp OracleWorld)) +
+    QueryImpl.withLogging sign) (QueryCap.counted IsAdversaryHash computation)).run
+
+/-- Record the signing transcript and hash-query counts. -/
+noncomputable def countedGameCore (adversary : Adversary) : OracleComp OracleWorld (Bool × HashQueries) := do
+  let seed ← liftM sampleMasterSeed
+  let (pk, sk) ← liftM (Seeded.keygenFromSeed seed)
+  let ((forgery, queries), log) ←
+    countAdversary (fun request => liftM (Seeded.sign sk request : OracleComp HashSpec _)) (adversary.main pk)
+  let (verified, verification) ← QueryCap.counted IsHash
+    (liftM (Concrete.verify pk forgery.message forgery.signature : OracleComp HashSpec Bool))
+  return (decide (SigningTranscript.Valid log ∧ ¬SigningTranscript.Contains log forgery) && verified,
+    ⟨queries, verification⟩)
+
+/-- Run the SUF game against a shared random oracle. -/
+noncomputable def experiment (adversary : Adversary) : ProbComp (Bool × HashQueries) :=
+  (simulateQ (unifFwdImpl HashSpec +
+    (randomOracle : QueryImpl HashSpec (StateT (QueryCache HashSpec) ProbComp)))
+    (countedGameCore adversary)).run' ∅
 
 /-- The probability of a successful forgery. -/
 noncomputable def forgeAdvantage (adversary : Adversary) : ℝ≥0∞ :=
   Pr[fun result => result.1 = true | experiment adversary]
 
-/-- Every execution uses at most `q` hash calls, including key generation, signing, and verification. -/
+/-- Worst-case hash-query bound over executions of the experiment. -/
 def HasHashQueryBound (adversary : Adversary) (q : Nat) : Prop :=
-  ∀ result ∈ support (experiment adversary), result.2 ≤ q
+  ∀ result ∈ support (experiment adversary), result.2.total ≤ q
 
-/-- Every adversary with nonzero query budget `q` wins with probability at most `q / 2^bits`. -/
+/-- SUF advantage at most `q / 2^bits` for every query budget `q ≥ 1`. -/
 def HasClassicalSecurityBits (bits : Nat) : Prop :=
   ∀ q, 1 ≤ q → ∀ adversary, HasHashQueryBound adversary q →
     forgeAdvantage adversary ≤ q / ((2 ^ bits : Nat) : ℝ≥0∞)

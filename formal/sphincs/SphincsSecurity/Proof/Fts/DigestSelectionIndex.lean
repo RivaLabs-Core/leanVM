@@ -156,7 +156,7 @@ theorem probOutput_completeSelectedLoopIndex_le (key : SecretKey) (message : Mes
     ((mul_le_mul' (cachedMessageEntryCountWhere_index_le key message cache index) le_rfl).trans_eq (mul_comm _ _))
 
 theorem probOutput_completeSelectedLoopIndex_le_proposalRate (key : SecretKey) (message : Message)
-    (cache : QueryCache HashSpec) (spent : Nat) (hspent : spent ≤ 2 ^ 127)
+    (cache : QueryCache HashSpec) (spent : Nat) (hspent : spent ≤ (2 ^ 127 + 2 ^ 64))
     (hcache : QueryCache.enncard cache ≤ spent) (hclean : ¬ MessageDeficitExceptional key cache)
     (hindex : ∀ index, cachedIndexMultiplicity key.parameter cache index ≤
       (spent : ENNReal) * ((2 ^ 36 : Nat) : ENNReal)⁻¹ + ((2 ^ 80 : Nat) : ENNReal)) (index : Index) :

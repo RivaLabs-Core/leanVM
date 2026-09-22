@@ -235,7 +235,7 @@ theorem certificateProposalImpl_invariant (key : SecretKey) (budget total : Nat)
 
 theorem certificateMonitorCharge_le_terminalPrice_of_invariant (key : SecretKey) (budget total : Nat)
     (required : Finset FtsTree) (input : (OracleWorld + SigningSpec).Domain)
-    (state : List Index × CertificateMonitorState) (hbudget : budget ≤ 2 ^ 127)
+    (state : List Index × CertificateMonitorState) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hinv : CertificateProposalInvariant key total state) :
     certificateMonitorCharge key budget required input state.2 ≤
       certificateMonitorMass key budget input state.2 *

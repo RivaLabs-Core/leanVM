@@ -9,7 +9,7 @@ noncomputable def normalizedMessageReuseWeight (key : SecretKey) (message : Mess
     (1 + cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) * messageDigestReuseWeight key message cache)
 
 theorem normalizedMessageReuseWeight_eq_inv (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ q) :
+    (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ q) :
     normalizedMessageReuseWeight key message cache =
       (cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) +
         messageDigestFreshRate key message cache * ((2 ^ randomnessBits : Nat) : ENNReal))⁻¹ := by
@@ -33,7 +33,7 @@ theorem normalizedMessageReuseWeight_eq_inv (key : SecretKey) (message : Message
     ENNReal.mul_inv_cancel hreuseZero hreuseTop, one_mul, hinv]
 
 theorem exactDigestReuseWeight_le_normalizedMessage (key : SecretKey) (message : Message) (cache : QueryCache HashSpec)
-    (q : Nat) (hq : q ≤ 2 ^ 127) (hcache : QueryCache.enncard cache ≤ q) :
+    (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) (hcache : QueryCache.enncard cache ≤ q) :
     exactDigestReuseWeight key message cache ≤ normalizedMessageReuseWeight key message cache := by
   have hcount : cachedMessageEntryCountWhere cache key.parameter key.root message (fun _ => True) ≠ ⊤ :=
     ne_top_of_le_ne_top (by finiteness)

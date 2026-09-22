@@ -1,5 +1,5 @@
 import VCVio.OracleComp.QueryTracking.WriterCost
-import SphincsSecurity.Proof.Base.Prelude
+import VCVio.OracleComp.QueryTracking.QueryBound
 namespace SphincsSecurity.QueryCap
 
 open _root_.OracleComp OracleSpec

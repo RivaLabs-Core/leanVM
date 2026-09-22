@@ -10,7 +10,7 @@ theorem fourth_le_fourthMomentBudget (q : Nat) (second fourth : ENNReal) :
     fourth ≤ fourthMomentBudget q second fourth := by
   exact ((le_self_add.trans le_self_add).trans le_self_add)
 
-theorem fourthMomentBudget_zero_le (q : Nat) (hq : q ≤ 2 ^ 127) :
+theorem fourthMomentBudget_zero_le (q : Nat) (hq : q ≤ (2 ^ 127 + 2 ^ 64)) :
     fourthMomentBudget q 0 0 / (2 : ENNReal) ^ 372 ≤ (q : ENNReal) / 2 ^ 223 := by
   have hchoose : 2 * q.choose 2 + q = q * q := by
     clear hq
@@ -22,9 +22,9 @@ theorem fourthMomentBudget_zero_le (q : Nat) (hq : q ≤ 2 ^ 127) :
         rw [hstep]
         nlinarith
   have hchooseReal : 2 * (q.choose 2 : ℝ) + q = (q : ℝ) * q := by exact_mod_cast hchoose
-  have hqReal : (q : ℝ) ≤ 2 ^ 127 := by exact_mod_cast hq
+  have hqReal : (q : ℝ) ≤ (2 ^ 127 + 2 ^ 64) := by exact_mod_cast hq
   have hqNonneg : (0 : ℝ) ≤ q := Nat.cast_nonneg q
-  have hproduct : (q : ℝ) * q ≤ q * 2 ^ 127 := mul_le_mul_of_nonneg_left hqReal hqNonneg
+  have hproduct : (q : ℝ) * q ≤ q * (2 ^ 127 + 2 ^ 64) := mul_le_mul_of_nonneg_left hqReal hqNonneg
   apply (ENNReal.toReal_le_toReal (by simp [fourthMomentBudget]; finiteness) (by finiteness)).mp
   simp only [fourthMomentBudget, mul_zero, add_zero, zero_add]
   rw [ENNReal.toReal_div, ENNReal.toReal_add (by finiteness) (by finiteness), ENNReal.toReal_div]

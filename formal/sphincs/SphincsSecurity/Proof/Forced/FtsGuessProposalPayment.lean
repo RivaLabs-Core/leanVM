@@ -199,7 +199,7 @@ theorem proposalRun_invariant (total : Nat) (computation : OracleComp (OracleWor
 include hauxiliary in
 theorem expectedProposalPayment_charge_le_mass_terminalPotential (total : Nat)
     (computation : OracleComp (OracleWorld + SigningSpec) Forgery) (state : ProposalState) (hvalid : Valid state.2)
-    (hcovered : CoveredRun parameter root otsSecret inputs computation state.2) (hbudget : budget ≤ 2 ^ 127)
+    (hcovered : CoveredRun parameter root otsSecret inputs computation state.2) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hinv : ProposalInvariant parameter root total state) :
     expectedProposalPayment parameter root otsSecret labels inputs hencoding selections rows dummy slot budget required (proposalStop stopAfter)
       (fun input current => certificateMonitorCharge (monitorKey parameter root) budget required input (monitorView current.2)) computation state ≤

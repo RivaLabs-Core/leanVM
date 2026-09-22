@@ -2,7 +2,7 @@ import VCVio.OracleComp.QueryTracking.LoggingOracle
 import VCVio.OracleComp.QueryTracking.RandomOracle.Simulation
 
 /-!
-# SPHINCS+ scheme
+# SPHINCS scheme
 
 Parameters, serialized hash inputs, key generation, signing, and verification for the instance defined in `doc/sphincs/main.tex`.
 -/
@@ -30,7 +30,7 @@ def maxLayerHeight : Nat := 12
 def ftsTreeHeight : Nat := 10
 /-- The `k` index groups a digest carries. The forest holds `k - 1` trees, the last group being pinned to zero. -/
 def ftsTrees : Nat := 15
-/-- Signatures allowed per key pair, `q_s`. -/
+/-- Signing requests allowed per key pair, `q_s`. -/
 def signatureLimit : Nat := 2 ^ 24
 /-- Digest attempts per signature, `A_max`. -/
 def digestAttemptLimit : Nat := 2 ^ 32
@@ -226,12 +226,12 @@ end TargetSum
 
 /-! ## The algorithms
 
-`Concrete` contains the hash and verification routines; `Seeded` contains key generation and signing. Hashing routines work in any monad with access to `HashSpec`. The experiment samples the master seed and charges every hash call, including repeated calls. Out-of-range branches only make the definitions total; honest algorithms never reach them. -/
+`Concrete` contains the hash and verification routines; `Seeded` contains key generation and signing. Hashing routines work in any monad with access to `HashSpec`. Out-of-range branches only make the definitions total; honest algorithms never reach them. -/
 
 /-- A hash query takes an arbitrary byte string and returns 32 bytes. -/
 abbrev HashSpec := HashInput →ₒ HashOutput
 
-/-- Private uniform sampling and the shared hash oracle. Only hash calls count toward the query budget. -/
+/-- Private uniform sampling and the shared hash oracle. -/
 abbrev OracleWorld := unifSpec + HashSpec
 
 namespace Concrete

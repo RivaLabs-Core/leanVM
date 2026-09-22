@@ -13,11 +13,11 @@ theorem sphincs_has_127_bits_of_classical_security : SphincsSecurityStatement :=
 theorem sphincs_is_correct : SphincsCorrectnessStatement :=
   Completeness.correct
 
-/-- One SPHINCS key signs every message successfully except with probability at most `2⁻²⁵⁶`. -/
+/-- The sum of honest-run failure probabilities over all messages is at most `2⁻²⁵⁶`. -/
 theorem sphincs_is_complete : SphincsCompletenessStatement :=
   Completeness.complete
 
-/-! The build fails if the axiom footprint ever grows beyond Lean's three standard axioms, so a `sorry` or `native_decide` anywhere in the proof cannot go unnoticed. -/
+/-! The build checks that the public proofs use only Lean's three standard axioms. -/
 
 /-- info: 'SphincsSecurity.sphincs_has_127_bits_of_classical_security' depends on axioms: [propext, Classical.choice, Quot.sound] -/
 #guard_msgs (whitespace := lax) in

@@ -65,7 +65,7 @@ theorem certificateCacheLength_run_prefixOverflow {α : Type} (key : SecretKey) 
     (certificateCacheMonitorProject state) hstop hbad _ hm).2
 
 theorem certificateCacheLength_withSigningLog_clean {α : Type} (key : SecretKey) (budget : Nat)
-    (required : Finset FtsTree) (hbudget : budget ≤ 2 ^ 127)
+    (required : Finset FtsTree) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (computation : OracleComp (OracleWorld + SigningSpec) α) (q : Nat)
     (state : CertificateCacheMonitorState)
     (hbound : HashQueryBound (simulateQ (expandedAdversaryImpl key) computation) state.1 q)

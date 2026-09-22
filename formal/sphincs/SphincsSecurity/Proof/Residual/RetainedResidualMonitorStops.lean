@@ -88,7 +88,7 @@ theorem monitoredStep_ready_after (input : (OracleWorld + SigningSpec).Domain) (
     (hactive : CertificateMonitorActive key budget input (monitorView state))
     (result : Option ((OracleWorld + SigningSpec).Range input) × MonitoredState inputs)
     (hresult : monitoredStep key inputs hencoding words publicReplies selections rows budget required stopAfter input state result ≠ 0)
-    (hlive : result.1 ≠ none) (hcost : result.2.1.memory.external.hashCalls ≤ budget) (hbudget : budget ≤ 2 ^ 127)
+    (hlive : result.1 ≠ none) (hcost : result.2.1.memory.external.hashCalls ≤ budget) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hclean : ¬ CertificateCacheExceptional key result.2.1.memory.external.cache) :
     CertificateMonitorReady key budget (monitorView result.2) := by
   obtain ⟨hspent, hlog⟩ := monitoredStep_active_accounting key inputs hencoding words publicReplies selections rows budget required stopAfter
@@ -124,7 +124,7 @@ theorem monitoredStep_stopped_iff_prefix (input : (OracleWorld + SigningSpec).Do
     (result : Option ((OracleWorld + SigningSpec).Range input) × MonitoredState inputs)
     (hresult : monitoredStep key inputs hencoding words publicReplies selections rows budget required (proposalStop (fun _ _ _ _ => false))
       input state result ≠ 0)
-    (hlive : result.1 ≠ none) (hcost : result.2.1.memory.external.hashCalls ≤ budget) (hbudget : budget ≤ 2 ^ 127)
+    (hlive : result.1 ≠ none) (hcost : result.2.1.memory.external.hashCalls ≤ budget) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (hclean : ¬ CertificateCacheExceptional key result.2.1.memory.external.cache) :
     result.2.2.stopped = true ↔ ProposalPrefixExceptional result.2.2.proposals result.2.2.log.length := by
   let stop : CertificateStopRule := proposalStop (fun _ _ _ _ => false)

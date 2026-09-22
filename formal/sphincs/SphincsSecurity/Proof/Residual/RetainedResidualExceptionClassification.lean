@@ -17,7 +17,7 @@ theorem exceptionHistoryRun_unstopped {Result : Type} (computation : OracleComp 
     (hbefore : MonitoredAccounting state.1) (hbank : MonitoredBankComplete key required state.1)
     (hsize : CacheSizeBound state.1.1.memory)
     (hsigned : SigningDigestsCached key.parameter state.1.1.memory.external.cache key.root state.1.1.memory.log)
-    (halive : state.1.2.stopped = false) (hbudget : budget ≤ 2 ^ 127)
+    (halive : state.1.2.stopped = false) (hbudget : budget ≤ (2 ^ 127 + 2 ^ 64))
     (result : Option Result × ExceptionHistoryState inputs)
     (hresult : exceptionHistoryRun key inputs hencoding words publicReplies selections rows budget required
       (proposalStop (fun _ _ _ _ => false)) computation state result ≠ 0)

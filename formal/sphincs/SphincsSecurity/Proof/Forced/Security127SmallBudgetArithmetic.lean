@@ -12,7 +12,7 @@ set_option exponentiation.threshold 1024
 
 private theorem smallRangeClosing (x : ℝ) (hlow : 1 / 2 ^ 128 ≤ x) (hhigh : x ≤ 3 / 16384) :
     7 / 4 * x + 11 / 65536 * x + 1 / 2 ^ 700 + x ^ 2 * 2 +
-      16384 / 16381 * x * (557 * x + 14 * (x / 2 ^ 41) + 14 / 2 ^ 700) ≤ 2 * x := by
+      16384 / 16381 * x * (557 * x + 14 * (x / 2 ^ 41) + 14 / 2 ^ 700) + x / 2 ^ 32 ≤ 2 * x := by
   have hn : 0 ≤ x := le_trans (by positivity) hlow
   have hsq : x * x ≤ x * (3 / 16384) := mul_le_mul_of_nonneg_left hhigh hn
   have htail : (1 : ℝ) / 2 ^ 700 ≤ x / 2 ^ 572 := by
@@ -22,10 +22,10 @@ private theorem smallRangeClosing (x : ℝ) (hlow : 1 / 2 ^ 128 ≤ x) (hhigh : 
   norm_num at hsq htail ⊢
   nlinarith [hsq, htail, hn, hlow, hhigh]
 
-theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budgetSplit) :
+theorem small_bound_with_reserve_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budgetSplit) :
     primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
       proposalPrefixExceptionBound + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
-      ((2 ^ 128 - q : Nat) : ENNReal)⁻¹ * ((q : ENNReal) * nearCertificateBound q) ≤ (q : ENNReal) / 2 ^ 127 := by
+      ((2 ^ 128 - q : Nat) : ENNReal)⁻¹ * ((q : ENNReal) * nearCertificateBound q) + (q : ENNReal) / 2 ^ 160 ≤ (q : ENNReal) / 2 ^ 127 := by
   rw [budgetSplit_def] at hsmall
   rw [primitiveCoefficient_def, fullCertificateExcessRate_def, proposalPrefixExceptionBound_def]
   have hx : (q : ENNReal) / 2 ^ 128 ≤ 3 / 16384 := by
@@ -64,7 +64,7 @@ theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budg
       Nat.cast_ofNat]
     gcongr
     exact certificateCacheExceptionRate_le
-  refine le_trans (add_le_add (add_le_add le_rfl hsquare) (mul_le_mul' hinv (mul_le_mul' le_rfl hrate))) ?_
+  refine le_trans (add_le_add (add_le_add (add_le_add le_rfl hsquare) (mul_le_mul' hinv (mul_le_mul' le_rfl hrate))) le_rfl) ?_
   apply (ENNReal.toReal_le_toReal (by finiteness) (by finiteness)).mp
   simp (disch := finiteness) only [ENNReal.toReal_add, ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv,
     ENNReal.toReal_pow, ENNReal.toReal_natCast, ENNReal.toReal_ofNat, Nat.cast_pow, Nat.cast_ofNat]
@@ -76,5 +76,11 @@ theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budg
     rw [div_le_div_iff₀ (by positivity) (by positivity)]
     nlinarith
   convert smallRangeClosing ((q : ℝ) / 2 ^ 128) hlow hhigh using 1 <;> ring
+
+theorem small_bound_le_security127 (q : Nat) (hq : 1 ≤ q) (hsmall : q ≤ budgetSplit) :
+    primitiveCoefficient * ((q : ENNReal) / 2 ^ 128) + (q : ENNReal) * fullCertificateExcessRate +
+      proposalPrefixExceptionBound + ((q : ENNReal) / 2 ^ 128) ^ 2 / (2 * (1 - (q : ENNReal) / 2 ^ 128) ^ 2) +
+      ((2 ^ 128 - q : Nat) : ENNReal)⁻¹ * ((q : ENNReal) * nearCertificateBound q) ≤ (q : ENNReal) / 2 ^ 127 :=
+  le_trans le_self_add (small_bound_with_reserve_le_security127 q hq hsmall)
 
 end SphincsSecurity.Concrete

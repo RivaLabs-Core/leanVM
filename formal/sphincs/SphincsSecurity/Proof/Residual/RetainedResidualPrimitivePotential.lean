@@ -540,7 +540,7 @@ theorem initialMonitoredSource_primitive_add_full_count_le (key : SecretKey) (ad
   have hprimitive := initialMonitoredSource_joint_primitive_messages key adversary encoding dummy exposed high budget Finset.univ
     (proposalStop stopAfter) stopped hparameter hencoding hroot hcost hbudget
   have hcoverage := expected_initialMonitoredSource_full_unit_count_le key adversary encoding dummy exposed high budget
-    stopAfter stopped hparameter hencoding hroot hcost hbudget
+    stopAfter stopped hparameter hencoding hroot hcost (hbudget.trans (Nat.le_add_right _ _))
   calc
     _ ≤ Pr[fun result => result.1 = none | law] +
         ((2 ^ 128 : ENNReal)⁻¹ * messages + (budget : ENNReal) * fullCertificateExcessRate) :=

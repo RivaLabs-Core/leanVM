@@ -4,7 +4,7 @@ namespace SphincsSecurity.Concrete
 open _root_.OracleComp OracleSpec ENNReal
 
 private theorem largeRangeClosing (x : ℝ) (hx : 3 / 16384 ≤ x) :
-    2 * x - x ^ 2 + (11 / 65536) * x + (x / 2 ^ 41 + 1 / 2 ^ 700) ≤ 2 * x := by
+    2 * x - x ^ 2 + (11 / 65536) * x + (x / 2 ^ 41 + 1 / 2 ^ 700) + x / 2 ^ 32 ≤ 2 * x := by
   have hn : 0 ≤ x := le_trans (by norm_num) hx
   have hs := mul_nonneg (sub_nonneg.mpr hx) hn
   have he : (1 : ℝ) / 2 ^ 700 ≤ 1 / 1099511627776 := by
@@ -12,16 +12,16 @@ private theorem largeRangeClosing (x : ℝ) (hx : 3 / 16384 ≤ x) :
       _ ≤ 1 / (2 : ℝ) ^ 40 := one_div_le_one_div_of_le (by positivity)
         (pow_le_pow_right₀ (by norm_num) (by decide : 40 ≤ 700))
       _ = _ := by norm_num
-  apply le_trans (add_le_add le_rfl (add_le_add le_rfl he))
+  apply le_trans (add_le_add (add_le_add le_rfl (add_le_add le_rfl he)) le_rfl)
   norm_num at hx hs ⊢
   nlinarith
 
-theorem native_bound_le_security127 (q : Nat) (hlarge : budgetSplit ≤ q) (hsmall : q ≤ 2 ^ 127) :
+theorem native_bound_with_reserve_le_security127 (q : Nat) (hlarge : budgetSplit ≤ q) (hsmall : q ≤ 2 ^ 127) :
     ENNReal.ofReal (2 * ((q : ℝ) / 2 ^ digestBits) - ((q : ℝ) / 2 ^ digestBits) ^ 2) +
       (q : ENNReal) * fullCertificateExcessRate +
-      ((q : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) ≤ (q : ENNReal) / 2 ^ 127 := by
+      ((q : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) + (q : ENNReal) / 2 ^ 160 ≤ (q : ENNReal) / 2 ^ 127 := by
   rw [budgetSplit_def] at hlarge
-  refine le_trans (add_le_add le_rfl (add_le_add (mul_le_mul' le_rfl certificateCacheExceptionRate_le) le_rfl)) ?_
+  refine le_trans (add_le_add (add_le_add le_rfl (add_le_add (mul_le_mul' le_rfl certificateCacheExceptionRate_le) le_rfl)) le_rfl) ?_
   rw [fullCertificateExcessRate_def, proposalPrefixExceptionBound_def]
   let x : ℝ := (q : ℝ) / 2 ^ 128
   have hx : 3 / 16384 ≤ x := by
@@ -43,6 +43,12 @@ theorem native_bound_le_security127 (q : Nat) (hlarge : budgetSplit ≤ q) (hsma
   rw [ENNReal.toReal_ofReal hp]
   simp only [ENNReal.toReal_mul, ENNReal.toReal_div, ENNReal.toReal_inv, ENNReal.toReal_pow, ENNReal.toReal_natCast, ENNReal.toReal_ofNat]
   convert largeRangeClosing x hx using 1 <;> generalize (2 : ℝ) ^ 700 = tailDenominator <;> dsimp only [x, digestBits] <;> ring
+
+theorem native_bound_le_security127 (q : Nat) (hlarge : budgetSplit ≤ q) (hsmall : q ≤ 2 ^ 127) :
+    ENNReal.ofReal (2 * ((q : ℝ) / 2 ^ digestBits) - ((q : ℝ) / 2 ^ digestBits) ^ 2) +
+      (q : ENNReal) * fullCertificateExcessRate +
+      ((q : ENNReal) * certificateCacheExceptionRate + proposalPrefixExceptionBound) ≤ (q : ENNReal) / 2 ^ 127 :=
+  le_trans le_self_add (native_bound_with_reserve_le_security127 q hlarge hsmall)
 
 theorem security127_of_large_budget (q : Nat) (hlarge : budgetSplit ≤ q) (adversary : Adversary)
     (hcost : HasHashQueryBound scheme adversary q) : forgeAdvantage scheme adversary ≤ (q : ENNReal) / 2 ^ 127 := by

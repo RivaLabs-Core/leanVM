@@ -83,10 +83,10 @@ attribute [local irreducible] Seeded.signDigestLoop Seeded.signLayer Seeded.ftsO
 set_option maxHeartbeats 1000000 in
 /-- A signature the signer produces for a generated key verifies, under every hash function. -/
 theorem correct : SphincsCorrectnessStatement := by
-  intro hash seed publicKey secretKey message signature hkeys hsign
-  simp only [Seeded.keygenFromSeed, evalWithAnswerFn_bind, evalWithAnswerFn_pure, Prod.mk.injEq]
-    at hkeys
-  obtain ⟨rfl, rfl⟩ := hkeys
+  intro hash seed message signature
+  dsimp only
+  intro hsign
+  simp only [Seeded.keygenFromSeed, evalWithAnswerFn_bind, evalWithAnswerFn_pure] at hsign ⊢
   exact verify_of_sign hash _ message rfl hsign
 
 set_option maxHeartbeats 1000000 in

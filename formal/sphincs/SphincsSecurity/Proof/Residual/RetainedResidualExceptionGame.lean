@@ -65,7 +65,7 @@ theorem initialExceptionHistorySource_exception (key : SecretKey) (adversary : A
       change QueryCache.enncard (∅ : QueryCache HashSpec) ≤ (keygenHashCost : ENNReal)
       rw [QueryCache.enncard_empty]
       exact zero_le)
-    (by intro entry hentry; cases hentry) rfl hbudget result hresult hlive hbound hlog hclean
+    (by intro entry hentry; cases hentry) rfl (hbudget.trans (Nat.le_add_right _ _)) result hresult hlive hbound hlog hclean
   simp only [halive, Bool.false_eq_true] at hstop
 
 noncomputable def initialExceptionHistoryPrior (parameter : PublicParameter) (adversary : Adversary)
