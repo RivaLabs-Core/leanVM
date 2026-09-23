@@ -19,7 +19,7 @@ def main():
     a[0] = 5
     a[1] = 7
     c = StackBuf(2)
-    blake2s(a, a, c)
+    sha3(a, a, c)
     p = 1
     p[1] = c[0]
     p[GEN] = c[1]
@@ -85,7 +85,7 @@ fn a_proof_does_not_verify_against_another_program() {
     let src = |k: u32| {
         format!(
             "def main():\n    a = StackBuf(2)\n    a[0] = {k}\n    a[1] = 7\n    \
-             c = StackBuf(2)\n    blake2s(a, a, c)\n    return\n"
+             c = StackBuf(2)\n    sha3(a, a, c)\n    return\n"
         )
     };
     let program = compile(&parse(&src(5)).expect("parse"));
@@ -118,16 +118,13 @@ fn a_proof_roundtrips_through_bytes() {
         "the announced PCS rate must be in 1..=4"
     );
 
-    // A BLAKE2s height below flock's instance floor describes a layout the
+    // A SHA3 height below flock's instance floor describes a layout the
     // arithmetization cannot express, and all three verifiers reject it there.
-    let blake2s = lean_vm::cpu::Stats::TABLES
-        .iter()
-        .position(|&t| t == "BLAKE2S")
-        .unwrap();
+    let sha3 = lean_vm::cpu::Stats::TABLES.iter().position(|&t| t == "SHA3").unwrap();
     let mut sub_floor = decoded;
-    sub_floor.stream[1 + blake2s] = F192::new(2, 0, 0);
+    sub_floor.stream[1 + sha3] = F192::new(2, 0, 0);
     assert!(
         matches!(verify(&program, &pi, &sub_floor), Err(CpuError::PublicInput)),
-        "the announced BLAKE2s height must reach flock's instance floor"
+        "the announced SHA3 height must reach flock's instance floor"
     );
 }

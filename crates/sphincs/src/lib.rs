@@ -1,11 +1,11 @@
-//! SPHINCS+ over BLAKE2s: the stateless scheme specified in
+//! SPHINCS+ over SHA3-256: the stateless scheme specified in
 //! `doc/sphincs/main.tex`, with WOTS+C and FORS+C, at `2^24` signatures per key
 //! pair. A public key is 32 bytes, a signature 4924, and a verification 497 hash
 //! calls.
 //!
 //! That specification is the reference and every symbol here carries its name:
-//! `n`, `w`, `v`, `T`, `d`, `h_lay`, `a`, `k`. `Th` is standard BLAKE2s of
-//! the exact byte string `tweak | P | payload` truncated to `n = 128` bits (the
+//! `n`, `w`, `v`, `T`, `d`, `h_lay`, `a`, `k`. `Th` is the leanVM hash of the
+//! exact byte string `tweak | P | payload` truncated to `n = 128` bits (the
 //! `hash` module), and the tweak names one hash call in the whole structure.
 //!
 //! One 32-byte master seed derives the public parameter and all signing secrets.

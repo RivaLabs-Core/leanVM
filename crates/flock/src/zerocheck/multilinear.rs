@@ -1248,11 +1248,11 @@ mod tests {
     /// **The single kernel's padding skip is byte-identical to dense**, the
     /// sibling of `uni_skip_fold_round_pair_padded_matches_dense`. This is the
     /// first place the C witness's padding zeros are load-bearing: round 1's
-    /// coarser skip does not reach them at BLAKE2s's shape.
+    /// coarser skip does not reach them at a BLAKE2s-sized block.
     #[test]
     fn uni_skip_fold_round_single_padded_matches_dense() {
         const K_SKIP: usize = 6;
-        let cases: &[(usize, usize, usize)] = &[(17, 14, 15_409), (17, 14, 16_000), (18, 15, 31_401)];
+        let cases: &[(usize, usize, usize)] = &[(17, 14, 15_409), (17, 14, 16_000), (18, 15, 31_401), (19, 16, 41_664)];
         for &(m, k_log, useful_bits) in cases {
             let mut rng = Rng::new(0xC0DE_F00D_u64.wrapping_add((k_log * 31 + m) as u64));
             let block_size = 1usize << k_log;

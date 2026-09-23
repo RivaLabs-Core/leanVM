@@ -1,10 +1,10 @@
-//! The tweakable hash `Th(P, tw, M) = Truncate_n(BLAKE2s(tw | P | M))`, and the
-//! 16-byte tweak that names one hash call in the whole structure.
+//! The tweakable hash `Th(P, tw, M) = Truncate_n(H(tw | P | M))`, `H` the leanVM
+//! hash ([`primitives::hash::hash`]), and the 16-byte tweak that names one hash
+//! call in the whole structure.
 //!
-//! Compressions per call, the input including the 32 bytes of tweak and public
-//! parameter: 1 for a chain step, a Merkle node, a derived secret and an
-//! encoding, 2 for the message digest, 4 for the few-time roots, and 11 for a
-//! one-time leaf.
+//! Permutations per call, the input including the 32 bytes of tweak and public
+//! parameter: 1 for a chain step, a Merkle node, a derived secret, an encoding
+//! and the message digest, 2 for the few-time roots, and 6 for a one-time leaf.
 
 use crate::*;
 

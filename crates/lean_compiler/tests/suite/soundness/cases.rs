@@ -204,14 +204,14 @@ def main():
 /// pinned against a hinted digest through a heap store. This is the shape a
 /// signature verifier has, so it is the one that most needs a regression test.
 ///
-/// The digest constant comes from [`print_blake2s_digest`], not from a hand
+/// The digest constant comes from [`print_sha3_digest`], not from a hand
 /// computation: what the case tests is that a *wrong* digest is rejected, and
 /// for that the honest value only has to be honest.
 #[test]
 fn digest_pins_its_preimage() {
     check_case(&Case {
         name: "digest_pins_its_preimage",
-        src: BLAKE2S_PIN_SRC,
+        src: SHA3_PIN_SRC,
         valid: Trial::new([k(5), k(7)])
             .stream("msg", vec![vec![k(5), k(7), F192::ZERO, F192::ZERO]])
             .stream("dig", vec![vec![DIGEST_5_7[0], DIGEST_5_7[1]]]),
@@ -233,12 +233,12 @@ fn digest_pins_its_preimage() {
     });
 }
 
-const BLAKE2S_PIN_SRC: &str = "\
+const SHA3_PIN_SRC: &str = "\
 def main():
     m = StackBuf(4)
     hint_witness(m, \"msg\")
     d = StackBuf(2)
-    blake2s(m[0:2], m[2:4], d)
+    sha3(m[0:2], m[2:4], d)
     e = HeapBuf(2)
     hint_witness(e[0:2], \"dig\")
     e[1] = d[0]
@@ -249,24 +249,24 @@ def main():
     return
 ";
 
-/// BLAKE2s of the 64-byte block whose four canonical cells are `(5, 7, 0, 0)`.
+/// SHA3-256 of the 64-byte block whose four canonical cells are `(5, 7, 0, 0)`.
 pub const DIGEST_5_7: [F192; 2] = [
-    F192::new(0xbbc8_c175_8cb7_7642, 0xf299_5d40_1fad_f4ff, 0),
-    F192::new(0x83ea_6ade_289a_53c8, 0x57e6_e523_12ec_734b, 0),
+    F192::new(0xc70a_4b28_f855_878d, 0x12d6_a896_9796_2792, 0),
+    F192::new(0x1cb1_6a66_f07f_ae50, 0x0db3_9cbb_99a2_4255, 0),
 ];
 
 /// Regenerate [`DIGEST_5_7`]: `cargo test --release -p lean_compiler
-/// print_blake2s_digest -- --ignored --nocapture`. Kept so the constant above is
+/// print_sha3_digest -- --ignored --nocapture`. Kept so the constant above is
 /// reproducible rather than folklore.
 #[test]
 #[ignore = "prints a constant; not a check"]
-fn print_blake2s_digest() {
+fn print_sha3_digest() {
     let src = "\
 def main():
     m = StackBuf(4)
     hint_witness(m, \"msg\")
     d = StackBuf(2)
-    blake2s(m[0:2], m[2:4], d)
+    sha3(m[0:2], m[2:4], d)
     print(d[0])
     print(d[1])
     return
@@ -412,7 +412,7 @@ def two(v, k: Const):
     );
 }
 
-/// A `blake2s` input operand written as a list is the same hash as gathering the
+/// A `sha3` input operand written as a list is the same hash as gathering the
 /// words into a buffer, so hashing one way and the other must agree.
 ///
 /// Self-comparing on purpose: an equivalence pair cannot check this, because a
@@ -421,15 +421,15 @@ def two(v, k: Const):
 /// operands are DIFFERENT words so that reordering within a list is visible: with
 /// both operands equal the swap would cancel out.
 #[test]
-fn a_blake2s_word_list_hashes_like_the_buffer_it_replaces() {
+fn a_sha3_word_list_hashes_like_the_buffer_it_replaces() {
     check_case(&Case {
-        name: "a_blake2s_word_list_hashes_like_the_buffer_it_replaces",
+        name: "a_sha3_word_list_hashes_like_the_buffer_it_replaces",
         src: "\
 def main():
     v = StackBuf(2)
     hint_witness(v, \"w\")
     named = StackBuf(2)
-    blake2s([v[0], v[1]], [v[1], v[0]], named)
+    sha3([v[0], v[1]], [v[1], v[0]], named)
     l = StackBuf(2)
     l[0] = v[0]
     l[1] = v[1]
@@ -437,7 +437,7 @@ def main():
     r[0] = v[1]
     r[1] = v[0]
     gathered = StackBuf(2)
-    blake2s(l, r, gathered)
+    sha3(l, r, gathered)
     assert named[0] == gathered[0]
     assert named[1] == gathered[1]
     p = GEN ** 0
@@ -484,7 +484,7 @@ def main():
 /// reading, and briefly `const(...)` and `len(...)` carried it too, so
 /// `buf[const(8)]` on a `HeapBuf(4)` compiled and aliased cell 3 while the bare
 /// `buf[8]` it means was rejected. The golden digests cannot see this: the guest's
-/// only `const(...)` uses are blake2s operands, not indexes.
+/// only `const(...)` uses are sha3 operands, not indexes.
 #[test]
 fn an_integer_heap_index_is_rejected_however_it_is_spelled() {
     for idx in ["8", "const(8)", "const(4 + 4)", "len(EIGHT)", "GEN * const(4)"] {

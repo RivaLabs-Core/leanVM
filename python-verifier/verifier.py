@@ -188,16 +188,21 @@ def powers(base: E, count: int) -> list[E]:
     return list(islice(accumulate(repeat(base), mul, initial=ONE), count))
 
 
-# BLAKE2s and digests ---------------------------------------------------------
+# The hash and digests --------------------------------------------------------
 
-BLAKE2S_IV = (0x6A09E667, 0xBB67AE85, 0x3C6EF372, 0xA54FF53A, 0x510E527F, 0x9B05688C, 0x1F83D9AB, 0x5BE0CD19)  # fmt: skip
-BLAKE2S_SIGMA = ((0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15), (14, 10, 4, 8, 9, 15, 13, 6, 1, 12, 0, 2, 11, 7, 5, 3), (11, 8, 12, 0, 5, 2, 15, 13, 10, 14, 3, 6, 7, 1, 9, 4), (7, 9, 3, 1, 13, 12, 11, 14, 2, 6, 5, 10, 4, 0, 15, 8), (9, 0, 5, 7, 2, 4, 10, 15, 14, 1, 11, 12, 6, 8, 3, 13), (2, 12, 6, 10, 0, 11, 8, 3, 4, 13, 7, 5, 15, 14, 1, 9), (12, 5, 1, 15, 14, 13, 4, 10, 0, 7, 6, 3, 9, 2, 8, 11), (13, 11, 7, 14, 12, 1, 3, 9, 5, 0, 15, 4, 8, 6, 2, 10), (6, 15, 14, 9, 11, 3, 0, 8, 12, 2, 13, 7, 1, 4, 10, 5), (10, 2, 8, 4, 7, 6, 1, 5, 15, 11, 9, 14, 3, 12, 13, 0))  # fmt: skip
-BLAKE2S_G_LANES = ((0, 4, 8, 12), (1, 5, 9, 13), (2, 6, 10, 14), (3, 7, 11, 15), (0, 5, 10, 15), (1, 6, 11, 12), (2, 7, 8, 13), (3, 4, 9, 14))  # fmt: skip
+# SHA3-256 of the cell encoding: a message of more than 128 bytes is cut into 128-byte
+# chunks, the last holding the remaining 1 to 128, and every chunk but the last is
+# followed by the fixed gap below, which is what lets the VM absorb eight whole 16-byte
+# cells per permutation. Up to 128 bytes it is plain SHA3-256.
+HASH_CHUNK = 128
+HASH_GAP = bytes(7) + b"\x80"
 
 
-def blake2s_hash(data: bytes) -> Digest:
-    """Standard 32-byte unkeyed BLAKE2s-256 hash."""
-    return Digest(hashlib.blake2s(data).digest())
+def sha3_hash(data: bytes) -> Digest:
+    """The 32-byte hash of `data` in the cell encoding."""
+    nonfinal = max(len(data) - 1, 0) // HASH_CHUNK
+    encoded = b"".join(data[HASH_CHUNK * c : HASH_CHUNK * (c + 1)] + HASH_GAP for c in range(nonfinal)) + data[HASH_CHUNK * nonfinal :]
+    return Digest(hashlib.sha3_256(encoded).digest())
 
 
 @dataclass(frozen=True, slots=True)
@@ -340,7 +345,7 @@ DS_POW_NONCE = 4
 
 def compress(left: Sequence[K | int], right: Sequence[K | int]) -> tuple[int, int, int, int]:
     """Hash two four-word operands, a word being a plain integer or the K element standing for it."""
-    return unpack("<4Q", blake2s_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
+    return unpack("<4Q", sha3_hash(b"".join(int(x).to_bytes(8, "little") for x in (*left, *right))).value)
 
 
 class Transcript:
@@ -394,11 +399,11 @@ class Transcript:
         rows = []
         for query in queries:
             leaf = self._merkle_data(8 * leaf_words)
-            node = blake2s_hash(leaf)
+            node = sha3_hash(leaf)
             for level in range(height):
                 sibling = self._merkle_data(32)
                 left, right = (node.value, sibling) if query >> level & 1 == 0 else (sibling, node.value)
-                node = blake2s_hash(left + right)
+                node = sha3_hash(left + right)
             require(node == root, "Merkle root mismatch")
             rows.append(tuple(K(word) for word in unpack(f"<{leaf_words}Q", leaf)))
         return rows
@@ -630,20 +635,24 @@ def table_sumcheck(
     return claims
 
 
-R1CS_DIGEST = bytes.fromhex("537ad20790308f8eb8c0e8bd3e6c58ee64573371e3d53c30613dd04d87c0b7ea")
+R1CS_DIGEST = bytes.fromhex("3e1e2dd864d8aaf35ad36e47d7641522ea042e542c870b9e94f4b07d35b6ee60")
 
 # The columns no instruction table owns. They come first in the global column numbering, the tables after.
 NUM_GLOBAL_COLUMNS = 6
 MEMORY_0, MEMORY_1, MEMORY_2, MEMORY_FINAL_COUNTERS, BYTECODE_FINAL_COUNTERS, QFLOCK = range(NUM_GLOBAL_COLUMNS)
 
-BLAKE2S_R1CS_LOG_SIZE = 14
+KECCAK_R1CS_LOG_SIZE = 16
 K_BITS = 64
 FLOCK_K_SKIP = log2_ceil(K_BITS)
 LOG_PACKING = log2_ceil(K_BITS)  # bits per committed K-element (pcs::pack::LOG_PACKING)
 
-FLOCK_NUM_LINCHECK_ROUNDS = BLAKE2S_R1CS_LOG_SIZE - FLOCK_K_SKIP
-QFLOCK_SLOT_BITS = BLAKE2S_R1CS_LOG_SIZE - LOG_PACKING
-BLAKE2S_CONSTANT_COLUMN = 512
+FLOCK_NUM_LINCHECK_ROUNDS = KECCAK_R1CS_LOG_SIZE - FLOCK_K_SKIP
+QFLOCK_SLOT_BITS = KECCAK_R1CS_LOG_SIZE - LOG_PACKING
+# One step's witness, in 64-bit words: the 25 input lanes, the 25 output lanes, the
+# constant wire alone in the next word, then each round's 25 lanes of chi products.
+KECCAK_OUT_WORD = 25
+KECCAK_CONSTANT_COLUMN = 64 * 50
+KECCAK_PRODUCT_WORD = 51
 
 
 @dataclass(frozen=True)
@@ -804,37 +813,46 @@ def _jump_constraints(columns: Sequence[E]) -> tuple[E, ...]:
     return (flag + condition * inverse, condition * (flag + ONE))
 
 
-def _flushes_blake2s() -> Flushes:
-    pc, fp, cnt_bc = _cols(BLAKE2S_COLUMNS, "pc", "fp", "cnt_bc")
-    operands = _cols(BLAKE2S_COLUMNS, "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md")
+# The lanes each of a sponge state's thirteen cells holds: lanes 0..16 two to a cell,
+# then lane 16 alone (its high lane a literal zero), then the capacity lanes 17..25.
+SHA3_CELL_LANES = tuple((2 * c, 2 * c + 1) if c < 8 else (16,) if c == 8 else (2 * c - 1, 2 * c) for c in range(13))
+
+
+def _flushes_sha3() -> Flushes:
+    pc, fp, cnt_bc = _cols(SHA3_COLUMNS, "pc", "fp", "cnt_bc")
+    o_m = _cols(SHA3_COLUMNS, "o_m0", "o_m1", "o_m2", "o_m3")
+    o_tail, o_cap, o_out = _cols(SHA3_COLUMNS, "o_tail", "o_cap", "o_out")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, OP_BLAKE2S, tuple(_col(i) for i in operands))
-    # The nine cells read, as (cell, operand, offset from it): four addressed message chunks, then
-    # the consecutive chaining-value and output pairs, then the metadata cell (the byte counter and
-    # the two flags). Each holds two q_flock limbs and a zero top.
-    cells = (("m0", "o_0", 0), ("m1", "o_1", 0), ("m2", "o_2", 0), ("m3", "o_3", 0),
-             ("cv0", "o_v", 0), ("cv1", "o_v", 1), ("out0", "o_out", 0), ("out1", "o_out", 1),
-             ("md", "o_md", 0))  # fmt: skip
-    for cell, operand, exponent in cells:
-        address, count, lo, hi = _cols(BLAKE2S_COLUMNS, operand, f"cnt_{cell}", f"{cell}_lo", f"{cell}_hi")
-        flushes.memory_cols(_prod(fp, address, exponent), count, lo, hi)
+    flushes.bytecode(pc, cnt_bc, OP_SHA3, tuple(_col(i) for i in (*o_m, o_tail, o_cap, o_out)))
+
+    # The thirteen cells read (four addressed ones, then the consecutive tail and cap runs), then
+    # the thirteen written. Each carries its q_flock lanes and zeros above them.
+    def read(cell: int) -> Form:
+        if cell < 4:
+            return _prod(fp, o_m[cell])
+        return _prod(fp, o_tail, cell - 4) if cell < 8 else _prod(fp, o_cap, cell - 8)
+
+    for side, lane_prefix in enumerate(("in", "out")):
+        for cell, lanes in enumerate(SHA3_CELL_LANES):
+            address = read(cell) if side == 0 else _prod(fp, o_out, cell)
+            (count,) = _cols(SHA3_COLUMNS, f"cnt_{13 * side + cell}")
+            flushes.memory_cols(address, count, *_cols(SHA3_COLUMNS, *(f"{lane_prefix}_{lane}" for lane in lanes)))
     return flushes
 
 
-OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_BLAKE2S = range(6)
+OP_XOR, OP_MUL, OP_SET, OP_DEREF, OP_JUMP, OP_SHA3 = range(6)
 
 ARITH_COLUMNS = ("pc", "fp", "o_a", "o_b", "o_c", "va_0", "va_1", "va_2", "vb_0", "vb_1", "vb_2", "cnt_a", "cnt_b", "cnt_c", "cnt_bc",)  # fmt: skip
 SET_COLUMNS = ("pc", "fp", "o", "k_0", "k_1", "k_2", "cnt", "cnt_bc")
 DEREF_COLUMNS = ("pc", "fp", "o1", "o2", "o3", "f_pc", "f_fp", "ptr", "v3_0", "v3_1", "v3_2",  "cnt_ptr", "cnt_target", "cnt_local", "cnt_bc",)  # fmt: skip
 JUMP_COLUMNS = ("pc", "fp", "o_c", "o_d", "o_f", "v_cond", "v_pc", "v_fp", "cnt_c", "cnt_d", "cnt_f", "cnt_bc", "w", "b",)  # fmt: skip
-BLAKE2S_COLUMNS = (
-    "pc", "fp", "o_0", "o_1", "o_2", "o_3", "o_v", "o_out", "o_md",
-    # These eighteen value limbs live in q_flock, not here: each is already a flock witness slot.
-    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi",
-    "out0_lo", "out0_hi", "out1_lo", "out1_hi", "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "md_lo", "md_hi",
+SHA3_COLUMNS = (
+    "pc", "fp", "o_m0", "o_m1", "o_m2", "o_m3", "o_tail", "o_cap", "o_out",
+    # These fifty value lanes live in q_flock, not here: each is already a flock witness slot.
+    *(f"in_{lane}" for lane in range(25)), *(f"out_{lane}" for lane in range(25)),
     # ...and the read counts, committed here like every other column.
-    "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_md", "cnt_bc",
+    *(f"cnt_{cell}" for cell in range(26)), "cnt_bc",
 )  # fmt: skip
 
 TABLES = (
@@ -843,15 +861,11 @@ TABLES = (
     Table("set", OP_SET, SET_COLUMNS, _flushes_set()),
     Table("deref", OP_DEREF, DEREF_COLUMNS, _flushes_deref()),
     Table("jump", OP_JUMP, JUMP_COLUMNS, _flushes_jump(), _jump_constraints),
-    Table("blake2s", OP_BLAKE2S, BLAKE2S_COLUMNS, _flushes_blake2s()),
+    Table("sha3", OP_SHA3, SHA3_COLUMNS, _flushes_sha3()),
 )
 
-# Where in the flock witness each embedded BLAKE2s limb live: one 64-bit slot per limb, the chaining value first, then the
-# digest, the message block and the metadata. Slots 8 and 9 are flock's constant wire and the padding up to its message base, which no memory cell carries.
-BLAKE2S_SLOTS = (
-    "cv0_lo", "cv0_hi", "cv1_lo", "cv1_hi", "out0_lo", "out0_hi", "out1_lo", "out1_hi", None, None,
-    "m0_lo", "m0_hi", "m1_lo", "m1_hi", "m2_lo", "m2_hi", "m3_lo", "m3_hi", "md_lo", "md_hi",
-)  # fmt: skip
+# Where in the flock witness each SHA3 lane lives: one 64-bit slot per lane, the input first, then the output.
+SHA3_SLOTS = (*(f"in_{lane}" for lane in range(25)), *(f"out_{lane}" for lane in range(25)))
 
 TABLE_WIDTHS = tuple(t.width for t in TABLES)
 GLOBAL_COLUMN_BASES = tuple(NUM_GLOBAL_COLUMNS + sum(TABLE_WIDTHS[:table]) for table in range(len(TABLES)))
@@ -862,7 +876,7 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
     require(
         16 <= log_memory <= 32
         and all(0 <= log_height <= 32 for log_height in table_log_heights)
-        and table_log_heights[OP_BLAKE2S] >= 3
+        and table_log_heights[OP_SHA3] >= 3
         and 0 <= log_bytecode <= 32,
         "invalid announced table sizes",
     )
@@ -880,14 +894,14 @@ def build_layout(bytecode: Sequence[K], log_memory: int, table_log_heights: Sequ
             count.append(BusBlock(height, (_col(local),), table.opcode))
 
     # Every column's log size, in global order: the framework's, q_flock's, then each table's block.
-    qflock_kappa = table_log_heights[OP_BLAKE2S] + QFLOCK_SLOT_BITS
+    qflock_kappa = table_log_heights[OP_SHA3] + QFLOCK_SLOT_BITS
     kappas = [log_memory, log_memory, log_memory, log_memory, log_bytecode, qflock_kappa]
     for table in TABLES:
         kappas += [table_log_heights[table.opcode]] * table.width
 
-    # A BLAKE2s value limb gets no block of its own: it is committed inside q_flock, whose slots
+    # A SHA3 value lane gets no block of its own: it is committed inside q_flock, whose slots
     # interleave, so it sits at q_flock's offset behind its own slot's bits. Same width either way.
-    limbs = {GLOBAL_COLUMN_BASES[OP_BLAKE2S] + _cols(BLAKE2S_COLUMNS, name)[0]: slot for slot, name in enumerate(BLAKE2S_SLOTS) if name}
+    limbs = {GLOBAL_COLUMN_BASES[OP_SHA3] + _cols(SHA3_COLUMNS, name)[0]: slot for slot, name in enumerate(SHA3_SLOTS)}
     blocks = {column: kappa for column, kappa in enumerate(kappas) if column not in limbs}
     block_offsets, total_log = stack_offsets(list(blocks.values()))
     offsets = dict(zip(blocks, block_offsets))
@@ -1170,129 +1184,74 @@ def verify_flock_lincheck(zc: ZerocheckResult, transcript: Transcript) -> tuple[
     chi_in_prime = tuple(reversed(round_challenges))
     w_col = [value * weight for weight in eq_kernel(chi_in_prime) for value in s]
     terminal = (
-        blake2s_bilinear(alpha, e_row, w_col)
+        keccak_bilinear(alpha, e_row, w_col)
         + alpha**2 * eq_eval(chi_in, chi_in_prime) * dot(skip_weights, s)
-        + alpha**3 * w_col[BLAKE2S_CONSTANT_COLUMN]
+        + alpha**3 * w_col[KECCAK_CONSTANT_COLUMN]
     )
     require(terminal == r_lc, "Flock lincheck terminal mismatch")
     return chi_in_prime + zc.chi[FLOCK_NUM_LINCHECK_ROUNDS:], s
 
 
-def blake2s_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
-    """Compute `A0 w` and `B0 w` by one forward walk of the circuit."""
-    size = 2**BLAKE2S_R1CS_LOG_SIZE
-    constant = BLAKE2S_CONSTANT_COLUMN
-    message_base = 640
-    counter_low = 1152
-    counter_high = 1184
-    final_flag = 1216
-    last_node_flag = 1248
-    gates_base = 1280
-    gate_stride = 184
+KECCAK_RC = (
+    0x0000000000000001, 0x0000000000008082, 0x800000000000808A, 0x8000000080008000, 0x000000000000808B, 0x0000000080000001,
+    0x8000000080008081, 0x8000000000008009, 0x000000000000008A, 0x0000000000000088, 0x0000000080008009, 0x000000008000000A,
+    0x000000008000808B, 0x800000000000008B, 0x8000000000008089, 0x8000000000008003, 0x8000000000008002, 0x8000000000000080,
+    0x000000000000800A, 0x800000008000000A, 0x8000000080008081, 0x8000000000008080, 0x0000000080000001, 0x8000000080008008,
+)  # fmt: skip
+KECCAK_RHO = (0, 1, 62, 28, 27, 36, 44, 6, 55, 20, 3, 10, 43, 25, 39, 41, 45, 15, 21, 8, 18, 2, 61, 56, 14)
+KECCAK_PI = tuple(i // 5 + 5 * ((2 * (i % 5) + 3 * (i // 5)) % 5) for i in range(25))  # where lane x + 5y lands
+KECCAK_END_BIT = 0x80 << 56  # the padding's last bit, which every step XORs into lane 16
+
+
+def keccak_row_values(column_weights: Sequence[E]) -> tuple[list[E], list[E]]:
+    """Compute `A0 w` and `B0 w` by one forward walk of the circuit: one sponge step, lane 16
+    taking the padding bit, then the 24 rounds, each chi product a row `(1 + b[x+1]) * b[x+2]`."""
+    size = 2**KECCAK_R1CS_LOG_SIZE
+    constant = column_weights[KECCAK_CONSTANT_COLUMN]
     left_values = [ZERO] * size
     right_values = [ZERO] * size
 
-    def slots(base: int) -> tuple[E, ...]:
-        return tuple(column_weights[base + bit] for bit in range(32))
-
     def literal(value: int) -> tuple[E, ...]:
-        return tuple(column_weights[constant] if value >> bit & 1 else ZERO for bit in range(32))
+        return tuple(constant if value >> bit & 1 else ZERO for bit in range(64))
 
     def xor(x: Sequence[E], y: Sequence[E]) -> tuple[E, ...]:
         return tuple(a + b for a, b in zip(x, y, strict=True))
 
-    def rotate_right(word: Sequence[E], amount: int) -> tuple[E, ...]:
-        return tuple(word[(bit + amount) & 31] for bit in range(32))
+    def rotate_left(lane: Sequence[E], amount: int) -> tuple[E, ...]:
+        return tuple(lane[(bit - amount) % 64] for bit in range(64))
 
-    def add(x: Sequence[E], y: Sequence[E], carry_base: int) -> tuple[E, ...]:
-        carry = ZERO
-        output = []
-        for bit in range(32):
-            if bit < 31:
-                left_values[carry_base + bit] = x[bit] + carry
-                right_values[carry_base + bit] = y[bit] + carry
-            output.append(x[bit] + y[bit] + carry)
-            if bit < 31:
-                carry += column_weights[carry_base + bit]
-        return tuple(output)
-
-    def add3(x: Sequence[E], y: Sequence[E], z: Sequence[E], base: int) -> tuple[E, ...]:
-        """Fused three-operand add: 31 majority rows then 30 ripple rows.
-
-        The majority of bit `i` is `maj_aux[i] + z[i]`, since over GF(2)
-        `(x+z)(y+z) = xy + xz + yz + z`; then `x + y + z` is the ripple sum of
-        `p = x^y^z` against `q[i] = maj[i-1]`, whose bit 0 is zero, so the
-        ripple layer's bit 0 needs no row and slot `base + 31 + i - 1` carries
-        bit `i`.
-        """
-        majority = []
-        for bit in range(31):
-            left_values[base + bit] = x[bit] + z[bit]
-            right_values[base + bit] = y[bit] + z[bit]
-            majority.append(column_weights[base + bit] + z[bit])
-        ripple_base = base + 31
-        carry = ZERO
-        output = []
-        for bit in range(32):
-            q = ZERO if bit == 0 else majority[bit - 1]
-            left = x[bit] + y[bit] + z[bit] + carry
-            output.append(left + q)
-            if 1 <= bit <= 30:
-                left_values[ripple_base + bit - 1] = left
-                right_values[ripple_base + bit - 1] = q + carry
-                carry += column_weights[ripple_base + bit - 1]
-        return tuple(output)
-
-    def linear_rows(values: Sequence[E], base: int) -> None:
-        for bit in range(32):
-            left_values[base + bit] = values[bit]
-            right_values[base + bit] = column_weights[constant]
-
-    for base, length in ((0, 256), (message_base, 512), (counter_low, 128)):
-        for row in range(base, base + length):
-            left_values[row] = column_weights[row]
-            right_values[row] = column_weights[constant]
-
-    # v[0..8] = h, v[8..12] = IV[0..4], v[12..16] = IV[4..8] ^ (t_lo, t_hi, f0, f1).
-    state = [slots(32 * word) for word in range(8)]
-    state.extend(literal(BLAKE2S_IV[word]) for word in range(4))
-    state.extend(xor(literal(BLAKE2S_IV[4 + word]), slots(base)) for word, base in enumerate((counter_low, counter_high, final_flag, last_node_flag)))
-
-    for round_index in range(10):
-        sigma = BLAKE2S_SIGMA[round_index]
-        for gate_index, (lane_a, lane_b, lane_c, lane_d) in enumerate(BLAKE2S_G_LANES):
-            gate = round_index * 8 + gate_index
-            gate_base = gates_base + gate_stride * gate
-            a, b, c, d = state[lane_a], state[lane_b], state[lane_c], state[lane_d]
-            mx = slots(message_base + 32 * sigma[2 * gate_index])
-            my = slots(message_base + 32 * sigma[2 * gate_index + 1])
-            a1 = add3(a, b, mx, gate_base)
-            d1 = rotate_right(xor(d, a1), 16)
-            c1 = add(c, d1, gate_base + 61)
-            b1 = rotate_right(xor(b, c1), 12)
-            a2 = add3(a1, b1, my, gate_base + 92)
-            d2 = rotate_right(xor(d1, a2), 8)
-            c2 = add(c1, d2, gate_base + 153)
-            b2 = rotate_right(xor(b1, c2), 7)
-            # Every lane cascades: this encoding materializes no intermediate word.
-            state[lane_a] = a2
-            state[lane_b] = b2
-            state[lane_c] = c2
-            state[lane_d] = d2
-
-    # out[w] = h[w] ^ v[w] ^ v[w+8], the only materialized words.
-    for word in range(8):
-        out = xor(xor(state[word], state[word + 8]), slots(32 * word))
-        linear_rows(out, 256 + 32 * word)
-
-    left_values[constant] = column_weights[constant]
-    right_values[constant] = column_weights[constant]
+    for row in range(64 * KECCAK_OUT_WORD):  # the free inputs
+        left_values[row] = column_weights[row]
+        right_values[row] = constant
+    state = [tuple(column_weights[64 * lane : 64 * lane + 64]) for lane in range(25)]
+    state[16] = xor(state[16], literal(KECCAK_END_BIT))
+    for round_index, round_constant in enumerate(KECCAK_RC):
+        columns = [reduce(xor, (state[x + 5 * y] for y in range(5))) for x in range(5)]
+        effect = [xor(columns[(x + 4) % 5], rotate_left(columns[(x + 1) % 5], 1)) for x in range(5)]
+        permuted: list[tuple[E, ...]] = [()] * 25
+        for lane in range(25):
+            permuted[KECCAK_PI[lane]] = rotate_left(xor(state[lane], effect[lane % 5]), KECCAK_RHO[lane])
+        for lane in range(25):
+            x, y = lane % 5, lane // 5
+            negated, other = permuted[(x + 1) % 5 + 5 * y], permuted[(x + 2) % 5 + 5 * y]
+            base = 64 * (KECCAK_PRODUCT_WORD + 25 * round_index + lane)
+            for bit in range(64):
+                left_values[base + bit] = negated[bit] + constant
+                right_values[base + bit] = other[bit]
+            state[lane] = tuple(permuted[lane][bit] + column_weights[base + bit] for bit in range(64))
+        state[0] = xor(state[0], literal(round_constant))
+    for lane in range(25):  # the output lanes
+        for bit in range(64):
+            left_values[64 * (KECCAK_OUT_WORD + lane) + bit] = state[lane][bit]
+            right_values[64 * (KECCAK_OUT_WORD + lane) + bit] = constant
+    left_values[KECCAK_CONSTANT_COLUMN] = constant
+    right_values[KECCAK_CONSTANT_COLUMN] = constant
     return left_values, right_values
 
 
-def blake2s_bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequence[E]) -> E:
+def keccak_bilinear(alpha: E, row_weights: Sequence[E], column_weights: Sequence[E]) -> E:
     """Compute `e_row^T (A0 + alpha B0) w_col` from the two forward row vectors."""
-    left_values, right_values = blake2s_row_values(column_weights)
+    left_values, right_values = keccak_row_values(column_weights)
     return dot(row_weights, left_values) + alpha * dot(row_weights, right_values)
 
 
@@ -1358,9 +1317,9 @@ def verify_stacked_opening(transcript: Transcript, root: Digest, stack_log: int,
 
 
 def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) -> None:
-    bytecode_hash = blake2s_hash(b"".join(word.to_bytes() for word in bytecode))
+    bytecode_hash = sha3_hash(b"".join(word.to_bytes() for word in bytecode))
     iv_preimage = b"leanvm" + pack("<Q", len(R1CS_DIGEST)) + R1CS_DIGEST + bytecode_hash.value
-    fiat_shamir_IV = blake2s_hash(iv_preimage)
+    fiat_shamir_IV = sha3_hash(iv_preimage)
     transcript = Transcript(proof, fiat_shamir_IV, public_input)
 
     # 1] memory log-size, table log-size, and log-inv-rate in WHIR
@@ -1396,8 +1355,8 @@ def verify_execution(bytecode: Sequence[K], public_input: Digest, proof: Proof) 
     public_point = (public_challenge, *[ZERO] * (layout.placements[MEMORY_0].variables - 1))
     claims.extend(ColumnClaim(column, public_point, value) for column, value in zip((MEMORY_0, MEMORY_1, MEMORY_2), public_limbs))
 
-    # 6] BLAKE2s validity via Flock
-    flock_point, flock_s = verify_flock(BLAKE2S_R1CS_LOG_SIZE + layout.table_log_heights[OP_BLAKE2S], transcript)
+    # 6] SHA3 validity via Flock
+    flock_point, flock_s = verify_flock(KECCAK_R1CS_LOG_SIZE + layout.table_log_heights[OP_SHA3], transcript)
 
     # 7] Ring-switching
     ringswitch_target, ringswitch_weight = ring_switch(flock_point, flock_s, transcript)

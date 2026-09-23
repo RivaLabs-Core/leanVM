@@ -1,4 +1,4 @@
-//! Standalone batch BLAKE2s proving, isolated from the VM.
+//! Standalone batch Keccak proving, isolated from the VM.
 //!
 //! ```text
 //! BENCH_REPEAT=3 BENCH_COOLDOWN=2 FLOCK_N_LOG=18 cargo test --release --package flock --test batch_proving_hashes -- hash_batch_prove_verify --exact --nocapture --include-ignored
@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use fiat_shamir::transcript::{ProverState, Receiver, Transmitter, VerifierState};
 use flock::hash::{
-    Blake2sSetup, Compression, K_LOG, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log,
-    pinned_compression, ring_switch_open, ring_switch_verify,
+    Instance, K_LOG, KeccakSetup, generate_witness_with_ab_packed_and_lincheck, min_n_blocks_log, ring_switch_open,
+    ring_switch_verify,
 };
 use pcs::pack::LOG_PACKING;
 use pcs::stack_open::{open_batch_mixed_whir_stacked, verify_opening_batch_mixed_whir_stacked};
@@ -21,7 +21,6 @@ use primitives::{field::F64, pretty_integer, test_rng::Rng};
 #[test]
 #[ignore = "manual release benchmark; needs a large-stack worker and substantial memory"]
 fn hash_batch_prove_verify() {
-    // The XMSS n=820 workload executes about 2^17 BLAKE2s compressions.
     let requested_n_log: usize = std::env::var("FLOCK_N_LOG")
         .ok()
         .map(|s| s.parse().expect("FLOCK_N_LOG must be an integer"))
@@ -37,12 +36,10 @@ fn hash_batch_prove_verify() {
     );
 
     let mut rng = Rng::new(0x9E37_79B9_7F4A_7C15 ^ n as u64);
-    let blocks: Vec<Compression> = (0..n)
-        .map(|_| pinned_compression(std::array::from_fn(|_| rng.next_u32())))
-        .collect();
+    let blocks: Vec<Instance> = (0..n).map(|_| std::array::from_fn(|_| rng.next_u64())).collect();
 
     let t = Instant::now();
-    let setup = Blake2sSetup::new(n);
+    let setup = KeccakSetup::new(n);
     let setup_ms = t.elapsed().as_secs_f64() * 1e3;
 
     let config = config_for_rate(mu, LOG_INV_RATE_0).expect("WHIR configuration");
@@ -65,7 +62,7 @@ fn hash_batch_prove_verify() {
         let witness_s = t.elapsed().as_secs_f64();
         assert_eq!(q_flock.len(), 1 << mu);
 
-        let mut ps = ProverState::from_label(b"flock-blake2s-batch");
+        let mut ps = ProverState::from_label(b"flock-keccak-batch");
         let t_prove = Instant::now();
 
         let t = Instant::now();
@@ -119,7 +116,7 @@ fn hash_batch_prove_verify() {
     });
 
     let (_, verify_time) = Plan::new(plan.repeat, 0).measure_quiet(|_final_pass| {
-        let mut vs = VerifierState::from_label(b"flock-blake2s-batch", &transcript);
+        let mut vs = VerifierState::from_label(b"flock-keccak-batch", &transcript);
         let root = vs.next_root().expect("commitment root");
         let replay = setup.verify_reduction(&mut vs).expect("Flock reduction verifies");
         let ring = ring_switch_verify(n, 0, &replay.claim);
@@ -146,7 +143,7 @@ fn hash_batch_prove_verify() {
     let ms = |t: &Timing| format!("{:>8.1} ms{:<9}{}", t.mean() * 1e3, t.spread(), share(t.mean()));
     let named = witness.mean() + commit_stage.mean() + zerocheck.mean() + lincheck.mean() + open.mean();
     println!(
-        "\nFlock BLAKE2s batch proving, {} compressions (2^{n_log} slots)",
+        "\nFlock Keccak batch proving, {} permutations (2^{n_log} slots)",
         pretty_integer(n)
     );
     println!("  setup (preprocessing, excluded) : {setup_ms:>8.1} ms");
@@ -168,14 +165,10 @@ fn hash_batch_prove_verify() {
         verify_time.mean() * 1e3
     );
     let prove_s = prove.mean();
-    let compressions_per_second = (n as f64 / prove_s).round() as u64;
+    let permutations_per_second = (n as f64 / prove_s).round() as u64;
     println!(
-        "  throughput                      : {:>14} compressions/s{}",
-        pretty_integer(compressions_per_second),
+        "  throughput                      : {:>14} permutations/s{}",
+        pretty_integer(permutations_per_second),
         prove.spread()
-    );
-    println!(
-        "  (~{:.1} XMSS/s equivalent at 146 compressions/signature)",
-        n as f64 / prove_s / 146.0
     );
 }

@@ -136,7 +136,7 @@ pub fn read_commitment(vs: &mut VerifierState) -> Result<[u8; 32], crate::transc
 
 /// Open the committed witness: discharge the `points` (leanVM's bus / constraint /
 /// public-input claims, as block-sparse slot evaluations) AND flock's
-/// ring-switched BLAKE2s validity claim (`ring`) in ONE stacked WHIR.
+/// ring-switched Keccak validity claim (`ring`) in ONE stacked WHIR.
 /// The points become the opener's `point_claims`; the opening's Merkle data
 /// rides the transcript's phase list, not the scalar stream. The commitment root
 /// was already bound by [`commit`], and the point *values* rode the stream

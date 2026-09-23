@@ -48,8 +48,8 @@ REC_N=2              # child aggregates per recursion node
 
 BRANCHES=(main    sha2    sha3)
 HASHES=(  BLAKE2s SHA-256 Keccak)
-XMSS=(    900     450     205)   # signatures per leaf, per that branch's README
-SPHINCS=( 245     122     55)    # likewise, a leaf of SPHINCS signatures
+XMSS=(    900     450     470)   # signatures per leaf, per that branch's README
+SPHINCS=( 245     122     125)    # likewise, a leaf of SPHINCS signatures
 PER_LEAF=(900     900     450)   # likewise, the XMSS leaves a recursion node covers
 FLOCK_LOG=(18     17      16)    # likewise, log2 of flock's batch of compressions
 

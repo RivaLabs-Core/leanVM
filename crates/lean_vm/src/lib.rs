@@ -17,8 +17,8 @@
 //!   degree-2 identities plus their three bus forms (§sec:air).
 //! - [`tables`]: the six instruction tables (columns, flushes, constraints).
 //! - [`cpu`]: whole-program assembly, control flow, and the prove/verify entry points.
-//! - [`hash_flock`]: the `BLAKE2s` glue: flock's R1CS validity proof over the same commitment.
-//! - [`vmhash`]: VM-native hashing (one-block compression and standard BLAKE2s slice hashing).
+//! - [`hash_flock`]: the `SHA3` glue: flock's R1CS validity proof over the same commitment.
+//! - [`vmhash`]: VM-native hashing (the one-block hash every Merkle node and transcript step uses).
 
 pub mod colval;
 pub mod constraints;

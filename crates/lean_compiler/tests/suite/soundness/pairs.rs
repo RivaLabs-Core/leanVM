@@ -286,21 +286,21 @@ fn pinned(hint0: F192, hint1: F192) -> Trial {
     Trial::new([g(3), hint1]).stream("w", vec![vec![hint0, hint1]])
 }
 
-/// `zkDSL.md` §BLAKE2s: "If `out` was already written, the statement *asserts*
+/// `zkDSL.md` §SHA3: "If `out` was already written, the statement *asserts*
 /// the digest equals it, write-once turning the hash into a verification, which
 /// is exactly what a signature verifier wants." That has to hold for a `StackBuf`
 /// `out` as much as for a `HeapBuf` one, since the doc recommends the idiom
 /// without qualifying which.
 ///
-/// Regression test: the `BLAKE2s` output arm named the raw run, so a `StackBuf`
+/// Regression test: the hash output arm named the raw run, so a `StackBuf`
 /// `out` whose cells had been pre-written by copies or constants had its digest
 /// written where nothing read it. The "verification" checked nothing, and the
 /// prover could put any message under the hash.
 #[test]
-fn prewritten_blake2s_out_asserts_the_digest() {
+fn prewritten_sha3_out_asserts_the_digest() {
     check_pair(&Pair {
-        name: "prewritten_blake2s_out_asserts_the_digest",
-        why: "zkDSL.md §BLAKE2s: a pre-written `out` turns the hash into a verification.",
+        name: "prewritten_sha3_out_asserts_the_digest",
+        why: "zkDSL.md §SHA3: a pre-written `out` turns the hash into a verification.",
         a: "\
 def main():
     v = StackBuf(2)
@@ -313,7 +313,7 @@ def main():
     d = StackBuf(2)
     d[0] = v[0]
     d[1] = v[1]
-    blake2s(m[0:2], m[2:4], d)
+    sha3(m[0:2], m[2:4], d)
     p = GEN ** 0
     p[1] = v[0]
     p[GEN] = v[1]
@@ -331,7 +331,7 @@ def main():
     d = HeapBuf(2)
     d[1] = v[0]
     d[GEN] = v[1]
-    blake2s(m[0:2], m[2:4], d[0:2])
+    sha3(m[0:2], m[2:4], d[0:2])
     p = GEN ** 0
     p[1] = v[0]
     p[GEN] = v[1]
