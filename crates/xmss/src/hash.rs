@@ -21,9 +21,9 @@ pub const TWEAK_TYPE_CHAIN: u8 = 1;
 pub const TWEAK_TYPE_WOTS_PK: u8 = 2;
 pub const TWEAK_TYPE_MERKLE: u8 = 3;
 pub const TWEAK_TYPE_ENCODING: u8 = 4;
-pub const TWEAK_TYPE_PARAMETER: u8 = 10;
-pub const TWEAK_TYPE_FILLER: u8 = 11;
-pub const TWEAK_TYPE_RANDOMIZER: u8 = 12;
+pub const TWEAK_TYPE_PARAMETER: u8 = 5;
+pub const TWEAK_TYPE_FILLER: u8 = 6;
+pub const TWEAK_TYPE_RANDOMIZER: u8 = 7;
 
 pub const TWEAK_LEN: usize = 16;
 pub type Tweak = [u8; TWEAK_LEN];

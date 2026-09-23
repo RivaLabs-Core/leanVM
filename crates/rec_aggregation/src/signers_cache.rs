@@ -2,8 +2,9 @@
 //! scheme.
 //!
 //! The cache grows as needed and is memoized in-process. Its filename binds the
-//! parameters, hash construction, and encoding predicate. Loaded signatures are
-//! also verified, so stale entries are regenerated from the first invalid one.
+//! parameters, hash construction, encoding predicate, and key derivation. Loaded
+//! signatures are also verified, so stale entries are regenerated from the first
+//! invalid one.
 
 use std::collections::BTreeMap;
 use std::collections::hash_map::DefaultHasher;
@@ -88,6 +89,8 @@ fn footprint(epoch: Epoch) -> u64 {
     (V, W, CHAIN_LENGTH, LOG_LIFETIME, TARGET_SUM, RANDOMNESS_LEN).hash(&mut hasher);
     hash_fingerprint().hash(&mut hasher);
     encoding_fingerprint(epoch).hash(&mut hasher);
+    // Key derivation and grinding, which verifying a cached signature does not exercise.
+    compute_signer(0, epoch).hash(&mut hasher);
     hasher.finish()
 }
 

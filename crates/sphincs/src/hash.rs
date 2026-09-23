@@ -19,13 +19,13 @@ pub const TWEAK_CHAIN: u8 = 1;
 pub const TWEAK_LEAF: u8 = 2;
 pub const TWEAK_NODE: u8 = 3;
 pub const TWEAK_ENC: u8 = 4;
-pub const TWEAK_FTS_PRF: u8 = 5;
-pub const TWEAK_FTS_LEAF: u8 = 6;
-pub const TWEAK_FTS_NODE: u8 = 7;
-pub const TWEAK_FTS_ROOTS: u8 = 8;
-pub const TWEAK_MSG: u8 = 9;
-pub const TWEAK_PARAMETER: u8 = 10;
-pub const TWEAK_RANDOMIZER: u8 = 12;
+pub const TWEAK_PARAMETER: u8 = 5;
+pub const TWEAK_RANDOMIZER: u8 = 7;
+pub const TWEAK_FTS_PRF: u8 = 8;
+pub const TWEAK_FTS_LEAF: u8 = 9;
+pub const TWEAK_FTS_NODE: u8 = 10;
+pub const TWEAK_FTS_ROOTS: u8 = 11;
+pub const TWEAK_MSG: u8 = 12;
 
 /// `[protocol_domain_sep:1 | type:1 | layer:1 | zero:1 | p:4 | tree:4 | index:4]`, little endian.
 /// `lay` identifies a hypertree layer or a tree of a few-time forest.

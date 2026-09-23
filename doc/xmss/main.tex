@@ -122,7 +122,7 @@ Define
   \mathsf{tweak}_{\mathrm{leaf}}(\ep) &= \mathsf{enc}(2,0,\ep),\\
   \mathsf{tweak}_{\mathrm{merkle}}(\ell,j) &= \mathsf{enc}(3,\ell,j), &&1\leq\ell\leq h,\ 0\leq j<2^{h-\ell},\\
   \mathsf{tweak}_{\mathrm{enc}}(\ep) &= \mathsf{enc}(4,0,\ep),\\
-  \mathsf{tweak}_{\mathrm{rnd}}(\ep,a) &= \mathsf{enc}(12,a,\ep), &&0\leq a<\amax.
+  \mathsf{tweak}_{\mathrm{rnd}}(\ep,a) &= \mathsf{enc}(7,a,\ep), &&0\leq a<\amax.
 \end{aligned}
 \]
 
@@ -164,7 +164,7 @@ The one-time public key and its Merkle leaf are
 
 The algorithm $\Gen$ samples a master secret $S\getsr\bits{256}$ and derives
 \[
-  P=\Th\!\left(0^{\lpar},\mathsf{enc}(10,0,0),S\right),
+  P=\Th\!\left(0^{\lpar},\mathsf{enc}(5,0,0),S\right),
   \qquad
   \mathit{sk}_{\ep,i}=\Th\!\left(P,\mathsf{enc}(0,i,\ep),S\right),
   \qquad 0\leq\ep<L,\quad 0\leq i<v.
@@ -323,9 +323,9 @@ At $w=3$, $v=42$ and $T=195$,
   |\mathcal D|=11539185377238682781344003244544752,\qquad \alpha=2^{-14.8479\ldots}\geq2^{-15}+2^{-128}.
 \]
 
-\emph{One attempt.} The map $I$ is injective, and no query of $\Gen$ reaches its image, $\Gen$ using tweak types $0$, $1$, $2$, $3$ and $10$, not $4$. So a $\rho$ not drawn before is a fresh oracle point, making $D$ uniform on $\bits n$ and independent of the history, and the attempt succeeds with probability exactly $\alpha$.
+\emph{One attempt.} The map $I$ is injective, and no query of $\Gen$ reaches its image, $\Gen$ using tweak types $0$, $1$, $2$, $3$ and $5$, not $4$. So a $\rho$ not drawn before is a fresh oracle point, making $D$ uniform on $\bits n$ and independent of the history, and the attempt succeeds with probability exactly $\alpha$.
 
-\emph{Exhausting the attempts.} Let $\mathcal F_a$ be the event that the first $a$ attempts all fail. The next derivation uses a fresh type-12 input, so its truncated output $\rho_a$ is uniform and independent of the earlier attempts. This $\rho_a$ equals one of the $a$ earlier randomizers with probability at most $a2^{-\lrnd}$, and otherwise the attempt fails with probability $1-\alpha$, so $\Pr[\mathcal F_{a+1}\mid\mathcal F_a]\leq1-\alpha+a2^{-\lrnd}$. Multiplying over $0\leq a<\amax$, and since $\amax2^{-\lrnd}=2^{-160}\leq2^{-128}$,
+\emph{Exhausting the attempts.} Let $\mathcal F_a$ be the event that the first $a$ attempts all fail. The next derivation uses a fresh type-7 input, so its truncated output $\rho_a$ is uniform and independent of the earlier attempts. This $\rho_a$ equals one of the $a$ earlier randomizers with probability at most $a2^{-\lrnd}$, and otherwise the attempt fails with probability $1-\alpha$, so $\Pr[\mathcal F_{a+1}\mid\mathcal F_a]\leq1-\alpha+a2^{-\lrnd}$. Multiplying over $0\leq a<\amax$, and since $\amax2^{-\lrnd}=2^{-160}\leq2^{-128}$,
 \[
   \Pr[\sigma=\bot]=\Pr[\mathcal F_{\amax}]\leq\left(1-\alpha+\amax2^{-\lrnd}\right)^{\amax}\leq\left(1-2^{-15}\right)^{\amax}.
 \]

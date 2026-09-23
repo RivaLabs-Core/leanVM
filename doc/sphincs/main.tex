@@ -390,7 +390,7 @@ With probability at least $1-2^{-256}$ over the master seed and the random oracl
 \begin{proof}
 Fix a message $m$. Signing fails only if the randomizer search or one of the $d=3$ WOTS counter searches is exhausted. Whenever signing succeeds, verification accepts by the recovery argument in Section~\ref{sec:ver}.
 
-\emph{Randomizer search.} Fix the seed and the oracle answers used by key generation. These calls use neither the randomizer-derivation tweak (type~12) nor the message-digest tweak (type~9). Each trial uses a distinct derivation input, so its 128-bit randomizer is uniform and independent of the earlier trials. After $j$ failed trials, the next randomizer repeats an earlier value with probability at most $j2^{-128}$. Otherwise its digest query is fresh, and the last FORS index is zero with probability $2^{-a}=2^{-10}$. Thus
+\emph{Randomizer search.} Fix the seed and the oracle answers used by key generation. These calls use neither the randomizer-derivation tweak (type~7) nor the message-digest tweak (type~12). Each trial uses a distinct derivation input, so its 128-bit randomizer is uniform and independent of the earlier trials. After $j$ failed trials, the next randomizer repeats an earlier value with probability at most $j2^{-128}$. Otherwise its digest query is fresh, and the last FORS index is zero with probability $2^{-a}=2^{-10}$. Thus
 \[
 \begin{aligned}
   \Pr[\text{randomizer search fails}]
@@ -452,18 +452,18 @@ $\mathsf{tw}_{\mathrm{chain}}(\lay,\tau,e,i,\mu)$ & $\mathsf{enc}(1,\lay,\tau,2^
 $\mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e)$ & $\mathsf{enc}(2,\lay,\tau,0,e)$\\
 $\mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda,j)$ & $\mathsf{enc}(3,\lay,\tau,\lambda,j)$\\
 $\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e)$ & $\mathsf{enc}(4,\lay,\tau,0,e)$\\
-$\mathsf{tw}_{\mathrm{ftsprf}}(\idx,\kappa,j)$ & $\mathsf{enc}(5,\kappa,\idx,0,j)$\\
-$\mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,j)$ & $\mathsf{enc}(6,\kappa,\idx,0,j)$\\
-$\mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j)$ & $\mathsf{enc}(7,\kappa,\idx,\lambda,j)$\\
-$\mathsf{tw}_{\mathrm{ftsroots}}(\idx)$ & $\mathsf{enc}(8,0,\idx,0,0)$\\
-$\mathsf{tw}_{\mathrm{msg}}$ & $\mathsf{enc}(9,0,0,0,0)$\\
-$\mathsf{tw}_{\mathrm{parameter}}$ & $\mathsf{enc}(10,0,0,0,0)$\\
-$\mathsf{tw}_{\mathrm{rnd}}(a)$ & $\mathsf{enc}(12,0,0,a,0)$\\
+$\mathsf{tw}_{\mathrm{parameter}}$ & $\mathsf{enc}(5,0,0,0,0)$\\
+$\mathsf{tw}_{\mathrm{rnd}}(a)$ & $\mathsf{enc}(7,0,0,a,0)$\\
+$\mathsf{tw}_{\mathrm{ftsprf}}(\idx,\kappa,j)$ & $\mathsf{enc}(8,\kappa,\idx,0,j)$\\
+$\mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,j)$ & $\mathsf{enc}(9,\kappa,\idx,0,j)$\\
+$\mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j)$ & $\mathsf{enc}(10,\kappa,\idx,\lambda,j)$\\
+$\mathsf{tw}_{\mathrm{ftsroots}}(\idx)$ & $\mathsf{enc}(11,0,\idx,0,0)$\\
+$\mathsf{tw}_{\mathrm{msg}}$ & $\mathsf{enc}(12,0,0,0,0)$\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-In the chain tweak, $\mu\in\{1,\ldots,7\}$ is the destination position, so the step from $\mu-1$ to $\mu$ uses $p=8i+\mu-1$. Types $0$, $5$, $10$ and $12$ are reserved for seed derivation.
+In the chain tweak, $\mu\in\{1,\ldots,7\}$ is the destination position, so the step from $\mu-1$ to $\mu$ uses $p=8i+\mu-1$. Types $0$, $5$, $7$ and $8$ are reserved for seed derivation. 
 
 \bibliographystyle{alphaurl}
 \bibliography{refs}
