@@ -6,14 +6,15 @@
 
 use leanvm::*;
 
-const N_SIGNERS: usize = 8;
 const LOG_INV_RATE: usize = 2; // 1 = bigger proof, faster proving. 4 = smaller proof, slower proving.
 
 fn main() {
     setup_prover();
     let rng = &mut rand::rng();
 
-    let signatures: Vec<_> = (0..N_SIGNERS)
+    let n_signers = 8;
+
+    let signatures: Vec<_> = (0..n_signers)
         .map(|i| {
             let (secret_key, public_key) = sphincs::key_gen(rng);
             let message = [i as u8; sphincs::MESSAGE_LEN];
@@ -23,18 +24,24 @@ fn main() {
         })
         .collect();
 
+    // What the proof will claim: each (public key, message) pair, sorted.
+    let mut claims: Vec<SphincsClaim> = signatures.iter().map(|(pk, message, _)| (*pk, *message)).collect();
+    claims.sort();
+
     let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap();
 
     let bytes = proof.to_bytes();
     let received = EthereumProof::from_bytes(&bytes).unwrap();
     received.verify().unwrap(); // verify the snark is valid
 
-    let n = received.sphincs_signers().len();
+    // sanity check:
+    assert_eq!(received.sphincs_signers(), claims);
+
     let kib = |bytes: usize| bytes as f64 / 1024.0;
     println!(
-        "{n} SPHINCS+ signatures ({n} x {:.1} KiB = {:.1} KiB) aggregated into a {:.1} KiB proof",
+        "{n_signers} SPHINCS+ signatures ({n_signers} x {:.1} KiB = {:.1} KiB) aggregated into a {:.1} KiB proof",
         kib(sphincs::SIG_SIZE),
-        kib(n * sphincs::SIG_SIZE),
+        kib(n_signers * sphincs::SIG_SIZE),
         kib(bytes.len())
     );
 }
