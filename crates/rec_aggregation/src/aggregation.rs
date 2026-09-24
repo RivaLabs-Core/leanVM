@@ -1966,7 +1966,7 @@ pub(crate) struct DaInput<'a> {
     pub roots: Option<&'a [[u8; 32]]>,
 }
 
-/// Prove existence of signatures and valid encoding of PQ, potentially using recursive children.
+/// Prove existence of signatures and valid encoding of PQ-blobs, potentially using recursive children.
 ///
 /// - `children`: child proofs; at most [`MAX_RECURSIONS`].
 /// - `raw_xmss`: list of `(public_key, epoch, message, signature)`, any order; at most
