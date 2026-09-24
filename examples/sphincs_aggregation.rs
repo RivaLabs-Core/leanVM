@@ -1,7 +1,7 @@
 //! Aggregate a handful of SPHINCS+ signatures into one proof, then verify it.
 //!
 //! ```sh
-//! N_SPHINCS=128 cargo run --release --example sphincs_aggregation
+//! N_SPHINCS=80 cargo run --release --example sphincs_aggregation
 //! ```
 
 use leanvm::*;
