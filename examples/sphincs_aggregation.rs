@@ -1,7 +1,7 @@
 //! Aggregate a handful of SPHINCS+ signatures into one proof, then verify it.
 //!
 //! ```sh
-//! cargo run --release --example sphincs_aggregation
+//! N_SPHINCS=8 cargo run --release --example sphincs_aggregation
 //! ```
 
 use leanvm::*;
@@ -12,7 +12,7 @@ fn main() {
     setup_prover();
     let rng = &mut rand::rng();
 
-    let n_signers = 8;
+    let n_signers: usize = std::env::var("N_SPHINCS").map_or(8, |n| n.parse().expect("N_SPHINCS is a number"));
 
     let signatures: Vec<_> = (0..n_signers)
         .map(|i| {
