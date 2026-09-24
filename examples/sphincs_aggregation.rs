@@ -29,7 +29,10 @@ fn main() {
     claims.sort();
 
     let time = std::time::Instant::now();
-    let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap();
+    let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap_or_else(|e| {
+        eprintln!("aggregation failed: {e}");
+        std::process::exit(1)
+    });
     let aggregation_time = time.elapsed();
     println!(
         "Aggregation took: {:?} ({:.1} sphincs / s)",
