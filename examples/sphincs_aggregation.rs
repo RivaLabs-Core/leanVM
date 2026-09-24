@@ -28,11 +28,21 @@ fn main() {
     let mut claims: Vec<SphincsClaim> = signatures.iter().map(|(pk, message, _)| (*pk, *message)).collect();
     claims.sort();
 
+    let time = std::time::Instant::now();
     let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap();
+    let aggregation_time = time.elapsed();
+    println!(
+        "Aggregation took: {:?} ({:.1} sphincs / s)",
+        aggregation_time,
+        n_signers as f64 / aggregation_time.as_secs_f64()
+    );
 
     let bytes = proof.to_bytes();
     let received = EthereumProof::from_bytes(&bytes).unwrap();
+
+    let time = std::time::Instant::now();
     received.verify().unwrap(); // verify the snark is valid
+    println!("Verification took: {:?}", time.elapsed());
 
     // sanity check:
     assert_eq!(received.sphincs_signers(), claims);
