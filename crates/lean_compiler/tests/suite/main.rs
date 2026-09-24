@@ -14,6 +14,7 @@ mod field_towers;
 mod filler;
 mod hint_log2_ceil;
 mod inline_expr;
+mod keccak;
 mod loop_frames;
 mod pack64x2;
 mod print_debug;

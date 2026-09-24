@@ -237,3 +237,14 @@ def sha3_cells(run, out) -> None:
     with compile-time bounds), eight cells a `SHA3` instruction. `out` is as for
     `sha3`."""
     _ = run, out
+
+
+def keccak(head, out, *, words=None) -> None:
+    """Keccak-256 (the EVM's `keccak256`, padding byte 0x01) of the byte string
+    `head || words`. `head` is a non-empty list of cells (a literal `0` is known
+    to be zero, any other integer literal a constant); `words` is a run whose
+    every cell enters as a 32-byte word, the cell then 16 zero bytes. Up to 128
+    bytes this is one `SHA3` instruction; past that the 136-byte rate splits
+    cells, which the compiler takes apart into 64-bit lanes (about four cycles a
+    split nonzero cell). `out` is as for `sha3`."""
+    _ = head, out, words

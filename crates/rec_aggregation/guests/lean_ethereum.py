@@ -349,46 +349,41 @@ DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V
 
 # ------------------------------------------------------ SPHINCS+ (host-supplied)
-# The scheme's own letters, prefixed SP_ where XMSS has the same one.
-SP_V = SP_V_PLACEHOLDER
-SP_W = SP_W_PLACEHOLDER
-SP_TARGET_SUM = SP_TARGET_SUM_PLACEHOLDER
-SP_D = SP_D_PLACEHOLDER
-SP_HEIGHTS = SP_HEIGHTS_PLACEHOLDER   # h_lay, one per hypertree layer, top first
-SP_SUFFIX = SP_SUFFIX_PLACEHOLDER     # SP_SUFFIX[lay] = sum of h_j for j >= lay
-SP_A = SP_A_PLACEHOLDER
-SP_K = SP_K_PLACEHOLDER
-SP_H = SP_H_PLACEHOLDER               # the total hypertree height, SP_SUFFIX[0]
-SP_CHAIN_LENGTH = 2 ** SP_W
-SP_CHAIN_STEPS = SP_CHAIN_LENGTH - 1
-SP_DIGITS_PER_WORD = SP_V / 2
-SP_TIP_CELLS = SP_V
-SP_N_FTS = SP_K - 1                   # the forest drops the last index's tree
-# The message digest is h + k*a bits of a hash output: the whole low cell and
-# the low 48 bits of the high one. Decomposing the high cell's low lane covers
-# them, so the buffer holds three lanes and the top 16 are never read.
+# The NiceTry "SPHINCS- v2" profile (`SphincsVerifier_v2.sol`): standard FORS
+# under a standard WOTS+ hypertree, every hash Keccak-256 over 32-byte words,
+# every address the FIPS 205 32-byte ADRS (big-endian fields), every digest read
+# as a big-endian uint256 with fields taken least significant first.
+SP_K = SP_K_PLACEHOLDER               # FORS trees
+SP_A = SP_A_PLACEHOLDER               # FORS tree height
+SP_D = SP_D_PLACEHOLDER               # hypertree layers, layer 0 at the bottom
+SP_HP = SP_HP_PLACEHOLDER             # a layer's tree height, h'
+SP_H = SP_H_PLACEHOLDER               # total height, d h'
+SP_W = SP_W_PLACEHOLDER               # Winternitz parameter, 16
+SP_LEN1 = SP_LEN1_PLACEHOLDER         # message digits
+SP_LEN2 = SP_LEN2_PLACEHOLDER         # checksum digits
+SP_L = SP_LEN1 + SP_LEN2              # chains
+SP_MAX_CSUM = SP_MAX_CSUM_PLACEHOLDER  # len1 (w - 1): digit sum plus checksum
+SP_CHAIN_STEPS = SP_W - 1
+# htIdx = (digest >> k a) & (2^h - 1): the FORS indices sit below it.
+SP_HT_OFF = SP_K * SP_A
+# The message digest's bits that matter lie below bit k a + h <= 192, i.e. in
+# its last 24 bytes: the high lane of cell 0, then both lanes of cell 1.
 SP_BIT_LANES = 3
 SP_BIT_CELLS = SP_BIT_LANES * BASE_FIELD_BITS
-# Native tweak prefixes, including the protocol domain separator and type.
-SP_TW_CHAIN = SP_TW_CHAIN_PLACEHOLDER
-SP_TW_LEAF = SP_TW_LEAF_PLACEHOLDER
-SP_TW_NODE = SP_TW_NODE_PLACEHOLDER
-SP_TW_ENC = SP_TW_ENC_PLACEHOLDER
-SP_TW_FTS_LEAF = SP_TW_FTS_LEAF_PLACEHOLDER
-SP_TW_FTS_NODE = SP_TW_FTS_NODE_PLACEHOLDER
-SP_TW_FTS_ROOTS = SP_TW_FTS_ROOTS_PLACEHOLDER
-SP_TW_MSG = SP_TW_MSG_PLACEHOLDER
-# Tweak layout: protocol_domain_sep | type | layer | zero | p | tree | index.
-# Each 32-bit field stays within one 64-bit lane.
-SP_LAY_MUL = 2 ** 16
-SP_P_MUL = 2 ** 32
-SP_TAU_POS = BASE_FIELD_BITS
-SP_J_POS = BASE_FIELD_BITS + 32
-SP_CHAIN_MUL = SP_CHAIN_LENGTH * SP_P_MUL   # chain i's tweaks start at p = 2^w * i
-# The encoding counter, LE_32 in the low four bytes of its cell: bounded by
-# decomposing exactly that many bits, so the guest accepts no preimage the native
-# verifier cannot parse.
-SP_COUNTER_BITS = 32
+# H_msg's domain word 0xFF..FF is two all-ones cells.
+SP_ONES = 340282366920938463463374607431768211455  # 2^128 - 1
+# The ADRS as two cells: A = (layer, tree), B = (type, word1, word2, word3),
+# each field big-endian, so a field's least significant byte is its last:
+# layer at A's byte 3, the tree at A's byte 15, the type at B's byte 3, the
+# key pair at B's byte 7, word2 (chain or height) at byte 11, word3 (hash
+# address or tree index) at byte 15. A cell's byte b holds its bits 8b..8b+7.
+SP_BYTE3 = 2 ** 24
+SP_BYTE11 = 2 ** 88
+SP_BYTE15 = 2 ** 120
+SP_WOTS_PK = 1
+SP_TREE = 2
+SP_FORS_TREE = 3
+SP_FORS_ROOTS = 4
 
 # --------------------------------------------------------------- node capacities
 # MAX_KEYS caps the coverage table's slots, both schemes' declared keys and their
@@ -2202,8 +2197,8 @@ def fill_xmss_epoch_tables(epoch, merkle_bits, tweak_table):
     # index `epoch >> lvl` at Merkle level lvl - 1, and the direction bit at that
     # level IS bit lvl - 1. Booleanity is a write-once pin and the reconstruction
     # ties the bits back to the epoch, which also bounds it to LOG_LIFETIME bits.
-    # SPHINCS shares none of this, deriving every tweak from the index its own
-    # digest picks, which is neither public nor shared between signers.
+    # SPHINCS shares none of this, building every address from the bits of its
+    # own digest, which are neither public nor shared between signers.
     hint_decompose_bits(merkle_bits, epoch, LOG_LIFETIME)
     bits = StackBuf(LOG_LIFETIME)
     reconstructed = 0
@@ -2306,92 +2301,102 @@ def walk(value, chain_tweaks, pp, k: Const):
 
 
 @inline
-def sp_bit_field(bits_ptr, off: Const, n: Const, pos: Const):
-    # The integer held by bits [off, off+n) of the digest, weighed into the
-    # coordinate basis at `pos`: a tweak field placed where the tweak wants it, one
-    # fused multiply-add a bit, whatever lane the bits came from.
+def sp_bit(bits, b: Const):
+    # Bit b of the message digest read as a big-endian uint256: byte 31 - b/8, bit
+    # b mod 8. `bits` holds the digest's lanes 1..3 (bytes 8..31), 64 bits each.
+    return bits[GEN ** (BASE_FIELD_BITS * ((31 - b // 8) // 8 - 1) + 8 * ((31 - b // 8) % 8) + b % 8)]
+
+
+@inline
+def sp_field(bits, off: Const, n: Const, lsb_byte: Const):
+    # The integer digest bits [off, off+n) spell, as the big-endian ADRS field
+    # whose least significant byte is cell byte lsb_byte: value bit j lands on
+    # cell bit 8 (lsb_byte - j/8) + j mod 8. One multiply-add a bit.
     acc = 0
-    for i in unroll(0, n):
-        acc += bits_ptr[GEN ** (off + i)] * COORD_BASIS[pos + i]
+    for j in unroll(0, n):
+        acc += sp_bit(bits, off + j) * COORD_BASIS[8 * (lsb_byte - j // 8) + j % 8]
     return acc
 
 
-def sp_walk(value, tw_base, pp, k: Const):
-    # Walk chain steps k..SP_CHAIN_STEPS-1: value' = Th(P, tw_chain, value).
-    # `tw_base` already carries the type byte, the layer, 2^w*i and the position
-    # (tau, e), so step s's tweak is one addition of a compile-time literal.
+@inline
+def sp_index(v: Const):
+    # A compile-time word3 (tree index or hash address) below 2^16, big-endian at
+    # cell bytes 14 and 15.
+    return const((v % 256) * SP_BYTE15 + (v // 256) * 2 ** 112)
+
+
+def sp_walk(value, adrs_a, adrs_b, pp, k: Const):
+    # Chain steps k..w-2 from position k: value' = F(pp, ADRS(hash address s), value),
+    # keccak(pp | ADRS | value), 96 bytes. `adrs_b` carries the type (WOTS_HASH,
+    # zero), the key pair and the chain index; the hash address is a literal.
     word = value
     for s in unroll(k, SP_CHAIN_STEPS):
         out = StackBuf(SHA3_STATE)
-        sha3([tw_base + s * SP_P_MUL, pp], [word, 0], out, len=48)
+        keccak([pp, 0, adrs_a, adrs_b + const(s * SP_BYTE15), word, 0], out)
         word = out[0]
     return word, k
 
 
-def sp_ots_leaf(tw_pos, pp, msg):
-    # One layer's one-time verification: the encoding of `msg` under the hinted
-    # counter, the V chains walked from the revealed values, and the leaf they hash
-    # to. `tw_pos` is the position's tweak base (layer, tau, e); this function is
-    # called once per layer, so the V dispatch tables are compiled once for the
-    # whole scheme.
-    ctr = hint_witness("sp_counter")
-    ctr_bits = HeapBuf(GEN ** SP_COUNTER_BITS)
-    hint_decompose_bits(ctr_bits, ctr, SP_COUNTER_BITS)
-    bind_bits(ctr_bits, ctr, SP_COUNTER_BITS)  # LE_32: four counter bytes, twelve of padding
+def sp_wots_pk(adrs_a, kp, pp, msg):
+    # One layer's WOTS+ verification: the digest of `msg`, its len1 base-16 digits
+    # and the len2 digits of their checksum, the chains walked from the revealed
+    # values, and the key they compress to. `adrs_a` is the layer's (layer, tree)
+    # cell and `kp` the key pair placed in word1. Called once per layer, so the
+    # dispatch tables are compiled once.
+    dw = StackBuf(SHA3_STATE)
+    keccak([pp, 0, adrs_a, kp, msg, 0], dw)
 
-    # D = Th(P, tw_enc, msg | LE_32(c)), a 52-byte one-block hash.
-    digest = StackBuf(SHA3_STATE)
-    sha3([tw_pos + SP_TW_ENC, pp], [msg, ctr], digest, len=52)
-
-    # The codeword, as in XMSS: each digit hinted in the exponent, range checked and
-    # dispatched once, arm k walking the remaining steps; the product of the digits
-    # is the target sum, and the digits weighted by 2^w within each 64-bit lane
-    # reconstruct D, which pins each lane's leftover top bits to zero.
-    # The leaf's preimage: the prefix (tweak, pp), then the V tips.
-    tips = StackBuf(2 + SP_TIP_CELLS)
-    tips[0] = tw_pos + SP_TW_LEAF
-    tips[1] = pp
-    digit_product = 1
-    acc_lo = 0
-    acc_hi = 0
-    for i in unroll(0, SP_V):
+    # Each digit is hinted in the exponent, range checked and dispatched, arm e
+    # walking the w-1-e remaining steps and returning e. The message digits are
+    # the digest's low 128 bits, its cell 1: digit i is the nibble at byte
+    # 15 - i/2, low half first, so weighing each e at that nibble rebuilds the cell.
+    tips = StackBuf(SP_L)
+    exponent = 1
+    acc = 0
+    for i in unroll(0, SP_LEN1):
         digit = hint_witness("sp_digits")
-        assert log(digit) < SP_CHAIN_LENGTH
+        assert log(digit) < SP_W
         chain_start = hint_witness("sp_chain_starts")
-        tw_chain = tw_pos + SP_TW_CHAIN + i * SP_CHAIN_MUL
-        tips[2 + i], e = match(log(digit), range(0, SP_CHAIN_LENGTH), lambda k: sp_walk(chain_start, tw_chain, pp, k))
-        digit_product = digit_product * digit
-        term = e * SP_CHAIN_LENGTH ** (i % SP_DIGITS_PER_WORD)
-        if i // SP_DIGITS_PER_WORD == 0:
-            acc_lo = acc_lo + term
-        else:
-            acc_hi = acc_hi + term
-    assert digit_product == GEN ** SP_TARGET_SUM
-    assert acc_lo + acc_hi * Y_TOWER == digest[0]
+        adrs_b = kp + const(i * SP_BYTE11)
+        tips[i], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
+        exponent = exponent * digit
+        acc += e * COORD_BASIS[8 * (15 - i // 2) + 4 * (i % 2)]
+    assert acc == dw[1]
+    # The checksum digits c_j satisfy sum(digits) + sum_j 16^j c_j = len1 (w - 1),
+    # which in the exponent is one product: each c_j < 16, so the base-16
+    # representation of the checksum, and hence each c_j, is unique.
+    for j in unroll(0, SP_LEN2):
+        digit = hint_witness("sp_digits")
+        assert log(digit) < SP_W
+        chain_start = hint_witness("sp_chain_starts")
+        adrs_b = kp + const((SP_LEN1 + j) * SP_BYTE11)
+        tips[SP_LEN1 + j], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
+        exponent = exponent * digit ** (SP_W ** j)
+    assert exponent == GEN ** SP_MAX_CSUM
 
-    leaf = StackBuf(SHA3_STATE)
-    sha3_cells(tips, leaf)
-    return leaf[0]
+    # The WOTS key: keccak(pp | ADRS(WOTS_PK) | 35 tips), 1184 bytes.
+    key = StackBuf(SHA3_STATE)
+    keccak([pp, 0, adrs_a, kp + const(SP_WOTS_PK * SP_BYTE3)], key, words=tips)
+    return key[0]
 
 
 def verify_sig_sphincs(signer):
     # `signer` is one 4-cell entry of the SPHINCS coverage table: the key's root and
-    # public parameter, then the message THAT signer signed. Where XMSS's message is
+    # pkSeed, then the 32-byte message THAT signer signed. Where XMSS's message is
     # one statement field for the whole node, a SPHINCS message rides its own slot,
     # and the signer-set digest binds the two together.
+    root = signer[1]
     pp = signer[GEN]
 
-    # ---- the message digest, which chooses the few-time key ----
-    # D = Truncate(H(tw_msg | P | rho | root | m)), 96 bytes in one block.
-    rho_root = StackBuf(DIGEST_CELLS)
-    hint_witness(rho_root[0:1], "sp_rand")
-    rho_root[1] = signer[1]
+    # ---- the message digest, which picks the FORS instance and its leaves ----
+    # H_msg = keccak(pkSeed | pkRoot | R | M | 0xFF..FF), 160 bytes in two blocks.
+    r = hint_witness("sp_rand")
     digest = StackBuf(SHA3_STATE)
-    sha3([SP_TW_MSG, pp], rho_root, digest, tail=[signer[GEN ** 2], signer[GEN ** 3], 0, 0], len=96)
+    keccak([pp, 0, root, 0, r, 0, signer[GEN ** 2], signer[GEN ** 3], SP_ONES, SP_ONES], digest)
 
-    # The index and the k leaf indices are bit fields of that digest, so its bits are
-    # advice-decomposed here and bound lane by lane. Nothing else derives them: every
-    # tweak below is built from these bits.
+    # Every index below is a bit field of that digest, so its last 24 bytes are
+    # advice-decomposed here and bound lane by lane; every address is built from
+    # these bits.
     bits = HeapBuf(GEN ** SP_BIT_CELLS)
     lo = StackBuf(1)
     hint_f192_limbs(lo, digest[0])
@@ -2401,69 +2406,55 @@ def verify_sig_sphincs(signer):
     hint_f192_limbs(tail, digest[1])
     tail_hi = (digest[1] + tail[0]) * Y_INV
     assert_in_k(tail[0], tail_hi)
-    lanes = [lo[0], hi, tail[0]]
+    lanes = [hi, tail[0], tail_hi]
     for lane in unroll(0, SP_BIT_LANES):
         run = bits * GEN ** (lane * BASE_FIELD_BITS)
         hint_decompose_bits(run, lanes[lane], BASE_FIELD_BITS)
         bind_bits(run, lanes[lane], BASE_FIELD_BITS)
 
-    # The digest is admissible only if its last leaf index is zero, which is what
-    # lets the forest drop that tree.
-    for b in unroll(0, SP_A):
-        assert bits[GEN ** (SP_H + (SP_K - 1) * SP_A + b)] == 0
-
-    # ---- the few-time signature: one opened leaf per tree of the forest ----
-    idx_tau = sp_bit_field(bits, 0, SP_H, SP_TAU_POS)
-    # The few-time key's preimage: the prefix (tweak, pp), then the roots.
-    roots = StackBuf(2 + SP_N_FTS)
-    roots[0] = SP_TW_FTS_ROOTS + idx_tau
-    roots[1] = pp
-    for kappa in unroll(0, SP_N_FTS):
-        leaf_off = SP_H + kappa * SP_A
-        secret = StackBuf(DIGEST_CELLS)
-        hint_witness(secret[0:1], "sp_fts_secrets")
-        fts_leaf = StackBuf(SHA3_STATE)
-        node_index = sp_bit_field(bits, leaf_off, SP_A, SP_J_POS)
-        sha3([SP_TW_FTS_LEAF + kappa * SP_LAY_MUL + idx_tau + node_index, pp], [secret[0], 0], fts_leaf, len=48)
-        node = fts_leaf[0]
-        for level in unroll(0, SP_A):
-            sibling = hint_witness("sp_fts_paths")
-            children = order_children(node, sibling, bits[GEN ** (leaf_off + level)])
+    # ---- FORS: one opened leaf per tree ----
+    # The instance: tree address htIdx >> h', key pair htIdx mod 2^h'.
+    fors_a = sp_field(bits, SP_HT_OFF + SP_HP, SP_H - SP_HP, 15)
+    fors_kp = sp_field(bits, SP_HT_OFF, SP_HP, 7)
+    fors_b = fors_kp + const(SP_FORS_TREE * SP_BYTE3)
+    roots = StackBuf(SP_K)
+    for i in unroll(0, SP_K):
+        # Leaf: word3 = (i << a) | index, index = (digest >> i a) & (2^a - 1).
+        secret = hint_witness("sp_fors_secrets")
+        leaf = StackBuf(SHA3_STATE)
+        keccak([pp, 0, fors_a, fors_b + sp_index(i * 2 ** SP_A) + sp_field(bits, i * SP_A, SP_A, 15), secret, 0], leaf)
+        node = leaf[0]
+        for z in unroll(1, SP_A + 1):
+            # Height z: word2 = z, word3 = (i << (a - z)) | (index >> z).
+            sibling = hint_witness("sp_fors_paths")
+            children = order_children(node, sibling, sp_bit(bits, i * SP_A + z - 1))
+            adrs_b = fors_b + const(z * SP_BYTE11) + sp_index(i * 2 ** (SP_A - z)) + sp_field(bits, i * SP_A + z, SP_A - z, 15)
             parent = StackBuf(SHA3_STATE)
-            if const(level + 1 == SP_A):
-                node_index = 0
-            else:
-                # The index fits in one lane; clearing its low bit makes division by GEN a right shift.
-                node_index = (node_index + bits[GEN ** (leaf_off + level)] * COORD_BASIS[SP_J_POS]) / GEN
-            sha3([SP_TW_FTS_NODE + kappa * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + idx_tau + node_index, pp], children, parent)
+            keccak([pp, 0, fors_a, adrs_b, children[0], 0, children[1], 0], parent)
             node = parent[0]
-        roots[2 + kappa] = node
-    fts_key = StackBuf(SHA3_STATE)
-    sha3_cells(roots, fts_key)
-    signed = fts_key[0]
+        roots[i] = node
+    # The FORS key: keccak(pp | ADRS(FORS_ROOTS) | 19 roots), 672 bytes.
+    fors_key = StackBuf(SHA3_STATE)
+    keccak([pp, 0, fors_a, fors_kp + const(SP_FORS_ROOTS * SP_BYTE3)], fors_key, words=roots)
+    signed = fors_key[0]
 
     # ---- the hypertree, bottom layer first ----
-    # Layer lay signs what the layer below produced: the few-time key at the bottom,
-    # that layer's root above it, and the public key's root at the top.
-    for step in unroll(0, SP_D):
-        lay = SP_D - 1 - step
-        leaf_index_off = SP_SUFFIX[lay + 1]
-        tau_field = sp_bit_field(bits, SP_SUFFIX[lay], SP_H - SP_SUFFIX[lay], SP_TAU_POS)
-        node_index = sp_bit_field(bits, leaf_index_off, SP_HEIGHTS[lay], SP_J_POS)
-        tw_pos = tau_field + node_index + lay * SP_LAY_MUL
-        node = sp_ots_leaf(tw_pos, pp, signed)
-        for level in unroll(0, SP_HEIGHTS[lay]):
+    # Layer l signs what the layer below produced; its leaf is htIdx's l-th
+    # h'-bit group and its tree the bits above.
+    for layer in unroll(0, SP_D):
+        leaf_off = SP_HT_OFF + layer * SP_HP
+        adrs_a = const(layer * SP_BYTE3) + sp_field(bits, leaf_off + SP_HP, SP_H - (layer + 1) * SP_HP, 15)
+        kp = sp_field(bits, leaf_off, SP_HP, 7)
+        node = sp_wots_pk(adrs_a, kp, pp, signed)
+        for z in unroll(1, SP_HP + 1):
             sibling = hint_witness("sp_siblings")
-            children = order_children(node, sibling, bits[GEN ** (leaf_index_off + level)])
+            children = order_children(node, sibling, sp_bit(bits, leaf_off + z - 1))
+            adrs_b = const(SP_TREE * SP_BYTE3 + z * SP_BYTE11) + sp_field(bits, leaf_off + z, SP_HP - z, 15)
             parent = StackBuf(SHA3_STATE)
-            if const(level + 1 == SP_HEIGHTS[lay]):
-                node_index = 0
-            else:
-                node_index = (node_index + bits[GEN ** (leaf_index_off + level)] * COORD_BASIS[SP_J_POS]) / GEN
-            sha3([SP_TW_NODE + lay * SP_LAY_MUL + const((level + 1) * SP_P_MUL) + tau_field + node_index, pp], children, parent)
+            keccak([pp, 0, adrs_a, adrs_b, children[0], 0, children[1], 0], parent)
             node = parent[0]
         signed = node
-    assert signed == signer[1]
+    assert signed == root
     return
 
 

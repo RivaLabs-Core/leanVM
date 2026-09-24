@@ -112,21 +112,18 @@ const _: () = assert!(xmss::LOG_LIFETIME <= 32);
 // The guest's `WOTS_PK_BLOCKS = (2 + V) / 4` truncates, so a bad `V` would drop
 // the last tips.
 const _: () = assert!((2 + xmss::V).is_multiple_of(4));
-// The SPHINCS side of the same shape. `SP_LEAF_BLOCKS = (2 + V) / 4` and
-// `SP_ROOT_BLOCKS = (2 + NUM_FTS_TREES) / 4` truncate, and a truncated loop
-// would leave the last tips or roots out of the hash while the signature still
-// carries them: revealed values no longer bound by the leaf they belong to.
-const _: () = assert!((2 + sphincs::V).is_multiple_of(4));
-const _: () = assert!((2 + sphincs::NUM_FTS_TREES).is_multiple_of(4));
-// The guest reads the message digest's bits out of three 64-bit lanes, and a
-// dynamically sized `HeapBuf` gets no compile-time index check, so a wider
-// digest would read leaf indices from cells nothing writes.
-const _: () = assert!(sphincs::DIGEST_BITS <= 3 * 64);
-// The guest packs each tweak field into its own 32-bit word: p at bit 32,
-// tau at bit 64, and j at bit 96.
-const _: () = assert!(sphincs::H <= 32);
-const _: () = assert!(sphincs::CHAIN_LEN * sphincs::V < 1 << 32);
-const _: () = assert!(sphincs::A <= 32 && sphincs::HEIGHTS[0] <= 32);
+// The guest reads the SPHINCS message digest's bits out of its last three 64-bit
+// lanes (bytes 8..31, bits 0..191 of the big-endian uint256), and a dynamically
+// sized `HeapBuf` gets no compile-time index check, so a wider digest would read
+// indices from cells nothing writes.
+const _: () = assert!(sphincs::K * sphincs::A + sphincs::H <= 3 * 64);
+// The WOTS digits are exactly the digest's low 128 bits, the cell the guest
+// rebuilds from them.
+const _: () = assert!(sphincs::LEN1 * sphincs::LOG_W == 128 && sphincs::W == 16);
+// The guest places a FORS tree index in two bytes of word3, and the checksum
+// takes exactly `LEN2` base-16 digits.
+const _: () = assert!(((sphincs::K - 1) << sphincs::A) < 1 << 16);
+const _: () = assert!(sphincs::MAX_CSUM < 1 << (4 * sphincs::LEN2));
 
 /// A count as the guest carries it: in the exponent, `g^n`.
 fn count(n: usize) -> F192 {
@@ -1920,49 +1917,42 @@ fn push_signature_hints(
     Ok(())
 }
 
-/// One SPHINCS signature's witness: the randomizer, the few-time opening, and
-/// per layer the encoding counter, the codeword digits (in the exponent), the
+/// One SPHINCS signature's witness: the randomizer, the FORS secrets and paths,
+/// and per layer the WOTS digits (in the exponent, the checksum's last), the
 /// chain values they start from, and the Merkle siblings.
 ///
-/// The guest derives the index and the leaf indices from the digest itself, so
-/// nothing here carries them; what it does carry is the per-layer message, which
-/// this walk recomputes exactly as the guest will. The signer's own message is
-/// not hinted either: it rides its slot in the coverage table.
+/// The guest derives every index and address from the message digest itself,
+/// and the per-layer messages from the walk, so nothing here carries them. The
+/// signer's own message is not hinted either: it rides its slot in the coverage
+/// table.
 fn push_sphincs_hints(
     hints: &mut Hints,
     (pk, message): &SphincsClaim,
     sig: &SphincsSignature,
 ) -> Result<(), AggregationError> {
-    let pp = &pk.public_param;
+    let trace = sphincs::verify_trace(pk, message, sig);
+    if trace.signed[sphincs::D] != pk.root {
+        return Err(AggregationError::MalformedRawSignature);
+    }
     hints.push("sp_rand", vec![pack_16_bytes(&sig.randomizer)]);
-    let (idx, u) = sphincs::message_digest(pp, &pk.root, &sig.randomizer, message);
-    for kappa in 0..sphincs::NUM_FTS_TREES {
-        hints.push("sp_fts_secrets", vec![pack_16_bytes(&sig.fts.secrets[kappa])]);
-        for sibling in &sig.fts.paths[kappa] {
-            hints.push("sp_fts_paths", vec![pack_16_bytes(sibling)]);
+    for (secret, path) in sig.fors_secrets.iter().zip(&sig.fors_paths) {
+        hints.push("sp_fors_secrets", vec![pack_16_bytes(secret)]);
+        for sibling in path {
+            hints.push("sp_fors_paths", vec![pack_16_bytes(sibling)]);
         }
     }
-    let mut signed = sphincs::fts_recover(pp, idx, &u, &sig.fts);
-    for lay in (0..sphincs::D).rev() {
-        let pos = sphincs::Pos::new(lay, sphincs::tree_of(idx, lay), sphincs::leaf_of(idx, lay));
-        let counter = sig.counters[lay];
-        let codeword = sphincs::encode(pp, pos, &signed, counter).ok_or(AggregationError::MalformedRawSignature)?;
-        hints.push("sp_counter", vec![F192::new(u64::from(counter), 0, 0)]);
-        for (&digit, opened) in codeword.iter().zip(&sig.ots[lay]) {
-            hints.push("sp_digits", vec![count(digit as usize)]);
-            hints.push("sp_chain_starts", vec![pack_16_bytes(opened)]);
+    for (layer, digits) in sig.layers.iter().zip(&trace.digits) {
+        for (&digit, start) in digits.iter().zip(&layer.chains) {
+            hints.push("sp_digits", vec![count(usize::from(digit))]);
+            hints.push("sp_chain_starts", vec![pack_16_bytes(start)]);
         }
-        let path = &sig.paths[sphincs::path_range(lay)];
-        for sibling in path {
+        for sibling in &layer.path {
             hints.push("sp_siblings", vec![pack_16_bytes(sibling)]);
         }
-        let leaf = sphincs::ots_leaf(pp, pos, &signed, counter, &sig.ots[lay])
-            .ok_or(AggregationError::MalformedRawSignature)?;
-        signed = sphincs::tree_fold(pp, pos, leaf, path);
     }
-    debug_assert_eq!(signed, pk.root, "the hinted walk reaches the public key");
     Ok(())
 }
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct DaInput<'a> {
     pub rows: &'a [u64],
@@ -2918,37 +2908,17 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("MAX_RECURSIONS", MAX_RECURSIONS.to_string());
     ps("MAX_EPOCHS", MAX_EPOCHS.to_string());
 
-    // The SPHINCS instance. Its tweaks are derived per signature from the index
-    // the message digest picks, where XMSS's come from one public epoch, so the
-    // guest receives the shape and the native tweak prefixes.
-    let dsl_list = |values: &[usize]| {
-        let inner: Vec<String> = values.iter().map(usize::to_string).collect();
-        format!("[{}]", inner.join(", "))
-    };
-    ps("SP_V", sphincs::V.to_string());
-    ps("SP_W", sphincs::W.to_string());
-    ps("SP_TARGET_SUM", sphincs::TARGET_SUM.to_string());
-    ps("SP_D", sphincs::D.to_string());
-    ps("SP_A", sphincs::A.to_string());
+    // The SPHINCS instance. Its addresses are built per signature from the
+    // digest, so the guest receives only the shape.
     ps("SP_K", sphincs::K.to_string());
+    ps("SP_A", sphincs::A.to_string());
+    ps("SP_D", sphincs::D.to_string());
+    ps("SP_HP", sphincs::SUBTREE_H.to_string());
     ps("SP_H", sphincs::H.to_string());
-    ps("SP_HEIGHTS", dsl_list(&sphincs::HEIGHTS));
-    ps("SP_SUFFIX", dsl_list(&sphincs::SUFFIX));
-    for (name, tag) in [
-        ("SP_TW_CHAIN", sphincs::TWEAK_CHAIN),
-        ("SP_TW_LEAF", sphincs::TWEAK_LEAF),
-        ("SP_TW_NODE", sphincs::TWEAK_NODE),
-        ("SP_TW_ENC", sphincs::TWEAK_ENC),
-        ("SP_TW_FTS_LEAF", sphincs::TWEAK_FTS_LEAF),
-        ("SP_TW_FTS_NODE", sphincs::TWEAK_FTS_NODE),
-        ("SP_TW_FTS_ROOTS", sphincs::TWEAK_FTS_ROOTS),
-        ("SP_TW_MSG", sphincs::TWEAK_MSG),
-    ] {
-        ps(
-            name,
-            dsl_u128(pack_16_bytes(&sphincs::tweak(tag, 0, 0, 0, 0))).to_string(),
-        );
-    }
+    ps("SP_W", sphincs::W.to_string());
+    ps("SP_LEN1", sphincs::LEN1.to_string());
+    ps("SP_LEN2", sphincs::LEN2.to_string());
+    ps("SP_MAX_CSUM", sphincs::MAX_CSUM.to_string());
     rep
 }
 
@@ -3161,6 +3131,10 @@ mod tests {
         aggregate(&[], at_epoch(signers, XMSS_EPOCH_A), vec![], &[], None, LOG_INV_RATE).expect("leaf aggregates")
     }
 
+    /// XMSS's tweak types name disjoint domains of the leanVM hash (SHA3-256).
+    /// SPHINCS shares none of them: its profile hashes with Keccak-256, whose
+    /// padding byte `0x01` differs from SHA3's `0x06` in every final block, so
+    /// the two schemes' hash calls are calls to different sponge functions.
     #[test]
     fn keygen_and_verification_hash_domains_are_disjoint() {
         let xmss_tags = [
@@ -3172,41 +3146,28 @@ mod tests {
             xmss::TWEAK_TYPE_PARAMETER,
             xmss::TWEAK_TYPE_FILLER,
         ];
-        let sphincs_tags = [
-            sphincs::TWEAK_PRF,
-            sphincs::TWEAK_CHAIN,
-            sphincs::TWEAK_LEAF,
-            sphincs::TWEAK_NODE,
-            sphincs::TWEAK_ENC,
-            sphincs::TWEAK_FTS_PRF,
-            sphincs::TWEAK_FTS_LEAF,
-            sphincs::TWEAK_FTS_NODE,
-            sphincs::TWEAK_FTS_ROOTS,
-            sphincs::TWEAK_MSG,
-            sphincs::TWEAK_PARAMETER,
-        ];
-        let domains: BTreeSet<_> = xmss_tags
-            .into_iter()
-            .map(|tag| xmss::make_tweak(tag, 0, 0))
-            .chain(sphincs_tags.into_iter().map(|tag| sphincs::tweak(tag, 0, 0, 0, 0)))
-            .collect();
-        assert_eq!(domains.len(), xmss_tags.len() + sphincs_tags.len());
+        let domains: BTreeSet<_> = xmss_tags.into_iter().map(|tag| xmss::make_tweak(tag, 0, 0)).collect();
+        assert_eq!(domains.len(), xmss_tags.len());
+        assert_ne!(primitives::hash::PAD_FIRST, primitives::hash::KECCAK_PAD_FIRST);
+        for len in [0, 96, 128, 160] {
+            let input = vec![0x5A; len];
+            assert_ne!(primitives::hash::hash(&input), primitives::hash::keccak256(&input));
+        }
     }
 
+    /// The guest builds an XMSS tweak as the constant half plus one weight per
+    /// set index bit; that sum is `make_tweak`'s own bytes.
     #[test]
-    fn signature_tweaks_align_with_distinct_domains() {
-        for (xmss_tag, sphincs_tag) in [
-            (xmss::TWEAK_TYPE_CHAIN, sphincs::TWEAK_CHAIN),
-            (xmss::TWEAK_TYPE_WOTS_PK, sphincs::TWEAK_LEAF),
-            (xmss::TWEAK_TYPE_MERKLE, sphincs::TWEAK_NODE),
-            (xmss::TWEAK_TYPE_ENCODING, sphincs::TWEAK_ENC),
+    fn guest_xmss_tweaks_match_make_tweak() {
+        for xmss_tag in [
+            xmss::TWEAK_TYPE_CHAIN,
+            xmss::TWEAK_TYPE_WOTS_PK,
+            xmss::TWEAK_TYPE_MERKLE,
+            xmss::TWEAK_TYPE_ENCODING,
         ] {
             for position in [0, 1, u32::MAX] {
                 for index in [0, 1, 3, 0xa0b0_c0d0, u32::MAX] {
                     let xmss_tweak = xmss::make_tweak(xmss_tag, position, index);
-                    let sphincs_tweak = sphincs::tweak(sphincs_tag, 0, 0, position, index);
-                    assert_eq!(&xmss_tweak[1..], &sphincs_tweak[1..]);
-                    assert_ne!(xmss_tweak[0], sphincs_tweak[0]);
                     let mut guest_tweak = tweak_cell(xmss_tag, position);
                     for bit in 0..32 {
                         if index & (1 << bit) != 0 {
@@ -3309,7 +3270,7 @@ mod tests {
             .into_iter()
             .map(|tag| {
                 let signed: sphincs::Message = std::array::from_fn(|i| tag.wrapping_mul(i as u8 + 1));
-                let signature = sphincs::sign(&secret_key, &signed).expect("signs");
+                let signature = sphincs::sign(&secret_key, &signed);
                 (public_key, signed, signature)
             })
             .collect();
@@ -4793,6 +4754,9 @@ def main():
                        raw_sphincs: Vec<RawSphincs>,
                        description: &str,
                        tamper: &dyn Fn(&mut Hints)| {
+            // A poke naming a missing stream or entry panics inside the tamper,
+            // which would read as a rejection; `applied` tells the two apart.
+            let applied = std::cell::Cell::new(false);
             let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 aggregate_tampered(
                     children,
@@ -4801,10 +4765,17 @@ def main():
                     None,
                     DaInput::default(),
                     LOG_INV_RATE,
-                    |hints| tamper(hints),
+                    |hints| {
+                        tamper(hints);
+                        applied.set(true);
+                    },
                 )
                 .map(|(signature, _)| signature.verify().is_ok())
             }));
+            assert!(
+                applied.get(),
+                "tampering {description} never applied: no such hint entry"
+            );
             assert!(
                 !matches!(outcome, Ok(Ok(true))),
                 "tampering {description} must be rejected"
@@ -4948,9 +4919,6 @@ def main():
             ("sp_rand (another randomizer, so another index)", &|h: &mut Hints| {
                 h.entries("sp_rand")[0][0] += F192::ONE;
             }),
-            ("sp_counter", &|h: &mut Hints| {
-                h.entries("sp_counter")[0][0] += F192::ONE;
-            }),
             ("sp_digits", &|h: &mut Hints| {
                 let entries = h.entries("sp_digits");
                 entries[0][0] *= F192::from(primitives::field::G);
@@ -4958,11 +4926,11 @@ def main():
             ("sp_chain_starts", &|h: &mut Hints| {
                 h.entries("sp_chain_starts")[0][0] += F192::ONE;
             }),
-            ("sp_fts_secrets", &|h: &mut Hints| {
-                h.entries("sp_fts_secrets")[0][0] += F192::ONE;
+            ("sp_fors_secrets", &|h: &mut Hints| {
+                h.entries("sp_fors_secrets")[0][0] += F192::ONE;
             }),
-            ("sp_fts_paths", &|h: &mut Hints| {
-                h.entries("sp_fts_paths")[0][0] += F192::ONE;
+            ("sp_fors_paths", &|h: &mut Hints| {
+                h.entries("sp_fors_paths")[0][0] += F192::ONE;
             }),
             ("sp_siblings", &|h: &mut Hints| {
                 h.entries("sp_siblings")[0][0] += F192::ONE;
@@ -5148,7 +5116,7 @@ def main():
         );
 
         let mut raw_sphincs = get_sphincs_signers(2);
-        raw_sphincs[1].2.ots[2][0][0] ^= 1;
+        raw_sphincs[1].2.layers[2].chains[0][0] ^= 1;
         let built = std::panic::catch_unwind(|| {
             aggregate(&[], vec![], raw_sphincs, &[], None, LOG_INV_RATE).map(|signature| signature.verify().is_ok())
         });
@@ -5205,13 +5173,82 @@ def main():
         );
     }
 
-    /// The same for a SPHINCS claim, whose witness walk is equally fallible: a
-    /// counter that does not encode has no witness, and that is an error rather
-    /// than a panic inside the prover.
+    /// The guest's SPHINCS checks, one tampered witness at a time, past the host's
+    /// own verification. Every poke must stop the proof. The two digit pokes keep
+    /// every chain top intact (the digit goes up by one and the revealed value
+    /// walks one step to match), so only the digit's binding to the WOTS digest
+    /// (a message digit) or the checksum identity (a checksum digit) can catch
+    /// them.
+    #[test]
+    fn sphincs_witness_tampering_is_rejected() {
+        lean_vm::init_prover_pool();
+        let (public_key, signed, signature) = get_sphincs_signers(1).pop().expect("one signer");
+        let trace = sphincs::verify_trace(&public_key, &signed, &signature);
+        let pp = public_key.public_param;
+        // Chain `i` of layer 0 with a digit below w-1, its digit raised and its
+        // start advanced one step: same chain top, different digit.
+        let advanced = |i: usize| -> Option<(F192, F192)> {
+            let digit = usize::from(trace.digits[0][i]);
+            (digit + 1 < sphincs::W).then(|| {
+                let (tree, kp) = sphincs::ht_position(trace.ht_idx, 0);
+                let start = sphincs::chain(
+                    &pp,
+                    sphincs::wots_adrs(0, tree, kp),
+                    i,
+                    signature.layers[0].chains[i],
+                    digit,
+                    1,
+                );
+                (count(digit + 1), pack_16_bytes(&start))
+            })
+        };
+        let message_chain = (0..sphincs::LEN1)
+            .find(|&i| advanced(i).is_some())
+            .expect("a digit below 15");
+        let checksum_chain = (sphincs::LEN1..sphincs::L)
+            .find(|&i| advanced(i).is_some())
+            .expect("a checksum digit below 15");
+        type Poke = Box<dyn Fn(&mut Hints)>;
+        let bump = |name: &'static str, entry: usize| -> Poke {
+            Box::new(move |h: &mut Hints| h.entries(name)[entry][0] += F192::ONE)
+        };
+        let raise = |i: usize| -> Poke {
+            let (digit, start) = advanced(i).unwrap();
+            Box::new(move |h: &mut Hints| {
+                h.entries("sp_digits")[i] = vec![digit];
+                h.entries("sp_chain_starts")[i] = vec![start];
+            })
+        };
+        let pokes: Vec<(&str, Poke)> = vec![
+            ("randomizer", bump("sp_rand", 0)),
+            ("FORS secret", bump("sp_fors_secrets", 7)),
+            ("FORS path node", bump("sp_fors_paths", 5 * sphincs::A + 8)),
+            ("chain start", bump("sp_chain_starts", 3 * sphincs::L + 20)),
+            ("Merkle sibling", bump("sp_siblings", 4 * sphincs::SUBTREE_H + 3)),
+            ("message digit, chain top kept", raise(message_chain)),
+            ("checksum digit, chain top kept", raise(checksum_chain)),
+        ];
+        for (what, poke) in pokes {
+            let raw = vec![(public_key, signed, signature.clone())];
+            let applied = std::cell::Cell::new(false);
+            let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                aggregate_tampered(&[], vec![], raw, None, DaInput::default(), LOG_INV_RATE, |h| {
+                    poke(h);
+                    applied.set(true);
+                })
+                .map(|(proof, _)| proof.verify().is_ok())
+            }));
+            assert!(applied.get(), "the {what} poke never applied");
+            assert!(!matches!(outcome, Ok(Ok(true))), "accepted a tampered {what}");
+        }
+    }
+
+    /// The same for a SPHINCS claim: a signature that does not verify has no
+    /// witness, and that is an error rather than a panic inside the prover.
     #[test]
     fn malformed_raw_sphincs_signature_is_an_error() {
         let (public_key, signed, mut signature) = get_sphincs_signers(1).pop().expect("one signer");
-        signature.counters[sphincs::D - 1] ^= 1;
+        signature.layers[sphincs::D - 1].chains[0][0] ^= 1;
         assert!(sphincs::verify(&public_key, &signed, &signature).is_err());
         let raw = vec![(public_key, signed, signature)];
         assert_eq!(

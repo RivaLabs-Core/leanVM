@@ -507,7 +507,7 @@ impl FnLower<'_> {
     /// copied into a fresh consecutive run in the caller. `inline_stack_ret`
     /// describes those logical bindings to the surrounding let/tuple lowering.
     pub(super) fn call(&mut self, callee: &str, args: &[Expr], n_ret: usize) -> Vec<Off> {
-        if callee == "sha3" || callee == "sha3_cells" {
+        if matches!(callee, "sha3" | "sha3_cells" | "keccak") {
             self.fail(format!(
                 "{callee} is a statement: it writes the state or the digest into its `out` run"
             ))
@@ -558,7 +558,7 @@ impl FnLower<'_> {
     /// Evaluate `callee(args)` into `dsts`, inlining the callee when it is
     /// `@inline` ([`Self::try_inline`]), else a real call.
     pub(super) fn call_into(&mut self, callee: &str, args: &[Expr], dsts: &[Off]) {
-        if callee == "sha3" || callee == "sha3_cells" {
+        if matches!(callee, "sha3" | "sha3_cells" | "keccak") {
             self.fail(format!("{callee} is a statement, not a value-returning call"))
         };
         if !self.try_inline(callee, args, dsts) {

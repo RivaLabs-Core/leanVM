@@ -513,6 +513,19 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     );
     let cycles = exec.cycles;
     let w = crate::stage!("Build witness", || program.build(&exec));
+    // Every verifier rejects a stacked size outside the PCS ladder
+    // (`read_public`), so a proof past it would be well-formed and useless. The
+    // SHA3 table dominates at scale: each Keccak-f instance commits 2^16 bits,
+    // so about 2^17 permutations fill the ladder. Refuse here, loudly, rather
+    // than spend a proving run on a statement nothing will accept.
+    assert!(
+        (pcs::MIN_MU..=pcs::MAX_MU).contains(&w.layout.shape.mu),
+        "the committed witness is 2^{} words, outside the verifiable range 2^{}..=2^{}: \
+         split the work across more proofs",
+        w.layout.shape.mu,
+        pcs::MIN_MU,
+        pcs::MAX_MU
+    );
     let counts = w.layout.taus.map(|t| 1usize << t);
     let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so

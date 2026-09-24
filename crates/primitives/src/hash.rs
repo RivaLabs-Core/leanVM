@@ -325,6 +325,33 @@ impl Default for Hasher {
     }
 }
 
+/// Keccak-256's padding byte: the `10*1` padding's first bit with no domain
+/// suffix, as the original Keccak submission (and the EVM's `keccak256`) pads.
+pub const KECCAK_PAD_FIRST: u8 = 0x01;
+
+/// Keccak-256 of `data`, as the EVM's `keccak256` computes it: the plain sponge,
+/// 136-byte blocks, padding `0x01 ‖ 0* ‖ 0x80`. Not a leanVM hash: it is here for
+/// the SPHINCS+ profile of the `sphincs` crate, whose on-chain verifier
+/// fixes the hash, and the VM absorbs it block by block with the same opcode,
+/// lane 16 being message data in a non-final block.
+pub fn keccak256(data: &[u8]) -> [u8; OUT_LEN] {
+    let mut state = [0u64; STATE_LANES];
+    let blocks = data.len() / RATE;
+    let lanes = |bytes: &[u8]| -> [u64; RATE_LANES] {
+        std::array::from_fn(|i| u64::from_le_bytes(bytes[8 * i..8 * i + 8].try_into().unwrap()))
+    };
+    for block in data[..blocks * RATE].as_chunks::<RATE>().0 {
+        absorb(&mut state, &lanes(block));
+    }
+    let tail = &data[blocks * RATE..];
+    let mut last = [0u8; RATE];
+    last[..tail.len()].copy_from_slice(tail);
+    last[tail.len()] ^= KECCAK_PAD_FIRST;
+    last[RATE - 1] ^= PAD_LAST;
+    absorb(&mut state, &lanes(&last));
+    digest_of(&state)
+}
+
 /// SHA3-256 of `data` under the cell encoding, the one hash of leanVM.
 ///
 /// For inputs of at most [`CHUNK`] = 128 bytes this is plain SHA3-256. A longer
@@ -691,6 +718,35 @@ mod tests {
     /// the last chunk). They span the empty input, both sides of the chunk
     /// boundary (128 puts the padding's first bit in lane 16), SHA3's own rate
     /// boundary, and multi-chunk inputs.
+    /// Keccak-256 known answers (tiny-keccak 2, `Keccak::v256`) across the
+    /// 136-byte block boundary and at the lengths the SPHINCS+ profile hashes.
+    #[test]
+    fn keccak256_matches_reference_vectors() {
+        assert_eq!(
+            hex(&keccak256(b"abc")),
+            "4e03657aea45a94fc7d47ba826c8d667c0d1e6e33a64a036ec44f58fa12d6c45"
+        );
+        for (n, expected) in [
+            (
+                0usize,
+                "c5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470",
+            ),
+            (1, "69c322e3248a5dfc29d73c5b0553b0185a35cd5bb6386747517ef7e53b15e287"),
+            (127, "fa3cd4a949bae0f7690ff5c8cbc6dc0332d192d790ab4d80dc97ba37b6569deb"),
+            (128, "1c51c71b758998e7b841d7abde03b6f2b3e76b0313ed687269c30e16bb3aa488"),
+            (135, "00ef96af9cf4b24c7f269d922294444a197d0a33638c2e56634c57e892103a8f"),
+            (136, "742061bcad767ed4c4f5883b1dcb1aad11afdcc140dc469d953759b127b9f9ed"),
+            (137, "e3371f61e770abf254c34239c3b0099ad90594507415bc81dd0a10b9692bbf2a"),
+            (160, "a48ec24131baa57375a56d951a0518753c0a3d48b909972e8b8dd0f22a6867c0"),
+            (271, "4401c4afbe16ff911bdbf2d38e556e5b861f3fdf0f9d4306b1c46f6ae4f73584"),
+            (272, "ac141fd7b0a0ffcd2e967254d508da3ec616596493c36fa304425647d90e6de5"),
+            (288, "8d3abd266545cda2aadc7ce92b8811b63f1f3b70a22cef5a253c556149f1923e"),
+            (1440, "42ddaf20fc11d6d41c6af9ae381abc07412a82e10b5de3f64d75cb40aa2f5e1f"),
+        ] {
+            assert_eq!(hex(&keccak256(&pattern(n))), expected, "{n} bytes");
+        }
+    }
+
     #[test]
     fn matches_reference_vectors() {
         assert_eq!(

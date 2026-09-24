@@ -466,6 +466,23 @@ If `out` was already written, the statement *asserts* the result equals it, writ
 
 The step, Keccak-f\[1600\] after XORing the padding's last bit into lane 16, is proven by the flock Keccak R1CS (`crates/flock`, see `doc.pdf` §Keccak); one instruction is one permutation.
 
+## Keccak-256
+
+```python
+d = StackBuf(2)
+keccak([pp, 0, adrs_a, adrs_b, value, 0], d)          # 96 bytes, one block
+keccak([pp, 0, root, 0, r, 0, m0, m1, ONES, ONES], d)  # 160 bytes, two blocks
+keccak([pp, 0, adrs_a, adrs_b], d, words=tips)         # 64 + 32·len(tips) bytes
+```
+
+`keccak(head, out, words=run)` is Keccak-256, the EVM's `keccak256` (padding byte `0x01`, not SHA3's `0x06`), of the byte string `head ‖ words`, a whole number of cells. It is here for the SPHINCS+ profile, whose on-chain verifier fixes the hash. `head` is a list of at least one cell: a literal `0` is known to be zero and any other integer literal is a constant (at most 128 bits). `words=` (optional) is a stack or heap run whose every cell enters as a 32-byte word, the cell then 16 zero bytes: an `n`-byte value top-aligned in a `bytes32`. `out` is as for `sha3`, and a pre-written `out` asserts the digest.
+
+Up to 128 bytes the statement is exactly one `sha3` block with Keccak's padding byte, sharing a six-cell `[0x01, 0, 0, 0, 0, 0]` run per frame. Past that the 136-byte rate does not divide into cells. Block `j` starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message data in every block but the last:
+
+- a non-final block XORs the padding's last bit into lane 16 itself, cancelling the one the instruction always sets there, and passes a fresh five-cell `cap` run (one `XOR`, four copies);
+- a cell a mid-cell block splits is taken apart into its 64-bit lanes: a hinted low lane `lo`, the high lane `(x + lo)·y⁻¹`, both proved in `K` by one `assert_in_k` (three instructions a cell, once per cell), and each block cell repacked as `hi + y·lo'` (one or two instructions);
+- a known-zero cell costs nothing, so the zero halves of `words` are free, and constant cells split at compile time.
+
 ## Hints: `hint_witness(dest, "name")`
 
 ```python
@@ -522,6 +539,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
 | `sha3(a, b, out, ...)` | 1; plus six `SET`s once per frame for the padding run (a fresh block), one `XOR` per nonzero message cell of a later block, one for a padding byte in a program cell, +1 `DEREF` per heap cell, +2 copies into a 2-cell `out`, +1 `MUL` per runtime slice start |
+| `keccak(head, out, words=run)` | up to 128 bytes: as one `sha3` block. Past that: 1 per 136-byte block; per block about 4 to 8 `XOR`s absorbing the message, 5 for lane 16 and the capacity of a non-final block; about 4 per nonzero cell split by a mid-cell block |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |
 
 Every cost above is the FIRST occurrence. Two identical pure operations in one function share one cell and the second is free, so `hb[i]` twice, or `row[i]` where `row = hb * GEN ** 2`, costs one pointer `MUL` between them. The sharing stops at a branch: a cell whose instruction sits inside an `if` is not reused after the join, because the other path leaves it unwritten and therefore prover-chosen.

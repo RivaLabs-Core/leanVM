@@ -1,60 +1,126 @@
-//! The tweakable hash `Th(P, tw, M) = Truncate_n(H(tw | P | M))`, `H` the leanVM
-//! hash ([`primitives::hash::hash`]), and the 16-byte tweak that names one hash
-//! call in the whole structure.
-//!
-//! Permutations per call, the input including the 32 bytes of tweak and public
-//! parameter: 1 for a chain step, a Merkle node, a derived secret, an encoding
-//! and the message digest, 2 for the few-time roots, and 6 for a one-time leaf.
+//! The framing every hash shares: Keccak-256 over 32-byte words, the FIPS 205
+//! address, the message digest, and the signer's secret derivation.
 
 use crate::*;
+use primitives::hash::keccak256;
 
-pub const TWEAK_LEN: usize = 16;
-pub type Tweak = [u8; TWEAK_LEN];
-
-pub const PROTOCOL_DOMAIN_SEP: u8 = 1;
-
-// Tweak types (byte 1).
-pub const TWEAK_PRF: u8 = 0;
-pub const TWEAK_CHAIN: u8 = 1;
-pub const TWEAK_LEAF: u8 = 2;
-pub const TWEAK_NODE: u8 = 3;
-pub const TWEAK_ENC: u8 = 4;
-pub const TWEAK_FTS_PRF: u8 = 5;
-pub const TWEAK_FTS_LEAF: u8 = 6;
-pub const TWEAK_FTS_NODE: u8 = 7;
-pub const TWEAK_FTS_ROOTS: u8 = 8;
-pub const TWEAK_MSG: u8 = 9;
-pub const TWEAK_PARAMETER: u8 = 10;
-pub const TWEAK_RANDOMIZER: u8 = 12;
-
-/// `[protocol_domain_sep:1 | type:1 | layer:1 | zero:1 | p:4 | tree:4 | index:4]`, little endian.
-/// `lay` identifies a hypertree layer or a tree of a few-time forest.
-pub fn tweak(t: u8, lay: usize, tau: u32, p: u32, j: u32) -> Tweak {
-    debug_assert!(lay < 256);
-    let mut tw = [0u8; TWEAK_LEN];
-    tw[0] = PROTOCOL_DOMAIN_SEP;
-    tw[1] = t;
-    tw[2] = lay as u8;
-    tw[4..8].copy_from_slice(&p.to_le_bytes());
-    tw[8..12].copy_from_slice(&tau.to_le_bytes());
-    tw[12..16].copy_from_slice(&j.to_le_bytes());
-    tw
+/// An `n`-byte value as the word it is hashed as: top-aligned, `v ‖ 0^16`.
+pub fn word(v: &[u8; N]) -> [u8; 32] {
+    let mut out = [0; 32];
+    out[..N].copy_from_slice(v);
+    out
 }
 
-/// `Th` over a byte payload: an encoding input or a derived secret.
-pub fn th(pp: &PublicParam, tw: &Tweak, payload: &[u8]) -> Digest {
-    let mut hasher = primitives::hash::Hasher::new();
-    hasher.update(tw).update(pp).update(payload);
-    hasher.finalize()[..N].try_into().unwrap()
+/// A hash output truncated to `n` bytes (the verifier's `N_MASK`).
+pub fn truncate(digest: &[u8; 32]) -> Digest {
+    digest[..N].try_into().unwrap()
 }
 
-/// `Th` over a concatenation of digests: a Merkle node, a one-time leaf, or the
-/// few-time roots.
-pub fn th_digests(pp: &PublicParam, tw: &Tweak, values: &[Digest]) -> Digest {
-    let mut hasher = primitives::hash::Hasher::new();
-    hasher.update(tw).update(pp);
-    for value in values {
-        hasher.update(value);
+// FIPS 205 address types (Table 1).
+pub const WOTS_HASH: u32 = 0;
+pub const WOTS_PK: u32 = 1;
+pub const TREE: u32 = 2;
+pub const FORS_TREE: u32 = 3;
+pub const FORS_ROOTS: u32 = 4;
+/// Secret derivation (signer-private: no verifier ever sees these addresses).
+pub const WOTS_PRF: u32 = 5;
+pub const FORS_PRF: u32 = 6;
+
+/// The 32-byte address (FIPS 205 §4.2, uncompressed), every field big-endian:
+/// layer in bytes `0..4`, the 96-bit tree address in `4..16`, the type in
+/// `16..20`, then three type-dependent words in `20..24`, `24..28`, `28..32`
+/// (key pair, chain or height, hash address or tree index).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct Adrs {
+    pub layer: u32,
+    pub tree: u64,
+    pub typ: u32,
+    pub word1: u32,
+    pub word2: u32,
+    pub word3: u32,
+}
+
+impl Adrs {
+    pub const fn new(layer: u32, tree: u64, typ: u32, word1: u32, word2: u32, word3: u32) -> Self {
+        Self {
+            layer,
+            tree,
+            typ,
+            word1,
+            word2,
+            word3,
+        }
     }
-    hasher.finalize()[..N].try_into().unwrap()
+
+    pub fn to_bytes(&self) -> [u8; 32] {
+        let mut out = [0; 32];
+        out[0..4].copy_from_slice(&self.layer.to_be_bytes());
+        out[8..16].copy_from_slice(&self.tree.to_be_bytes());
+        out[16..20].copy_from_slice(&self.typ.to_be_bytes());
+        out[20..24].copy_from_slice(&self.word1.to_be_bytes());
+        out[24..28].copy_from_slice(&self.word2.to_be_bytes());
+        out[28..32].copy_from_slice(&self.word3.to_be_bytes());
+        out
+    }
+}
+
+/// `keccak256(pkSeed ‖ ADRS ‖ v_0 ‖ v_1 ‖ …)`, every value a top-aligned word,
+/// in full: the message digest and the WOTS digest keep all 256 bits.
+pub fn th_full(pp: &PublicParam, adrs: &Adrs, values: &[Digest]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(64 + 32 * values.len());
+    input.extend_from_slice(&word(pp));
+    input.extend_from_slice(&adrs.to_bytes());
+    for v in values {
+        input.extend_from_slice(&word(v));
+    }
+    keccak256(&input)
+}
+
+/// The tweakable hash: [`th_full`] truncated to `n` bytes. `F` on one value
+/// (96 bytes), `H` on two (128), `T_l` on the FORS roots or a WOTS key.
+pub fn th(pp: &PublicParam, adrs: &Adrs, values: &[Digest]) -> Digest {
+    truncate(&th_full(pp, adrs, values))
+}
+
+/// `H_msg = keccak256(pkSeed ‖ pkRoot ‖ R ‖ M ‖ 0xFF…FF)`, 160 bytes, in full.
+pub fn h_msg(pp: &PublicParam, root: &Digest, r: &Randomizer, m: &Message) -> [u8; 32] {
+    let mut input = [0u8; 160];
+    input[0..32].copy_from_slice(&word(pp));
+    input[32..64].copy_from_slice(&word(root));
+    input[64..96].copy_from_slice(&word(r));
+    input[96..128].copy_from_slice(m);
+    input[128..160].copy_from_slice(&HMSG_DOMAIN);
+    keccak256(&input)
+}
+
+/// `(d >> shift) & (2^n - 1)`, `d` read as a big-endian 256-bit integer: bit `b`
+/// is bit `b mod 8` of byte `31 - b/8`.
+pub fn digest_bits(d: &[u8; 32], shift: usize, n: usize) -> u32 {
+    debug_assert!(n <= 32 && shift + n <= 256);
+    (0..n).fold(0, |acc, i| {
+        let b = shift + i;
+        acc | (u32::from(d[31 - b / 8] >> (b % 8) & 1) << i)
+    })
+}
+
+// ---------------------------------------------------------------------------
+// The signer's secrets. Nothing here is checked by a verifier; it is the
+// reference signer's derivation, kept so both produce the same signatures.
+
+/// `PRF(SK.seed, ADRS) = keccak256(SK.seed ‖ ADRS)[..16]`, `SK.seed` a
+/// top-aligned word and `ADRS` of type [`WOTS_PRF`] or [`FORS_PRF`].
+pub(crate) fn prf(sk_seed: &[u8; N], adrs: &Adrs) -> Digest {
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(&word(sk_seed));
+    input[32..].copy_from_slice(&adrs.to_bytes());
+    truncate(&keccak256(&input))
+}
+
+/// `R = keccak256(SK.prf ‖ M)[..16]`: deterministic, and secret-keyed so nobody
+/// else can steer messages onto chosen FORS instances.
+pub(crate) fn randomizer(sk_prf: &[u8; N], m: &Message) -> Randomizer {
+    let mut input = [0u8; 64];
+    input[..32].copy_from_slice(&word(sk_prf));
+    input[32..].copy_from_slice(m);
+    truncate(&keccak256(&input))
 }

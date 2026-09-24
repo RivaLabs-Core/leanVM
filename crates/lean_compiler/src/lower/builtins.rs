@@ -86,7 +86,7 @@ impl FnLower<'_> {
             )),
         });
         let out = self.sha3_out(&args[2]);
-        self.emit_sha3_block(block, tail_run, state, final_len, out.state);
+        self.emit_sha3_block(block, tail_run, state, final_len, out.state, Pad::Sha3);
         self.sha3_finish(out);
     }
 
@@ -122,7 +122,7 @@ impl FnLower<'_> {
             let (cells, base) = chunk(self, 8 * c, 8);
             let next = self.alloc_stack(STATE_CELLS);
             let block: [SpongeCell; 8] = cells.try_into().unwrap();
-            self.emit_sha3_block(block, base.map(|b| b + 4), state, None, next);
+            self.emit_sha3_block(block, base.map(|b| b + 4), state, None, next, Pad::Sha3);
             state = Some(next);
         }
         let last = n - 8 * nonfinal;
@@ -130,8 +130,243 @@ impl FnLower<'_> {
         let mut block = [SpongeCell::Zero; 8];
         block[..last as usize].copy_from_slice(&cells);
         let tail_run = if last == 8 { base.map(|b| b + 4) } else { None };
-        self.emit_sha3_block(block, tail_run, state, Some(16 * last), out.state);
+        self.emit_sha3_block(block, tail_run, state, Some(16 * last), out.state, Pad::Sha3);
         self.sha3_finish(out);
+    }
+
+    /// `keccak(head, out, words=run)`: Keccak-256, the EVM's `keccak256`, of the
+    /// byte string `head ‖ words`, into `out` as for [`Self::lower_sha3`].
+    ///
+    /// `head` is a list of at least one cell, a literal `0` known to be zero and
+    /// any other compile-time integer a constant; `words=` (optional) is a run whose every
+    /// cell enters as a 32-byte word, the cell then 16 zero bytes (an `n`-byte
+    /// value top-aligned in a `bytes32`). The message is a whole number of cells.
+    ///
+    /// Up to 128 bytes this is one block, lowered as a `sha3` block with
+    /// Keccak's padding byte. Past that the 136-byte rate splits cells: block `j`
+    /// starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message
+    /// data in every block but the last. A split cell is taken apart into its two
+    /// 64-bit lanes (a hinted low lane, the high lane `(x + lo)/y`, both proved in
+    /// `K`) and the lanes repacked, and a non-final block cancels the last
+    /// padding bit the opcode always sets in lane 16. Cells known to be zero cost
+    /// nothing.
+    fn lower_keccak(&mut self, args: &[Expr]) {
+        let first_kw = args
+            .iter()
+            .position(|a| matches!(a, Expr::Call(name, _) if name.starts_with("__kw_")))
+            .unwrap_or(args.len());
+        if first_kw != 2 {
+            self.fail("keccak takes two positional arguments: (head, out)")
+        };
+        let kwargs = self.sha3_kwargs(&args[first_kw..], &["words"]);
+        let Expr::ListLit(head) = &args[0] else {
+            self.fail("keccak's head is a list of at least one cell, `[a, 0, b, ...]`")
+        };
+        let mut msg: Vec<SpongeCell> = head
+            .iter()
+            .map(|w| match self.try_const_int(w) {
+                Some(0) => SpongeCell::Zero,
+                Some(v) => SpongeCell::Const(F192::new(v as u64, (v >> 64) as u64, 0)),
+                None => SpongeCell::Cell(self.expr(w)),
+            })
+            .collect();
+        if let Some(words) = kwargs.get("words") {
+            let run = self.cell_run(words);
+            for k in 0..run.cells() {
+                let cell = match run {
+                    CellRun::Stack { base, .. } => base + k,
+                    CellRun::Heap { ptr, lo, .. } => {
+                        let t = self.fresh();
+                        self.deref(ptr, lo + k, t, DerefMode::Cell);
+                        t
+                    }
+                };
+                msg.extend([SpongeCell::Cell(cell), SpongeCell::Zero]);
+            }
+        }
+        let out = self.sha3_out(&args[1]);
+        let len = 16 * msg.len() as u32;
+        if len <= 128 {
+            let mut block = [SpongeCell::Zero; 8];
+            block[..msg.len()].copy_from_slice(&msg);
+            self.emit_sha3_block(block, None, None, Some(len), out.state, Pad::Keccak);
+        } else {
+            self.emit_keccak_blocks(&msg, out.state);
+        }
+        self.sha3_finish(out);
+    }
+
+    /// Keccak-256 of `msg` (more than one block) into the 13-cell run `c`.
+    fn emit_keccak_blocks(&mut self, msg: &[SpongeCell], c: Off) {
+        const RATE: u32 = primitives::hash::RATE as u32;
+        let len = 16 * msg.len() as u32;
+        let n_blocks = len / RATE + 1;
+        let y = F192::Y;
+        let y_inv = y.inv();
+        // A split cell's (low, high) lanes, each a K element in a frame cell.
+        let mut lanes_of: HashMap<Off, (Off, Off)> = HashMap::new();
+        let mut state: Option<Off> = None;
+        for j in 0..n_blocks {
+            let last = j + 1 == n_blocks;
+            // Message lane `lambda` (8 bytes at `8 lambda`), as a K-valued sponge cell.
+            let mut lane = |this: &mut Self, lambda: u32| -> SpongeCell {
+                let Some(&cell) = msg.get((lambda / 2) as usize) else {
+                    return SpongeCell::Zero;
+                };
+                let high = lambda % 2 == 1;
+                match cell {
+                    SpongeCell::Zero => SpongeCell::Zero,
+                    SpongeCell::Const(v) => {
+                        let w = if high { v.c1 } else { v.c0 };
+                        if w == 0 {
+                            SpongeCell::Zero
+                        } else {
+                            SpongeCell::Const(F192::new(w, 0, 0))
+                        }
+                    }
+                    SpongeCell::Cell(o) => {
+                        let (lo, hi) = *lanes_of.entry(o).or_insert_with(|| {
+                            let lo = this.alloc_stack(1);
+                            this.pending.push(Hint::Resolved(RHint::FieldLimbs {
+                                value: o,
+                                base: lo,
+                                len: 1,
+                            }));
+                            let (t, hi) = (this.fresh(), this.fresh());
+                            this.emit(LOp::Xor { a: o, b: lo, c: t });
+                            let k = this.const_cell(y_inv);
+                            this.emit(LOp::Mul { a: t, b: k, c: hi });
+                            let zero = this.zero();
+                            this.emit(LOp::Jump {
+                                oc: zero,
+                                od: lo,
+                                of: hi,
+                            });
+                            (lo, hi)
+                        });
+                        SpongeCell::Cell(if high { hi } else { lo })
+                    }
+                }
+            };
+            // The block's rate: eight cells (lanes 2t, 2t+1) and lane 16.
+            let first = 17 * j;
+            let mut block = [SpongeCell::Zero; 9];
+            for (t, slot) in block[..8].iter_mut().enumerate() {
+                let lambda = first + 2 * t as u32;
+                *slot = if lambda.is_multiple_of(2) {
+                    msg.get((lambda / 2) as usize).copied().unwrap_or(SpongeCell::Zero)
+                } else {
+                    let (a, b) = (lane(self, lambda), lane(self, lambda + 1));
+                    self.pack_lanes(a, b, y)
+                };
+            }
+            block[8] = lane(self, first + 16);
+            // Padding: Keccak's first byte after the message in the last block;
+            // the opcode's END bit is the last one there, and is cancelled in lane
+            // 16 of every other block, which carries message data instead.
+            if last {
+                let p = len - RATE * j;
+                let (cell, byte) = ((p / 16) as usize, p % 16);
+                let bits = u64::from(primitives::hash::KECCAK_PAD_FIRST) << (8 * (byte % 8));
+                let v = if cell == 8 || byte < 8 {
+                    F192::new(bits, 0, 0)
+                } else {
+                    F192::new(0, bits, 0)
+                };
+                block[cell] = self.sponge_add(block[cell], v);
+            } else {
+                block[8] = self.sponge_add(block[8], F192::new(primitives::hash::END_BIT, 0, 0));
+            }
+
+            let pad = Pad::Keccak;
+            let (m, tail, cap) = match state {
+                Some(st) => {
+                    let m: [Off; 4] = std::array::from_fn(|i| self.sponge_xor(st + i as u32, block[i], None, pad));
+                    let tail = if block[4..8].iter().all(|c| matches!(c, SpongeCell::Zero)) {
+                        st + 4
+                    } else {
+                        let t = self.alloc_stack(4);
+                        for i in 0..4 {
+                            self.sponge_xor(st + 4 + i as u32, block[4 + i], Some(t + i as u32), pad);
+                        }
+                        t
+                    };
+                    let cap = if matches!(block[8], SpongeCell::Zero) {
+                        st + 8
+                    } else {
+                        let cap = self.alloc_stack(5);
+                        self.sponge_xor(st + 8, block[8], Some(cap), pad);
+                        for k in 1..5 {
+                            self.copy(st + 8 + k, cap + k);
+                        }
+                        cap
+                    };
+                    (m, tail, cap)
+                }
+                None => {
+                    let m: [Off; 4] = std::array::from_fn(|i| self.sponge_cell(block[i], pad));
+                    let t = self.alloc_stack(4);
+                    for i in 0..4 {
+                        self.write_sponge_cell(block[4 + i], t + i as u32);
+                    }
+                    let cap = self.alloc_stack(5);
+                    self.write_sponge_cell(block[8], cap);
+                    for k in 1..5 {
+                        self.set_const(cap + k, F192::ZERO);
+                    }
+                    (m, t, cap)
+                }
+            };
+            let next = if last { c } else { self.alloc_stack(STATE_CELLS) };
+            self.emit(LOp::Sha3 { m, tail, cap, c: next });
+            state = Some(next);
+        }
+    }
+
+    /// `a + y b` for two K-valued sponge cells (lanes), as one sponge cell.
+    fn pack_lanes(&mut self, a: SpongeCell, b: SpongeCell, y: F192) -> SpongeCell {
+        let hi = match b {
+            SpongeCell::Zero => SpongeCell::Zero,
+            SpongeCell::Const(v) => SpongeCell::Const(v * y),
+            SpongeCell::Cell(o) => {
+                let (k, d) = (self.const_cell(y), self.fresh());
+                self.emit(LOp::Mul { a: o, b: k, c: d });
+                SpongeCell::Cell(d)
+            }
+        };
+        match (a, hi) {
+            (SpongeCell::Zero, h) => h,
+            (l, SpongeCell::Zero) => l,
+            (SpongeCell::Const(l), h) => self.sponge_add(h, l),
+            (l, SpongeCell::Const(h)) => self.sponge_add(l, h),
+            (SpongeCell::Cell(l), SpongeCell::Cell(h)) => {
+                let d = self.fresh();
+                self.emit(LOp::Xor { a: l, b: h, c: d });
+                SpongeCell::Cell(d)
+            }
+        }
+    }
+
+    /// `c + v` for a constant `v`.
+    fn sponge_add(&mut self, c: SpongeCell, v: F192) -> SpongeCell {
+        match c {
+            SpongeCell::Zero => SpongeCell::Const(v),
+            SpongeCell::Const(w) => SpongeCell::Const(w + v),
+            SpongeCell::Cell(o) => {
+                let (k, d) = (self.const_cell(v), self.fresh());
+                self.emit(LOp::Xor { a: o, b: k, c: d });
+                SpongeCell::Cell(d)
+            }
+        }
+    }
+
+    /// Write `c` into the frame cell `dst`.
+    fn write_sponge_cell(&mut self, c: SpongeCell, dst: Off) {
+        match c {
+            SpongeCell::Zero => self.set_const(dst, F192::ZERO),
+            SpongeCell::Const(v) => self.set_const(dst, v),
+            SpongeCell::Cell(o) => self.copy(o, dst),
+        }
     }
 
     /// The keywords after a builtin's positional arguments, checked against
@@ -198,10 +433,10 @@ impl FnLower<'_> {
         }
     }
 
-    /// Emit one `SHA3` block into the 13-cell run `c`: the padding folded into
-    /// the message if `final_len` says this block ends it, the message XORed into
-    /// `state` if there is one, every constant window of a fresh block taken from
-    /// the padding run.
+    /// Emit one `SHA3` block into the 13-cell run `c`: the padding `pad` folded
+    /// into the message if `final_len` says this block ends it, the message XORed
+    /// into `state` if there is one, every constant window of a fresh block taken
+    /// from the padding run.
     fn emit_sha3_block(
         &mut self,
         mut block: [SpongeCell; 8],
@@ -209,6 +444,7 @@ impl FnLower<'_> {
         state: Option<Off>,
         final_len: Option<u32>,
         c: Off,
+        pad_kind: Pad,
     ) {
         // Padding in lane 16, the lone cell: only a final block of 128 bytes.
         let mut lone_pad = false;
@@ -217,7 +453,7 @@ impl FnLower<'_> {
                 lone_pad = true;
             } else {
                 let (cell, byte) = ((len / 16) as usize, len % 16);
-                let pad = u64::from(primitives::hash::PAD_FIRST) << (8 * (byte % 8));
+                let pad = u64::from(pad_kind.byte()) << (8 * (byte % 8));
                 let v = if byte < 8 {
                     F192::new(pad, 0, 0)
                 } else {
@@ -244,19 +480,19 @@ impl FnLower<'_> {
             // no message keeps the previous run, and the capacity always does
             // unless the padding lands in lane 16.
             Some(st) => {
-                let m: [Off; 4] = std::array::from_fn(|i| self.sponge_xor(st + i as u32, block[i], None));
+                let m: [Off; 4] = std::array::from_fn(|i| self.sponge_xor(st + i as u32, block[i], None, pad_kind));
                 let tail = if block[4..].iter().all(|c| matches!(c, SpongeCell::Zero)) {
                     st + 4
                 } else {
                     let t = self.alloc_stack(4);
                     for j in 0..4 {
-                        self.sponge_xor(st + 4 + j as u32, block[4 + j], Some(t + j as u32));
+                        self.sponge_xor(st + 4 + j as u32, block[4 + j], Some(t + j as u32), pad_kind);
                     }
                     t
                 };
                 let cap = if lone_pad {
                     let cap = self.alloc_stack(5);
-                    let pad = self.sha3_pad_run();
+                    let pad = self.pad_run(pad_kind);
                     self.emit(LOp::Xor {
                         a: st + 8,
                         b: pad,
@@ -274,8 +510,8 @@ impl FnLower<'_> {
             // The first block, from the zero state: every constant window comes out
             // of the one padding run.
             None => {
-                let pad = self.sha3_pad_run();
-                let m: [Off; 4] = std::array::from_fn(|i| self.sponge_cell(block[i]));
+                let pad = self.pad_run(pad_kind);
+                let m: [Off; 4] = std::array::from_fn(|i| self.sponge_cell(block[i], pad_kind));
                 let tail = match (tail_run, &block[4..]) {
                     (Some(base), _) => base,
                     (None, [SpongeCell::Zero, SpongeCell::Zero, SpongeCell::Zero, SpongeCell::Zero]) => pad + 1,
@@ -287,7 +523,7 @@ impl FnLower<'_> {
                             SpongeCell::Zero,
                             SpongeCell::Zero,
                         ],
-                    ) if *v == sha3_pad_value() => pad,
+                    ) if *v == pad_kind.value() => pad,
                     (None, cells) => {
                         let cells: Vec<SpongeCell> = cells.to_vec();
                         let t = self.alloc_stack(4);
@@ -334,6 +570,7 @@ impl FnLower<'_> {
             }
             "sha3" => self.lower_sha3(args),
             "sha3_cells" => self.lower_sha3_cells(args),
+            "keccak" => self.lower_keccak(args),
             "assert_in_k" => {
                 if args.len() != 2 {
                     self.fail("assert_in_k(a, b) takes two scalar cells")
@@ -414,11 +651,11 @@ impl FnLower<'_> {
         }
     }
 
-    /// A frame cell holding `c`.
-    fn sponge_cell(&mut self, c: SpongeCell) -> Off {
+    /// A frame cell holding `c`, zero and the padding cell out of `pad`'s run.
+    fn sponge_cell(&mut self, c: SpongeCell, pad: Pad) -> Off {
         match c {
-            SpongeCell::Zero => self.sha3_pad_run() + 1,
-            SpongeCell::Const(v) if v == sha3_pad_value() => self.sha3_pad_run(),
+            SpongeCell::Zero => self.pad_run(pad) + 1,
+            SpongeCell::Const(v) if v == pad.value() => self.pad_run(pad),
             SpongeCell::Const(v) => self.const_cell(v),
             SpongeCell::Cell(o) => o,
         }
@@ -426,7 +663,7 @@ impl FnLower<'_> {
 
     /// `state ⊕ c`, into `dst` if given: a zero `c` is the state cell itself (or
     /// a copy of it into `dst`).
-    fn sponge_xor(&mut self, state: Off, c: SpongeCell, dst: Option<Off>) -> Off {
+    fn sponge_xor(&mut self, state: Off, c: SpongeCell, dst: Option<Off>, pad: Pad) -> Off {
         let other = match c {
             SpongeCell::Zero => {
                 return match dst {
@@ -437,7 +674,7 @@ impl FnLower<'_> {
                     None => state,
                 };
             }
-            c => self.sponge_cell(c),
+            c => self.sponge_cell(c, pad),
         };
         let d = dst.unwrap_or_else(|| self.fresh());
         self.emit(LOp::Xor {
@@ -448,23 +685,23 @@ impl FnLower<'_> {
         d
     }
 
-    /// The six cells `[pad, 0, 0, 0, 0, 0]` every fresh `sha3` in this scope
-    /// shares ([`Scope::sha3_pad`]): the zero `tail` and `cap` start at `+1`, a
-    /// 64-byte message's `tail` and a 128-byte one's `cap` at `+0`.
-    fn sha3_pad_run(&mut self) -> Off {
-        if let Some(o) = self.scope.sha3_pad {
+    /// The six cells `[pad, 0, 0, 0, 0, 0]` every fresh `sha3` (or `keccak`) in
+    /// this scope shares ([`Scope::sha3_pad`]): the zero `tail` and `cap` start
+    /// at `+1`, a 64-byte message's `tail` and a 128-byte one's `cap` at `+0`.
+    fn pad_run(&mut self, pad: Pad) -> Off {
+        if let Some(o) = self.scope.sha3_pad[pad as usize] {
             return o;
         }
         let o = self.alloc_stack(6);
         for k in 0..6 {
-            let value = if k == 0 { sha3_pad_value() } else { F192::ZERO };
+            let value = if k == 0 { pad.value() } else { F192::ZERO };
             self.set_const(o + k, value);
             self.scope
                 .const_cells
                 .entry([value.c0, value.c1, value.c2])
                 .or_insert(o + k);
         }
-        self.scope.sha3_pad = Some(o);
+        self.scope.sha3_pad[pad as usize] = Some(o);
         o
     }
 
@@ -510,9 +747,27 @@ impl FnLower<'_> {
 /// Cells a sponge state occupies.
 const STATE_CELLS: u32 = lean_vm::hash_flock::STATE_CELLS as u32;
 
-/// A cell holding the padding's first byte at its start: `0x06` in the low lane.
-fn sha3_pad_value() -> F192 {
-    F192::new(u64::from(primitives::hash::PAD_FIRST), 0, 0)
+/// The padding a sponge block uses: SHA3-256's (`sha3`, the leanVM hash) or
+/// Keccak-256's (`keccak`, the EVM's). They differ only in the first padding
+/// byte; the last bit is the opcode's own.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum Pad {
+    Sha3 = 0,
+    Keccak = 1,
+}
+
+impl Pad {
+    fn byte(self) -> u8 {
+        match self {
+            Self::Sha3 => primitives::hash::PAD_FIRST,
+            Self::Keccak => primitives::hash::KECCAK_PAD_FIRST,
+        }
+    }
+
+    /// A cell holding the padding's first byte at its start, in the low lane.
+    fn value(self) -> F192 {
+        F192::new(u64::from(self.byte()), 0, 0)
+    }
 }
 
 /// Where a `sha3` writes: the 13-cell stack run its instruction targets, and a

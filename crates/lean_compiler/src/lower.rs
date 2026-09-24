@@ -156,11 +156,12 @@ struct Scope {
     /// outside it, where the other path leaves the cell unwritten and therefore
     /// prover-chosen, which is why this reverts at a join with the bindings.
     const_cells: HashMap<[u64; 3], Off>,
-    /// Six consecutive frame cells holding `[pad, 0, 0, 0, 0, 0]`, `pad` the
+    /// Per padding ([`builtins::Pad`]: SHA3's `0x06`, Keccak's `0x01`), six
+    /// consecutive frame cells holding `[pad, 0, 0, 0, 0, 0]`, `pad` the
     /// padding's first byte at the start of a cell: every constant `tail` and
-    /// `cap` a fresh `sha3` block needs is a window of it. Emitted lazily at the
-    /// first dominating fresh hash in this control-flow scope.
-    sha3_pad: Option<Off>,
+    /// `cap` a fresh `sha3` or `keccak` block needs is a window of it. Emitted
+    /// lazily at the first dominating fresh hash in this control-flow scope.
+    sha3_pad: [Option<Off>; 2],
 }
 
 impl Scope {

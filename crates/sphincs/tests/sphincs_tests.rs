@@ -1,223 +1,138 @@
-use rand::{Rng, SeedableRng, rngs::StdRng};
+use rand::{SeedableRng, rngs::StdRng};
 use sphincs::*;
 
-fn test_message() -> Message {
-    std::array::from_fn(|i| (i * 5 + 3) as u8)
+fn hex_bytes(hex: &str) -> Vec<u8> {
+    let hex = hex.trim().trim_start_matches("0x");
+    (0..hex.len() / 2)
+        .map(|i| u8::from_str_radix(&hex[2 * i..2 * i + 2], 16).unwrap())
+        .collect()
 }
 
-fn test_key(seed: u64) -> (SphincsSecretKey, SphincsPublicKey) {
-    key_gen(&mut StdRng::seed_from_u64(seed))
+/// The string value of `"key": "…"` in the vector file.
+fn field(json: &str, key: &str) -> Vec<u8> {
+    let at = json.find(&format!("\"{key}\"")).unwrap();
+    let rest = &json[at + key.len() + 2..];
+    let open = rest.find('"').unwrap() + 1;
+    let close = open + rest[open..].find('"').unwrap();
+    hex_bytes(&rest[open..close])
+}
+
+/// NiceTry's reference vector (Post-Quantum-AA-Infra ed41aa7,
+/// `test/vectors/sphincs-v2-reference-0.json`, written by
+/// `scripts/sphincs_v2_reference.py` and accepted by `SphincsVerifier_v2` in
+/// `test/SphincsVerifier_v2.t.sol`). It verifies here, and the same seeds
+/// (`SK.seed = 0x11…`, `SK.prf = 0x22…`, `PK.seed = 0x5eed…`) reproduce the key and
+/// the signature byte for byte.
+#[test]
+fn matches_the_reference_vector() {
+    let json = include_str!("vectors/sphincs-v2-reference-0.json");
+    let (pk_seed, pk_root) = (field(json, "pkSeed"), field(json, "pkRoot"));
+    assert_eq!((&pk_seed[N..], &pk_root[N..]), (&[0; N][..], &[0; N][..]));
+    let pk = SphincsPublicKey {
+        root: pk_root[..N].try_into().unwrap(),
+        public_param: pk_seed[..N].try_into().unwrap(),
+    };
+    let message: Message = field(json, "message").try_into().unwrap();
+    let blob = field(json, "signature");
+    assert_eq!(blob.len(), SIG_SIZE);
+    let reference = SphincsSignature::from_bytes(blob.as_slice().try_into().unwrap());
+    assert_eq!(reference.to_bytes().to_vec(), blob);
+    verify(&pk, &message, &reference).unwrap();
+
+    let mut other = message;
+    other[31] ^= 1;
+    assert_eq!(verify(&pk, &other, &reference), Err(SphincsVerifyError::RootMismatch));
+
+    let (sk, derived) = key_gen_from_seeds([0x11; N], [0x22; N], pk.public_param);
+    assert_eq!(derived, pk);
+    assert_eq!(sign(&sk, &message), reference);
 }
 
 #[test]
-fn keygen_sign_verify() {
-    let (sk, pk) = test_key(0);
+fn keygen_sign_verify_roundtrip() {
+    let (sk, pk) = key_gen(&mut StdRng::seed_from_u64(1));
     assert_eq!(sk.public_key(), pk);
-    let message = test_message();
-    let signature = sign(&sk, &message).unwrap();
-    verify(&pk, &message, &signature).unwrap();
-    assert_eq!(sign(&sk, &message).unwrap(), signature);
+    for message in [[0xA7; MESSAGE_LEN], [0; MESSAGE_LEN]] {
+        let signature = sign(&sk, &message);
+        verify(&pk, &message, &signature).unwrap();
+        assert_eq!(sign(&sk, &message), signature);
+        let bytes = signature.to_bytes();
+        assert_eq!(SphincsSignature::from_bytes(&bytes), signature);
+    }
+    assert_eq!(SphincsPublicKey::from_bytes(&pk.flatten()), pk);
+    let (seed_word, root_word) = pk.to_bytes32();
+    assert_eq!((&seed_word[N..], &root_word[N..]), (&[0; N][..], &[0; N][..]));
+    assert_eq!(SphincsSecretKey::from_bytes(&sk.to_bytes()).public_key(), pk);
+    assert_eq!(
+        key_gen_from_seed([3; MASTER_SECRET_LEN]).1,
+        key_gen_from_seed([3; MASTER_SECRET_LEN]).1
+    );
 }
 
 #[test]
-fn serialized_sizes_and_roundtrip() {
-    let (sk, pk) = test_key(1);
-    let message = test_message();
-    let signature = sign(&sk, &message).unwrap();
-
-    let public_key_bytes = pk.flatten();
-    assert_eq!(public_key_bytes.len(), 32);
-    assert_eq!(SphincsPublicKey::from_bytes(&public_key_bytes), pk);
-
-    let signature_bytes = signature.to_bytes();
-    assert_eq!(signature_bytes.len(), 4924);
-    let decoded = SphincsSignature::from_bytes(&signature_bytes);
-    assert_eq!(decoded, signature);
-    verify(&pk, &message, &decoded).unwrap();
+fn trace_matches_the_signature() {
+    let (sk, pk) = key_gen_from_seed([7; MASTER_SECRET_LEN]);
+    let message = [0x5A; MESSAGE_LEN];
+    let signature = sign(&sk, &message);
+    let trace = verify_trace(&pk, &message, &signature);
+    assert_eq!(trace.signed[D], pk.root);
+    assert_eq!(
+        trace.digest,
+        h_msg(&pk.public_param, &pk.root, &signature.randomizer, &message)
+    );
+    for digits in &trace.digits {
+        let sum: usize = digits[..LEN1].iter().map(|&d| usize::from(d)).sum();
+        let csum: usize = (0..LEN2).map(|j| usize::from(digits[LEN1 + j]) << (LOG_W * j)).sum();
+        assert_eq!(sum + csum, MAX_CSUM);
+    }
 }
 
 #[test]
 fn tampered_signatures_rejected() {
-    let (sk, pk) = test_key(2);
-    let message = test_message();
-    let signature = sign(&sk, &message).unwrap();
+    let (sk, pk) = key_gen_from_seed([9; MASTER_SECRET_LEN]);
+    let message = [0x33; MESSAGE_LEN];
+    let signature = sign(&sk, &message);
     verify(&pk, &message, &signature).unwrap();
-
-    let mut other_message = message;
-    other_message[0] ^= 1;
-    assert!(verify(&pk, &other_message, &signature).is_err());
 
     let mut other_key = pk;
     other_key.root[0] ^= 1;
     assert!(verify(&other_key, &message, &signature).is_err());
+    let mut other_key = pk;
+    other_key.public_param[15] ^= 1;
+    assert!(verify(&other_key, &message, &signature).is_err());
 
-    // Verification recomputes the digest, so a tampered randomizer asks for
-    // another index, and asks it of a digest that is admissible only one time in
-    // 2^a.
-    let mut tampered = signature.clone();
-    tampered.randomizer[0] ^= 1;
-    assert_eq!(
-        verify(&pk, &message, &tampered),
-        Err(SphincsVerifyError::InadmissibleDigest)
-    );
-
-    // Everything the bottom layers carry feeds the message a layer above signs,
-    // and a counter is admissible for one message in 2^13.6, so tampering
-    // surfaces as an inadmissible encoding rather than as a wrong root.
     for tamper in [
-        (|s: &mut SphincsSignature| s.fts.secrets[5][0] ^= 1) as fn(&mut SphincsSignature),
-        |s: &mut SphincsSignature| s.fts.paths[9][4][0] ^= 1,
-        |s: &mut SphincsSignature| s.counters[2] ^= 1,
-        |s: &mut SphincsSignature| s.ots[1][17][0] ^= 1,
-        |s: &mut SphincsSignature| s.paths[H - 1][0] ^= 1,
+        (|s: &mut SphincsSignature| s.randomizer[0] ^= 1) as fn(&mut SphincsSignature),
+        |s: &mut SphincsSignature| s.fors_secrets[3][0] ^= 1,
+        |s: &mut SphincsSignature| s.fors_paths[K - 1][A - 1][0] ^= 1,
+        |s: &mut SphincsSignature| s.layers[0].chains[17][0] ^= 1,
+        |s: &mut SphincsSignature| s.layers[2].chains[L - 1][9] ^= 1,
+        |s: &mut SphincsSignature| s.layers[D - 1].path[SUBTREE_H - 1][15] ^= 1,
     ] {
         let mut tampered = signature.clone();
         tamper(&mut tampered);
-        assert_eq!(
-            verify(&pk, &message, &tampered),
-            Err(SphincsVerifyError::InadmissibleEncoding)
-        );
+        assert_eq!(verify(&pk, &message, &tampered), Err(SphincsVerifyError::RootMismatch));
     }
-
-    // Layer 0's path is the exception: nothing is signed above it, so it can
-    // only fail the root comparison.
-    let mut tampered = signature.clone();
-    tampered.paths[0][0] ^= 1;
-    assert_eq!(verify(&pk, &message, &tampered), Err(SphincsVerifyError::RootMismatch));
-
-    let mut tampered = signature.clone();
-    tampered.ots[0][17][0] ^= 1;
-    assert_eq!(verify(&pk, &message, &tampered), Err(SphincsVerifyError::RootMismatch));
 }
 
-/// One key signs one codeword, on which the whole one-time argument rests: the
-/// counter is the least admissible one, not any admissible one.
+/// The digest's bit fields are the verifier's `shr`/`and` on a big-endian
+/// `uint256`, and the address is FIPS 205's big-endian layout.
 #[test]
-fn ots_counter_is_the_least_admissible() {
-    let mut rng = StdRng::seed_from_u64(4);
-    let public_param: PublicParam = rng.random();
-    let master: MasterSecret = rng.random();
-    let pos = Pos::new(2, 1234, 56);
-    let message: Digest = rng.random();
-
-    let (counter, signature) = ots_sign(&public_param, &master, pos, &message).unwrap();
-    assert!((0..counter).all(|c| encode(&public_param, pos, &message, c).is_none()));
+fn digest_fields_and_address_layout() {
+    let mut d = [0u8; 32];
+    d[31] = 0xA5;
+    d[30] = 0x3C;
+    assert_eq!(digest_bits(&d, 0, 4), 0x5);
+    assert_eq!(digest_bits(&d, 4, 4), 0xA);
+    assert_eq!(digest_bits(&d, 8, 4), 0xC);
+    assert_eq!(digest_bits(&d, 0, 9), 0x0A5);
+    let mut top = [0u8; 32];
+    top[0] = 0x80;
+    assert_eq!(digest_bits(&top, 255, 1), 1);
     assert_eq!(
-        ots_leaf(&public_param, pos, &message, counter, &signature),
-        Some(ots_public_leaf(&public_param, &master, pos))
+        Adrs::new(1, 0x0203, TREE, 4, 5, 6).to_bytes(),
+        [
+            0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 3, 0, 0, 0, 2, 0, 0, 0, 4, 0, 0, 0, 5, 0, 0, 0, 6
+        ]
     );
-}
-
-#[test]
-fn index_decomposition_is_a_bijection_onto_the_bottom_layer() {
-    let mut rng = StdRng::seed_from_u64(5);
-    for _ in 0..1000 {
-        let idx = rng.random::<u64>() % (1 << H);
-        // Every layer's tree is the one whose root sits at the leaf its parent
-        // layer uses.
-        for lay in 1..D {
-            let expected =
-                u64::from(tree_of(idx, lay - 1)) * (1 << HEIGHTS[lay - 1]) + u64::from(leaf_of(idx, lay - 1));
-            assert_eq!(u64::from(tree_of(idx, lay)), expected);
-        }
-        assert_eq!(tree_of(idx, 0), 0);
-        assert_eq!(
-            u64::from(tree_of(idx, D - 1)) * (1 << HEIGHTS[D - 1]) + u64::from(leaf_of(idx, D - 1)),
-            idx
-        );
-    }
-}
-
-/// The counter search and the digest resampling are the signer's two grinding
-/// loops; both costs are a property of the predicates, so a drift here is a
-/// change of scheme.
-#[test]
-#[ignore]
-fn grinding_bits() {
-    let mut rng = StdRng::seed_from_u64(6);
-    let public_param: PublicParam = rng.random();
-    let master: MasterSecret = rng.random();
-
-    let samples = 200;
-    let counters: u64 = (0..samples)
-        .map(|i| {
-            let message: Digest = rng.random();
-            let pos = Pos::new(i % D, i as u32, i as u32);
-            u64::from(ots_sign(&public_param, &master, pos, &message).unwrap().0)
-        })
-        .sum();
-    // A codeword is one admissible digest, so 1/p is the number of them over
-    // 2^128: 2^13.60 for T = 191.
-    let encoding_bits = ((counters as f64 / samples as f64) + 1.0).log2();
-    println!("counter search: 2^{encoding_bits:.2} attempts");
-    assert!(
-        (12.6..14.6).contains(&encoding_bits),
-        "encoding cost moved: {encoding_bits:.2} bits"
-    );
-
-    let root: Digest = rng.random();
-    let message = test_message();
-    let mut attempts = 0u64;
-    for _ in 0..samples {
-        loop {
-            attempts += 1;
-            let randomizer: Randomizer = rng.random();
-            if message_digest(&public_param, &root, &randomizer, &message).1[K - 1] == 0 {
-                break;
-            }
-        }
-    }
-    let digest_bits = (attempts as f64 / samples as f64).log2();
-    println!("digest resampling: 2^{digest_bits:.2} attempts");
-    assert!(
-        ((A as f64 - 1.0)..(A as f64 + 1.0)).contains(&digest_bits),
-        "digest cost moved: {digest_bits:.2} bits"
-    );
-}
-
-/// A reloaded secret key must sign exactly as the original does: `key_gen`
-/// samples the master secret itself, so these bytes are the only way back to a
-/// key it produced.
-#[test]
-fn secret_key_survives_a_round_trip() {
-    let (sk, pk) = test_key(7);
-    let reloaded = SphincsSecretKey::from_bytes(&sk.to_bytes());
-
-    assert_eq!(reloaded.public_key(), pk);
-    let message = test_message();
-    let sig = sign(&reloaded, &message).unwrap();
-    verify(&pk, &message, &sig).unwrap();
-}
-
-#[test]
-fn secret_derivation_uses_full_master() {
-    let pp = [3; PUBLIC_PARAM_LEN];
-    let master = [7; MASTER_SECRET_LEN];
-    let pos = Pos::new(2, 5, 6);
-    let ots = ots_secret(&pp, &master, pos, 4);
-    let (fts, _) = fts_open(&pp, &master, 5, &[0; K]);
-    for byte in 0..MASTER_SECRET_LEN {
-        let mut changed = master;
-        changed[byte] ^= 1;
-        assert_ne!(ots_secret(&pp, &changed, pos, 4), ots);
-        assert_ne!(fts_open(&pp, &changed, 5, &[0; K]).0, fts);
-    }
-}
-
-/// The split between the two entry points: the seed alone determines the key,
-/// and the rng one draws a fresh seed per call rather than a fixed one.
-#[test]
-fn key_gen_entry_points() {
-    let seed = [17u8; 32];
-    let (_, from_seed) = key_gen_from_seed(seed);
-    assert_eq!(key_gen_from_seed(seed).1, from_seed);
-
-    let mut rng = StdRng::seed_from_u64(31);
-    let (_, first) = key_gen(&mut rng);
-    let (_, second) = key_gen(&mut rng);
-    assert_ne!(first, second);
-
-    // The rng path is exactly a drawn seed, so it reproduces under a fixed rng.
-    let drawn: [u8; 32] = StdRng::seed_from_u64(31).random();
-    assert_eq!(key_gen_from_seed(drawn).1, first);
 }

@@ -11,45 +11,26 @@
 \usepackage{xcolor}
 \usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
 
-\theoremstyle{plain}
-\newtheorem{theorem}{Theorem}[section]
-\theoremstyle{definition}
-\newtheorem{definition}[theorem]{Definition}
-
 \newcommand{\bits}[1]{\{0,1\}^{#1}}
-\newcommand{\getsr}{\stackrel{\$}{\gets}}
-\newcommand{\Th}{\mathsf{Th}}
-\newcommand{\Enc}{\mathsf{Enc}}
-\newcommand{\Digest}{\mathsf{Digest}}
-\newcommand{\Gen}{\mathsf{Gen}}
-\newcommand{\Sig}{\mathsf{Sig}}
-\newcommand{\Ver}{\mathsf{Ver}}
-\newcommand{\hash}{\mathsf{H}}
-\newcommand{\LE}{\mathsf{LE}}
-\newcommand{\Truncate}{\mathsf{Truncate}}
 \newcommand{\concat}{\mathbin\Vert}
-\newcommand{\sk}{\mathit{sk}}
-\newcommand{\pk}{\mathit{pk}}
-\newcommand{\rootnode}{\mathit{root}}
-\newcommand{\tw}{\mathit{tw}}
-\newcommand{\qs}{q_{\mathrm{s}}}
-\newcommand{\amax}{A_{\max}}
-\newcommand{\cmax}{C_{\max}}
-\newcommand{\idx}{\mathit{idx}}
-\newcommand{\lay}{\mathit{lay}}
-\newcommand{\OtsSign}{\mathsf{Ots.sign}}
-\newcommand{\OtsLeaf}{\mathsf{Ots.leaf}}
-\newcommand{\TreeRoot}{\mathsf{Tree.root}}
-\newcommand{\TreePath}{\mathsf{Tree.path}}
-\newcommand{\TreeFold}{\mathsf{Tree.fold}}
-\newcommand{\FtsKey}{\mathsf{Fts.key}}
-\newcommand{\FtsOpen}{\mathsf{Fts.open}}
-\newcommand{\FtsRec}{\mathsf{Fts.recover}}
+\newcommand{\K}{\mathsf{keccak256}}
+\newcommand{\Th}{\mathsf{Th}}
+\newcommand{\Hmsg}{\mathsf{H_{msg}}}
+\newcommand{\PRF}{\mathsf{PRF}}
+\newcommand{\ADRS}{\mathsf{ADRS}}
+\newcommand{\slot}{\mathsf{word}}
+\newcommand{\trunc}{\mathsf{trunc}}
+\newcommand{\BE}{\mathsf{BE}}
+\newcommand{\seed}{\mathit{PK.seed}}
+\newcommand{\pkroot}{\mathit{PK.root}}
+\newcommand{\skseed}{\mathit{SK.seed}}
+\newcommand{\skprf}{\mathit{SK.prf}}
+\newcommand{\htidx}{\mathit{htIdx}}
 
 \emergencystretch=1.5em
 \setlist[enumerate]{leftmargin=2em, itemsep=4pt}
 
-\title{A SPHINCS$^+$ variant}
+\title{The SPHINCS$^+$ instance of leanVM:\\ NiceTry's ``SPHINCS- v2'' profile}
 \author{}
 \date{}
 
@@ -57,415 +38,236 @@
 \maketitle
 
 \begin{abstract}
-
-This specification defines a SPHINCS$^+$ variant with a lifetime of $2^{24}$ signatures per key pair:
-
+This document specifies the stateless hash-based signature leanVM aggregates: the
+SPHINCS$^+$~\cite{SPHINCSPLUS} profile verified on Ethereum by NiceTry's
+\texttt{SphincsVerifier\_v2}~\cite{NICETRYV2,NICETRYDOCS}. It is standard FORS under
+a standard WOTS$^+$ hypertree, with Keccak-256 as the only hash and FIPS~205's
+32-byte addresses~\cite{FIPS205}:
 \begin{itemize}
-   \item \textbf{NIST security level~1}~\cite{NISTPQC}, $\approx 128$-bit (resp. $\approx 64$-bit) of classical (resp. quantum) security, in the Random Oracle model, ROM (resp. Quantum Random Oracle model, QROM).\footnote{The classical bound is proved (Section~\ref{sec:security}); the quantum one is a target, not a proved statement (Section~\ref{sec:quantum}).}
-  \item \textbf{Public key: 32 bytes.}
-  \item \textbf{Signature: 4924 bytes.}
-  \item \textbf{Verification: 497 hashes.}
-  \item \textbf{Key generation: 1.38M hashes.}
-  \item \textbf{Signing: approximately 190K hashes on average}, with a 1024-byte public cache.
+  \item \textbf{Parameters:} $n=16$, $h=20$, $d=5$, $h'=4$, $a=9$, $k=19$, $w=16$, $\ell=32+3=35$.
+  \item \textbf{Public key: 32 bytes} $(\seed,\pkroot)$, on chain two \texttt{bytes32}.
+  \item \textbf{Signature: 6176 bytes.} No grinding anywhere: no randomizer search, no WOTS counter.
+  \item \textbf{Verification:} 222 hash calls plus the chain steps, $267$ per layer on average and at most $510$; about $1560$ calls and $1600$ Keccak-f permutations in all.
+  \item \textbf{Budget:} $2^{20}$ FORS instances, about $10^6$ signatures per key~\cite{NICETRYDOCS}.
 \end{itemize}
+The on-chain verifier is normative. \texttt{crates/sphincs} implements this document,
+verifies NiceTry's reference vector, and reproduces it byte for byte from the same
+seeds; \texttt{guests/lean\_ethereum.py} verifies the same signatures in the VM.
 \end{abstract}
 
-The construction uses compressed variants of the Winternitz one-time signature (WOTS) and forest of random subsets (FORS), called WOTS$^+$C and FORS$^+$C~\cite{HK22C,KN25}. They are combined within the SPHINCS$^+$ framework~\cite{SPHINCSPLUS}. The definitions below specify the concrete variant completely.
+\section{Notation and hashing}
+\label{sec:hashing}
 
-\section{Hashing and parameters}
-\label{sec:parameters}
+Byte strings are written in memory order and $\concat$ is concatenation.
+$\BE_r(z)$ is the $r$-byte big-endian encoding of an integer $z$. A 32-byte string
+$D$ is also read as the integer $\mathrm{int}(D)=\sum_{i<32} D_i\,256^{31-i}$, and
+$\mathrm{bits}(D,s,t)=\lfloor \mathrm{int}(D)/2^s\rfloor \bmod 2^t$: bit $b$ of
+$\mathrm{int}(D)$ is bit $b\bmod 8$ of byte $31-\lfloor b/8\rfloor$. Every field of
+a digest is read this way, least significant first.
 
-Write $\bits r$ for $r$-bit strings, $\concat$ for concatenation, and $\LE_r(z)$ for the unsigned $r$-bit little-endian encoding of $z$. Write $x\getsr A$ for a uniform sample from $A$. Indices and bit positions start at zero; $\bot$ denotes failure.
+$\K$ is Keccak-256 as the EVM computes it: the Keccak-f[1600] sponge with rate 136
+bytes and padding $\texttt{0x01}\concat 0^*\concat\texttt{0x80}$ (not SHA3-256, whose
+first padding byte is \texttt{0x06}). Values are $n=16$ bytes. A value $v$ enters a
+hash as the 32-byte word $\slot(v)=v\concat 0^{16}$ (the value in the top half of a
+\texttt{bytes32}), and $\trunc(D)$ keeps the first 16 bytes of a digest (the
+verifier's \texttt{N\_MASK}).
 
-Let $\hash:\bits{*}\to\bits{256}$ be the hash function. Most operations use its first $n=128$ output bits:
+\paragraph{Addresses.}
+An address is FIPS~205's uncompressed 32-byte $\ADRS$, all fields big-endian:
 \[
-  \Th(P,\tw,M)=\Truncate_n\!\left(\hash(\tw\concat P\concat M)\right).
+  \ADRS=\BE_4(\mathit{layer})\concat\BE_{12}(\mathit{tree})\concat\BE_4(\mathit{type})
+  \concat\BE_4(w_1)\concat\BE_4(w_2)\concat\BE_4(w_3).
 \]
-Here $P$ is a 128-bit public parameter and $\tw$ is a 128-bit \emph{tweak}: an address identifying the operation and its position in the construction. Appendix~\ref{sec:tweaks} gives every tweak's exact bytes. $\Truncate_r$ always keeps the first $r$ bits, with bits read least significant first within each byte.
+\begin{center}
+\begin{tabular}{@{}llll@{}}
+\toprule
+type & $w_1$ & $w_2$ & $w_3$\\
+\midrule
+0 \textsf{WOTS\_HASH} & key pair & chain $i$ & hash address\\
+1 \textsf{WOTS\_PK} & key pair & 0 & 0\\
+2 \textsf{TREE} & 0 & height & index\\
+3 \textsf{FORS\_TREE} & key pair & height & index\\
+4 \textsf{FORS\_ROOTS} & key pair & 0 & 0\\
+5 \textsf{WOTS\_PRF} & key pair & chain $i$ & 0\\
+6 \textsf{FORS\_PRF} & key pair & 0 & index\\
+\bottomrule
+\end{tabular}
+\end{center}
+Types 5 and 6 are the signer's own and never reach a verifier.
 
-The message $m$ and master secret $S$ are each 256 bits. WOTS signs 128-bit values $M$. The signature contains a 128-bit randomizer $\rho$ and one 32-bit counter $c$ per WOTS signature. Derived signing secrets, chain values and Merkle nodes are 128 bits; write $\mathcal H=\bits n$.
+\paragraph{The hashes.} For values $v_1,\dots,v_m$,
+\[
+  \Th(\ADRS, v_1,\dots,v_m)=\trunc\!\left(\K\!\left(\slot(\seed)\concat\ADRS\concat\slot(v_1)\concat\cdots\concat\slot(v_m)\right)\right),
+\]
+96 bytes for one value ($F$), 128 for two ($H$), $64+32m$ for the FORS roots
+($m=19$, 672 bytes) and a WOTS key ($m=35$, 1184 bytes). The message digest is
+\[
+  \Hmsg(R,M)=\K\!\left(\slot(\seed)\concat\slot(\pkroot)\concat\slot(R)\concat M\concat\texttt{0xFF}^{32}\right),
+\]
+160 bytes, kept whole; $M$ is the 32-byte message (an ERC-4337 \texttt{userOpHash}).
+The all-ones word separates it from every $\Th$ input, which is 96 or 128 bytes
+or ends in a value word.
+
+\section{Parameters}
+\label{sec:parameters}
 
 \begin{center}
 \begin{tabular}{@{}lll@{}}
 \toprule
 Symbol & Value & Meaning\\
 \midrule
-$w$ & $3$ & bit-size of WOTS chain positions\\
-$v$ & $42$ & chains per WOTS key\\
-$T$ & $191$ & sum of the signed chain positions\\
-$d$ & $3$ & layers, numbered from the top\\
-$(h_0,h_1,h_2)$ & $(12,7,7)$ & tree heights at those layers\\
-$h$ & $26$ & total height, $h=h_0+h_1+h_2$\\
-$a$ & $10$ & height of each FORS tree\\
-$k$ & $15$ & digest indices, of which $k-1$ open trees\\
-$\qs$ & $2^{24}$ & signing requests allowed per key pair\\
-$\amax$ & $2^{32}$ & maximum randomizer trials per signature\\
-$\cmax$ & $2^{32}$ & maximum encoding attempts per WOTS signature\\
+$n$ & 16 & bytes per value\\
+$w$ & 16 & chain length; $\log w=4$ bits a digit\\
+$\ell_1$ & 32 & message digits, $8n/\log w$\\
+$\ell_2$ & 3 & checksum digits, $\lfloor\log_2(\ell_1(w-1))/\log_2 w\rfloor+1$\\
+$\ell$ & 35 & chains per WOTS key\\
+$d$ & 5 & hypertree layers, layer 0 at the bottom\\
+$h'$ & 4 & tree height per layer\\
+$h$ & 20 & total height, $dh'$\\
+$a$ & 9 & FORS tree height\\
+$k$ & 19 & FORS trees\\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The public parameter and all signing secrets are derived from $S$. In particular,
+\section{WOTS$^+$}
+\label{sec:wots}
+
+A WOTS key on layer $\lambda$ is named by its tree $t$ and key pair $j$; write
+$A_{\lambda,t,j}(\mathit{type},w_2,w_3)$ for the address $(\lambda,t,\mathit{type},j,w_2,w_3)$.
+Chain $i<\ell$ starts at the secret $s_i=\PRF(A_{\lambda,t,j}(5,i,0))$ and steps
 \[
-  P=\Th\!\left(0^{128},\mathsf{tw}_{\mathrm{parameter}},S\right).
+  c_i^{(0)}=s_i,\qquad c_i^{(p+1)}=\Th\!\left(A_{\lambda,t,j}(0,i,p),\,c_i^{(p)}\right),
 \]
-The component definitions below derive signing secrets as needed from this fixed $S$. Functions that read secrets use $S$ implicitly.
+and the key is $\mathit{pk}=\Th(A_{\lambda,t,j}(1,0,0),c_0^{(15)},\dots,c_{34}^{(15)})$.
 
-\section{WOTS: signing with hash chains}
-\label{sec:ots}
+\paragraph{Digits.}
+A node $N$ is signed through $D=\K(\slot(\seed)\concat A_{\lambda,t,j}(0,0,0)\concat\slot(N))$,
+96 bytes, kept whole. Its digits are
+\begin{gather*}
+  x_i=\mathrm{bits}(D,4i,4)\quad(i<32),\qquad
+  x_{32+j}=\lfloor\mathit{csum}/16^j\rfloor\bmod 16\quad(j<3),\\
+  \mathit{csum}=\sum_{i<32}(15-x_i)=480-\sum_{i<32}x_i.
+\end{gather*}
+The message digits are the low 128 bits of $\mathrm{int}(D)$, i.e.\ its last 16 bytes,
+read least significant first: this mirrors FIPS~205's most-significant-first
+\texttt{base\_2b}, and the checksum is not shifted. Raising a message digit lowers
+$\mathit{csum}$, whose base-16 value is monotone in each digit, so some checksum chain
+would have to walk backward.
 
-A WOTS key is identified by a layer $\lay$, a tree $\tau$ and a leaf $e$. It contains $v=42$ chains, each with eight positions, numbered $0$ through $7$. Fix such a key. For $0\leq i<v$, derive chain $i$'s starting secret and hash forward:
+\paragraph{Signing and verifying.}
+The signature is $\sigma_i=c_i^{(x_i)}$. The verifier recomputes $x$ from $N$ and
+walks chain $i$ from position $x_i$ for $15-x_i$ steps, hash address $x_i+p$ at step
+$p$, then compresses the tops into $\mathit{pk}$.
+
+\section{The hypertree}
+\label{sec:tree}
+
+Each tree of layer $\lambda$ has $2^{h'}=16$ WOTS keys as leaves. Node $u$ at height
+$z\geq1$ is $\Th((\lambda,t,2,0,z,u),\mathit{left},\mathit{right})$, and an
+authentication path lists the siblings from the leaf up. Folding a leaf at index $j$:
+at height $z-1$ the current node is the right child when bit $z-1$ of $j$ is set,
+and the parent's index is $j\gg z$.
+
+A hypertree leaf $\htidx<2^{20}$ names one key pair on every layer: layer $\lambda$
+uses tree $t_\lambda=\htidx\gg4(\lambda+1)$ and key pair
+$j_\lambda=(\htidx\gg4\lambda)\bmod16$. Layer 0 signs the FORS key, layer $\lambda>0$
+signs the root of layer $\lambda-1$'s tree, and the single tree of layer 4 has the
+public root $\pkroot$.
+
+\section{FORS}
+\label{sec:fors}
+
+The FORS instance of $\htidx$ uses tree address $t_{\mathrm F}=\htidx\gg4$ and key
+pair $j_{\mathrm F}=\htidx\bmod16$, and folds its 19 trees into one index space (FIPS~205
+Algorithm 17): node $u$ at height $z$ of tree $i$ has $w_3=(i\ll(9-z))\,|\,u$. With
+$B(z,w_3)=(0,t_{\mathrm F},3,j_{\mathrm F},z,w_3)$:
 \[
-\begin{aligned}
-  C_{i,0}&=\sk_{\lay,\tau,e,i}
-    =\Th\!\left(P,\mathsf{tw}_{\mathrm{prf}}(\lay,\tau,i,e),S\right),\\
-  C_{i,\mu}&=\Th\!\left(P,\mathsf{tw}_{\mathrm{chain}}(\lay,\tau,e,i,\mu),C_{i,\mu-1}\right),
-    &&1\leq\mu<2^w.
-\end{aligned}
+  \text{leaf }u\text{ of tree }i=\Th\!\left(B(0,(i\ll 9)|u),\,\PRF((0,t_{\mathrm F},6,j_{\mathrm F},0,(i\ll9)|u))\right),
 \]
-The endpoints $\pk_{\lay,\tau,e,i}=C_{i,7}$ form the WOTS public key. Hashing them in chain order gives one Merkle leaf:
-\[
-  X^{\lay,\tau}_{0,e}=\Th\!\left(P,\mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e),
-    C_{0,7}\concat\cdots\concat C_{v-1,7}\right).
-\]
+nodes are $H$ under $B(z,\cdot)$, and the FORS key is
+$\Th((0,t_{\mathrm F},4,j_{\mathrm F},0,0),\mathit{root}_0,\dots,\mathit{root}_{18})$.
+A signature opens tree $i$ at index $u_i$: its secret and its nine-node path.
 
-To sign $M$, the signer encodes it as positions $x_0,\ldots,x_{v-1}$ and reveals $C_{i,x_i}$ from each chain. The verifier hashes these values forward to recover the endpoints. All valid encodings have the same sum:
-\[
-  \mathcal C=\left\{x\in\{0,\ldots,2^w-1\}^{v}:\sum_{i=0}^{v-1}x_i=T\right\}.
-\]
-Hashing forward can only increase a position. Thus one valid encoding cannot be changed into a distinct valid encoding merely by advancing along the chains.
+\section{The scheme}
+\label{sec:scheme}
 
-\paragraph{Encoding a message.}
-$\Enc(P,\lay,\tau,e,M,c)$ first computes
-\[
-  D=\Th\!\left(P,\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e),M\concat\LE_{32}(c)\right).
-\]
-Interpret the first and last eight bytes of $D$ as little-endian integers $d_0,d_1$. Each supplies 21 consecutive three-bit positions:
-\[
-  x_{21q+r}=\left\lfloor d_q/2^{3r}\right\rfloor\bmod 8,
-  \qquad q\in\{0,1\},\quad 0\leq r<21.
-\]
-Return $x$ if bit 63 of each $d_q$ is zero and $\sum_i x_i=T$; otherwise return $\bot$. The two zero bits ensure that an accepted encoding specifies all 128 bits of $D$.
+\paragraph{Keys.} The secret key is three 16-byte seeds $(\skseed,\skprf,\seed)$, with
+$\PRF(\ADRS)=\trunc(\K(\slot(\skseed)\concat\ADRS))$. The public key is $(\seed,\pkroot)$,
+$\pkroot$ the root of the layer-4 tree. On chain both are top-aligned words, and a word
+whose low 16 bytes are nonzero is rejected.\footnote{\texttt{crates/sphincs} derives the
+three seeds from 32 bytes of seed material $S$ as $\trunc(\K(\mathit{tag}\concat S))$
+with ASCII tags \texttt{SPHINCS-v2 SK.seed}, \texttt{SPHINCS-v2 SK.prf},
+\texttt{SPHINCS-v2 PK.seed}. Any derivation of independent seeds serves.}
 
-\paragraph{Signing.}
-$\OtsSign(P,\lay,\tau,e,M)$ tries $c=0,\ldots,\cmax-1$ in order. At the first successful encoding $x$, it returns
-\[
-  (c,\sigma),\qquad \sigma_i=C_{i,x_i},\quad 0\leq i<v.
-\]
-It returns $\bot$ if every counter fails.
-
-\paragraph{Recovering the leaf.}
-$\OtsLeaf(P,\lay,\tau,e,M,c,\sigma)$ recomputes $x=\Enc(P,\lay,\tau,e,M,c)$ and returns $\bot$ if encoding fails. Otherwise, for each $i$, start with $C'_{i,x_i}=\sigma_i$ and apply the chain recurrence from position $x_i+1$ through $7$. Return
-\[
-  \Th\!\left(P,\mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e),C'_{0,7}\concat\cdots\concat C'_{v-1,7}\right).
-\]
-
-\label{rem:once}
-Each WOTS key in this construction signs one fixed value: a child-tree root or a FORS public key. Choosing the least successful counter makes repeated signing of that value reveal the same positions. Revealing different positions for the same key would let an adversary combine the smaller positions from both signatures.
-
-\section{Merkle trees: authenticating WOTS keys}
-\label{sec:layer}
-
-Tree $\tau$ at layer $\lay$ has $2^{h_\lay}$ WOTS leaves. Its parent nodes are
-\[
-  X^{\lay,\tau}_{\lambda,j}=\Th\!\left(P,\mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda,j),
-    X^{\lay,\tau}_{\lambda-1,2j}\concat X^{\lay,\tau}_{\lambda-1,2j+1}\right),
-\]
-for $1\leq\lambda\leq h_\lay$ and $0\leq j<2^{h_\lay-\lambda}$. Children are always hashed left first. Define
-\[
-  \TreeRoot(P,\lay,\tau)=X^{\lay,\tau}_{h_\lay,0}.
-\]
-
-An authentication path supplies the sibling of the chosen node at each height. For leaf $e$, $\TreePath(P,\lay,\tau,e)$ returns $A=(A_0,\ldots,A_{h_\lay-1})$, where
-\[
-  A_\lambda=X^{\lay,\tau}_{\lambda,\lfloor e/2^\lambda\rfloor\oplus1}.
-\]
-Here $\oplus1$ flips the low bit of the node index, selecting its sibling. Paths are ordered from leaf to root.
-
-$\TreeFold(P,\lay,\tau,e,X,A)$ recovers the root from a leaf value $X$ and its path. Start with $V_0=X$. For $0\leq\lambda<h_\lay$, let $j=\lfloor e/2^{\lambda+1}\rfloor$ and compute
-\[
-  V_{\lambda+1}=\begin{cases}
-    \Th\!\left(P,\mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda+1,j),V_\lambda\concat A_\lambda\right)
-      &\text{if bit $\lambda$ of $e$ is zero},\\[2pt]
-    \Th\!\left(P,\mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda+1,j),A_\lambda\concat V_\lambda\right)
-      &\text{otherwise}.
-  \end{cases}
-\]
-Return $V_{h_\lay}$. The bit selects whether the current node is the left or right child.
-
-\section{FORS: signing digest indices}
-\label{sec:fts}
-
-A FORS instance is identified by $\idx\in\{0,\ldots,2^h-1\}$. It contains $k-1=14$ Merkle trees, each with $2^a=1024$ leaves. Tree $\kappa$ has secrets
-\[
-  s_{\idx,\kappa,j}=\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsprf}}(\idx,\kappa,j),S\right),
-  \qquad 0\leq\kappa<k-1,\quad 0\leq j<2^a.
-\]
-Hash each secret into a leaf, then hash pairs of children into parents:
-\[
-\begin{aligned}
-  Y^{\idx,\kappa}_{0,j}&=\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,j),s_{\idx,\kappa,j}\right),\\
-  Y^{\idx,\kappa}_{\lambda,j}&=\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j),
-    Y^{\idx,\kappa}_{\lambda-1,2j}\concat Y^{\idx,\kappa}_{\lambda-1,2j+1}\right),
-\end{aligned}
-\]
-where $1\leq\lambda\leq a$ and $0\leq j<2^{a-\lambda}$ in the second line. The FORS public key commits to the roots in tree order:
-\[
-  \FtsKey(P,\idx)=\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsroots}}(\idx),
-    Y^{\idx,0}_{a,0}\concat\cdots\concat Y^{\idx,k-2}_{a,0}\right).
-\]
-
-\paragraph{Opening leaves.}
-The digest selects indices $u=(u_0,\ldots,u_{k-1})$, each in $\{0,\ldots,2^a-1\}$. The last index must be zero and has no corresponding tree. For every $0\leq\kappa<k-1$, $\FtsOpen(P,\idx,u)$ reveals one secret and its $a$ siblings:
-\[
-  s_\kappa=s_{\idx,\kappa,u_\kappa},\qquad
-  B_{\kappa,\lambda}=Y^{\idx,\kappa}_{\lambda,\lfloor u_\kappa/2^\lambda\rfloor\oplus1},
-  \quad 0\leq\lambda<a.
-\]
-It returns $(s,B)$.
-
-\paragraph{Recovering the public key.}
-$\FtsRec(P,\idx,u,s,B)$ starts each tree at
-\[
-  W_{\kappa,0}=\Th\!\left(P,\mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,u_\kappa),s_\kappa\right).
-\]
-At height $\lambda$, combine $W_{\kappa,\lambda}$ with $B_{\kappa,\lambda}$, putting the current value first exactly when bit $\lambda$ of $u_\kappa$ is zero. Hash this pair with $\Th$ using the tweak $\mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda+1,\lfloor u_\kappa/2^{\lambda+1}\rfloor)$ to obtain $W_{\kappa,\lambda+1}$. After all $a$ heights, return
-\[
-  \Th\!\left(P,\mathsf{tw}_{\mathrm{ftsroots}}(\idx),W_{0,a}\concat\cdots\concat W_{k-2,a}\right).
-\]
-
-A FORS instance may sign several sets of indices. Reuse reveals more leaves, so its protection decreases as openings accumulate.
-
-\section{Connecting the layers}
-
-The \emph{hypertree} connects all $2^{26}$ FORS instances to one public root. Layer $0$ contains one height-12 tree; layer $1$ contains $2^{12}$ height-7 trees; layer $2$ contains $2^{19}$ height-7 trees. Each WOTS key in an upper layer signs one child-tree root. Each WOTS key in layer $2$ signs one FORS public key.
-
-An index $\idx$ selects one tree and one leaf at each layer:
-\[
-  \tau_\lay(\idx)=\left\lfloor\idx/2^{\sum_{j\geq\lay}h_j}\right\rfloor,
-  \qquad
-  e_\lay(\idx)=\left\lfloor\idx/2^{\sum_{j>\lay}h_j}\right\rfloor\bmod 2^{h_\lay}.
-\]
-Concretely, $e_0$ is the high 12 bits of $\idx$, $e_1$ the next 7 bits, and $e_2$ the low 7 bits. Then
-\[
-  \tau_0=0,\qquad \tau_1=e_0,\qquad \tau_2=2^7e_0+e_1.
-\]
-Thus the key at $(0,0,e_0)$ signs tree $(1,\tau_1)$'s root, the key at $(1,\tau_1,e_1)$ signs tree $(2,\tau_2)$'s root, and the key at $(2,\tau_2,e_2)$ signs $\FtsKey(P,\idx)$.
-
-\paragraph{Selecting the route and FORS leaves.}
-\label{rem:rho}
-For public root $\rootnode$, message $m$ and randomizer $\rho$, define
-\[
-  \Digest(P,\rootnode,m,\rho)=\Truncate_{h+ka}\!\left(
-    \hash(\mathsf{tw}_{\mathrm{msg}}\concat P\concat\rho\concat\rootnode\concat m)\right).
-\]
-Interpret these $h+ka=176$ bits as a little-endian integer $N$ and extract
-\[
-  \idx=N\bmod2^h,\qquad
-  u_\kappa=\left\lfloor N/2^{h+\kappa a}\right\rfloor\bmod2^a,
-  \quad 0\leq\kappa<k.
-\]
-The digest is \emph{admissible} when $u_{k-1}=0$. The signer searches over randomizers derived from $S$ and $m$, as defined below. For a uniform digest, requiring this last index to be zero leaves all other indices uniform, since they use disjoint bits.
-
-\section{The complete signature scheme}
-
-\subsection{Key generation}
-\label{rem:seed}
-
-$\Gen$ samples $S\getsr\bits{256}$, derives $P$ as in Section~\ref{sec:parameters}, and computes $\rootnode=\TreeRoot(P,0,0)$. It returns
-\[
-  \pk=(\rootnode,P),\qquad \sk=(P,\rootnode,S).
-\]
-Only the top tree is built at key generation. Lower trees are computed as signing needs them.
-
-\subsection{Signing}
-\label{sec:sign}
-
-Given $\sk=(P,\rootnode,S)$ and a 256-bit message $m$, $\Sig(\sk,m)$ proceeds as follows:
+\paragraph{Signing $M$.}
 \begin{enumerate}
-\item For $a=0,\ldots,\amax-1$, derive
-\[
-  \rho_a=\Th(P,\mathsf{tw}_{\mathrm{rnd}}(a),S\concat m).
-\]
-Stop at the first $a$ for which $\Digest(P,\rootnode,m,\rho_a)$ is admissible, set $\rho=\rho_a$, and extract $\idx,u$. Return $\bot$ if no trial succeeds.
-\item Compute $(s,B)=\FtsOpen(P,\idx,u)$ and $M_{d-1}=\FtsKey(P,\idx)$.
-\item For $\lay=d-1,d-2,\ldots,0$, set $\tau=\tau_\lay(\idx)$ and $e=e_\lay(\idx)$. Compute $(c_\lay,\sigma_\lay)=\OtsSign(P,\lay,\tau,e,M_\lay)$, returning $\bot$ immediately on failure. Then compute
-\[
-  A_\lay=\TreePath(P,\lay,\tau,e),\qquad
-  M_{\lay-1}=\TreeRoot(P,\lay,\tau).
-\]
-\item Return
-\[
-  \sigma=\left(\rho,(s_\kappa,B_\kappa)_{\kappa<k-1},
-    (c_\lay,\sigma_\lay,A_\lay)_{\lay<d}\right).
-\]
+  \item $R=\trunc(\K(\slot(\skprf)\concat M))$ and $D=\Hmsg(R,M)$.
+  \item $u_i=\mathrm{bits}(D,9i,9)$ for $i<19$, and $\htidx=\mathrm{bits}(D,171,20)$.
+  \item Open FORS instance $\htidx$ at $u_0,\dots,u_{18}$; let $N_0$ be its key.
+  \item For $\lambda=0,\dots,4$: sign $N_\lambda$ with key pair $j_\lambda$ of tree
+        $t_\lambda$ on layer $\lambda$, append that key's path, and let $N_{\lambda+1}$
+        be the tree's root.
 \end{enumerate}
-The final value $M_{-1}=\rootnode$ is computed and discarded. Signing is deterministic and changes no secret state. Repeating a message returns the same signature, or the same failure.
+Signing is deterministic and stateless.
 
-\subsection{Verification}
-\label{sec:ver}
+\paragraph{Verifying.} Recompute $D$ from $R$, $M$ and the key; recover the FORS key
+from the opened secrets and paths; for each layer recover the WOTS key from the chains
+and fold it up the path. Accept if and only if the last node equals $\pkroot$. There is
+no other check: every well-formed signature either reaches the root or does not.
 
-$\Ver(\pk,m,\sigma)$ rejects $\bot$ and malformed inputs. Otherwise, parse $\pk=(\rootnode,P)$ and $\sigma$ as above:
-\begin{enumerate}
-\item Compute $\Digest(P,\rootnode,m,\rho)$ and extract $\idx,u$. Reject unless $u_{k-1}=0$.
-\item Set $M_{d-1}=\FtsRec(P,\idx,u,s,B)$.
-\item For $\lay=d-1,d-2,\ldots,0$, set $\tau=\tau_\lay(\idx)$ and $e=e_\lay(\idx)$. Compute
-\[
-  X=\OtsLeaf(P,\lay,\tau,e,M_\lay,c_\lay,\sigma_\lay).
-\]
-Reject if $X=\bot$. Otherwise set $M_{\lay-1}=\TreeFold(P,\lay,\tau,e,X,A_\lay)$.
-\item Accept exactly when $M_{-1}=\rootnode$.
-\end{enumerate}
-For an honestly generated signature, each WOTS recovery yields its original leaf and each authentication path yields its original root. Induction through the three layers therefore gives acceptance whenever signing succeeds.
+\paragraph{Serialization.}
+\begin{multline*}
+  R\,(16)\concat\text{19 secrets}\,(304)\concat\text{19 paths of 9 nodes}\,(2736)\\
+  \concat 5\times\left[\text{35 chains}\,(560)\concat\text{4 path nodes}\,(64)\right]
+  =6176\text{ bytes}.
+\end{multline*}
 
-\subsection{Serialization and cost}
-\label{sec:costs}
-
-Serialize the public key as $\rootnode\concat P$, 32 bytes. Store the secret key as $P\concat S$, 48 bytes; its root is recomputed from them.
-
-A signature starts with $\rho$, followed by FORS openings in increasing $\kappa$, then WOTS signatures and their paths in increasing $\lay$. Each FORS opening contains $s_\kappa$ followed by its siblings in increasing height. Each layer contains $\LE_{32}(c_\lay)$, its $v$ chain values in increasing chain index, then its path in increasing height. The size is
-\[
-  \underbrace{16}_{\rho}
-  +\underbrace{(k-1)(1+a)\,16}_{\text{FORS openings}}
-  +\underbrace{d(4+v\,16)}_{\text{WOTS signatures}}
-  +\underbrace{h\,16}_{\text{layer paths}}
-  =4924\text{ bytes}.
-\]
-
-Count one call to $\hash$ regardless of input length. A valid signature takes exactly
-\[
-  \underbrace{1}_{\text{digest}}
-  +\underbrace{(k-1)(a+1)+1}_{\text{FORS}}
-  +\underbrace{d\bigl((2^w-1)v-T+2\bigr)}_{\text{WOTS}}
-  +\underbrace{h}_{\text{paths}}
-  =497
-\]
-hash calls to verify. A WOTS leaf takes $v+v(2^w-1)+1=337$ calls to derive and build. Key generation therefore takes $1+2^{12}\cdot337+(2^{12}-1)=1{,}384{,}448$ calls, including derivation of $P$.
+\paragraph{Cost.} Outside the chains a verification makes $1+19\cdot10+1+5\cdot6=222$
+hash calls: $\Hmsg$, the FORS leaves and nodes, the FORS key, and per layer the digest,
+the key and four nodes. The chains add $\sum_i(15-x_i)$ per layer, 267 on average and
+at most 510. Keccak-f calls: $\Hmsg$ takes 2, the FORS key 5, a WOTS key 9, every other
+call 1.
 
 \section{Security}
 \label{sec:security}
 
-Model $\hash$ as one shared random oracle: a new input receives an independent uniform 256-bit answer, and every repetition receives that same answer. Key generation, signing, verification and the adversary all use this oracle.
+This is SPHINCS$^+$ in its standard form, so the usual reduction applies: with
+Keccak-256 modelled as a random oracle, a forgery either finds a second preimage or
+collision among the tweakable-hash calls (all domain separated by $\seed$ and a
+distinct address), or produces a FORS signature on an instance's unopened leaves.
+The FORS term governs the budget. $\htidx$ is pseudo-random, and an instance used
+$\gamma$ times is forged with probability about $(\gamma/512)^{19}$, which keeps a
+margin near 128 bits while $\gamma\leq5$; around $2^{20}$ signatures the expected
+maximum load is near that, so a key is budgeted at about $10^6$ signatures, counted
+off chain~\cite{NICETRYDOCS}. $R$ is keyed by $\skprf$, so nobody else can search
+messages for digests landing on revealed leaves.
 
-The challenger generates a key pair and gives $\pk$ to a classical probabilistic adversary. The adversary may adaptively query the hash on any byte string and request signatures on messages of its choice. It may make at most $\qs=2^{24}$ signing requests, counting repeated messages and failed requests. It finally returns $(m^*,\sigma^*)$ and wins exactly when
-\[
-  \Ver(\pk,m^*,\sigma^*)=1
-  \quad\text{and no signing request for $m^*$ returned $\sigma^*$.}
-\]
-This is \emph{strong unforgeability}: even a new signature on a previously signed message counts as a forgery.
+This document proves nothing itself. The Lean development in \texttt{formal/sphincs}
+concerns the previous leanVM variant (WOTS$^+$C and FORS$^+$C over the leanVM hash) and
+does not cover this profile.
 
-A query budget $q$ bounds every execution of the complete experiment, including key generation, signing, adversarial hashing and final verification. Each hash call counts, including repeated inputs. There is no separate time or memory bound on the adversary.
+\section{Verification in leanVM}
+\label{sec:vm}
 
-\begin{theorem}[Classical security]
-For every integer $q\geq1$ and every adversary satisfying these limits,
-\[
-  \Pr[\text{the adversary wins}]\leq q/2^{127}.
-\]
-\end{theorem}
+The recursion guest replays the verifier with the VM's \texttt{SHA3} opcode, one
+Keccak-f step over thirteen cells of 16 bytes. The compiler's \texttt{keccak} builtin
+absorbs Keccak-256's 136-byte blocks. Lane 16 carries message data in every block but
+the last, so a non-final block cancels the padding bit the opcode sets there. A
+block that starts mid-cell (every odd one) takes each split cell apart into its two
+64-bit lanes, proved in $\mathbb F_{2^{64}}$, and repacks them. Value words make half of every
+multi-block input known zeros, which cost nothing.
 
-The probability is over the master seed, the random oracle and the adversary's private randomness.
+The guest decomposes the last 24 bytes of $D$ into bits, and builds every address
+field from them with one multiply-add a bit into its big-endian position. A WOTS digit
+is hinted as $g^{x_i}$, range checked, and dispatched to the arm that walks
+$15-x_i$ steps. The arms return $x_i$, and $\sum_{i<32}x_i\cdot 2^{8(15-\lfloor i/2\rfloor)+4(i\bmod2)}$
+must rebuild $D$'s second cell exactly. The checksum digits satisfy the one exponent
+identity $\prod_{i<32}g^{x_i}\cdot\prod_{j<3}(g^{x_{32+j}})^{16^j}=g^{480}$. The range
+checks make each $x_{32+j}<16$, so the base-16 representation, and with it every
+checksum digit, is unique.
 
-The Lean 4 proof using VCVio~\cite{VCVio} is in \texttt{formal/sphincs/}. The scheme, including seed derivation, is in \texttt{SphincsSecurity/Scheme.lean}; the security experiment and claim are in \texttt{SphincsSecurity/Statement.lean}; the theorem is in \texttt{SphincsSecurity.lean}. It depends only on Lean's three standard axioms.
-
-\paragraph{Quantum security.}
-\label{sec:quantum}
-Approximately 64 bits of security in the quantum random-oracle model is a target. No quantum security bound is proved here.
-
-\section{Completeness}
-\label{sec:completeness}
-
-\begin{definition}[Completeness]
-In the random-oracle model, the completeness error is
-\[
-  \varepsilon=\max_{m\in\bits{256}}\Pr\!\left[\Sig(\sk,m)=\bot\right],
-  \qquad (\pk,\sk)\gets\Gen,
-\]
-where the probability is over the master seed and the random oracle. The scheme is $\varepsilon_0$-complete if $\varepsilon\leq\varepsilon_0$.
-\end{definition}
-
-\begin{theorem}[SPHINCS completeness]
-With probability at least $1-2^{-256}$ over the master seed and the random oracle, one key signs every 256-bit message successfully. In particular, the scheme is $2^{-256}$-complete.
-\end{theorem}
-
-\begin{proof}
-Fix a message $m$. Signing fails only if the randomizer search or one of the $d=3$ WOTS counter searches is exhausted. Whenever signing succeeds, verification accepts by the recovery argument in Section~\ref{sec:ver}.
-
-\emph{Randomizer search.} Fix the seed and the oracle answers used by key generation. These calls use neither the randomizer-derivation tweak (type~12) nor the message-digest tweak (type~9). Each trial uses a distinct derivation input, so its 128-bit randomizer is uniform and independent of the earlier trials. After $j$ failed trials, the next randomizer repeats an earlier value with probability at most $j2^{-128}$. Otherwise its digest query is fresh, and the last FORS index is zero with probability $2^{-a}=2^{-10}$. Thus
-\[
-\begin{aligned}
-  \Pr[\text{randomizer search fails}]
-  &\leq\left(1-2^{-10}+\amax2^{-128}\right)^{\amax}\\
-  &\leq\left(1-2^{-11}\right)^{2^{32}}
-  \leq 2^{-2^{21}}.
-\end{aligned}
-\]
-Here $\amax2^{-128}=2^{-96}$, and we use $(1-p)^N\leq e^{-pN}\leq2^{-pN}$.
-
-\emph{WOTS counter search.} An encoding accepts exactly when its 42 three-bit positions sum to 191 and its two remaining bits are zero. Hence a uniform 128-bit digest is accepted with probability
-\[
-  \alpha=\frac{[z^{191}](1+z+\cdots+z^7)^{42}}{2^{128}}
-  =\frac{27362001415540541846731060490886528}{2^{128}}
-  \geq2^{-14},
-\]
-where $[z^r]$ denotes the coefficient of $z^r$. Condition on the seed and all oracle answers outside the encoding domain (type~4). If the randomizer search succeeds, this fixes the selected route and the value signed by each WOTS key: a FORS public key or a child-tree root. For the analysis, consider all three searches even if signing would stop at an earlier failure. At each of these keys, distinct counters give distinct encoding inputs, whose answers remain independent and uniform. The probability that all $\cmax=2^{32}$ counters fail is therefore
-\[
-  (1-\alpha)^{\cmax}\leq2^{-\alpha\cmax}\leq2^{-2^{18}}.
-\]
-The bound applies to each of the three layers; it does not require their failures to be independent.
-
-\emph{Combining the searches.} A union bound gives, for every fixed message,
-\[
-  \Pr[\Sig(\sk,m)=\bot]
-  \leq2^{-2^{21}}+3\cdot2^{-2^{18}}
-  \leq2^{-2^{18}+2}.
-\]
-There are $2^{256}$ possible messages. A second union bound shows that the probability of any message failing under one key is at most
-\[
-  2^{256}\cdot2^{-2^{18}+2}=2^{-2^{18}+258}<2^{-256}.
-\]
-Since signing is deterministic and stateless, this conclusion also covers repeated messages and messages chosen adaptively.
-\end{proof}
-
-The Lean 4 proof is in \texttt{formal/sphincs/}. It additionally proves correctness, i.e. the recovery argument of Section~\ref{sec:ver}, for every hash function.
-
-\appendix
-\section{Tweak encoding}
-\label{sec:tweaks}
-
-Set $\mathsf{protocol\_domain\_sep}=1$. For one-byte fields $t,\lay$ and unsigned 32-bit fields $\tau,p,j$, define
-\[
-\begin{aligned}
-  \mathsf{enc}(t,\lay,\tau,p,j)={}&
-    \LE_8(\mathsf{protocol\_domain\_sep})\concat\LE_8(t)\concat\LE_8(\lay)\concat\LE_8(0)\\
-  &{}\concat\LE_{32}(p)\concat\LE_{32}(\tau)\concat\LE_{32}(j).
-\end{aligned}
-\]
-The following table specifies all 16-byte tweaks. For WOTS and hypertree operations, $(\lay,\tau,e)$ names a key. For FORS operations, $(\idx,\kappa)$ names a tree. Node indices $j$ run from left to right at height $\lambda$, with leaves at height zero.
-
-\begin{center}
-\begin{tabular}{@{}ll@{}}
-\toprule
-Tweak & Encoding\\
-\midrule
-$\mathsf{tw}_{\mathrm{prf}}(\lay,\tau,i,e)$ & $\mathsf{enc}(0,\lay,\tau,i,e)$\\
-$\mathsf{tw}_{\mathrm{chain}}(\lay,\tau,e,i,\mu)$ & $\mathsf{enc}(1,\lay,\tau,2^wi+\mu-1,e)$\\
-$\mathsf{tw}_{\mathrm{leaf}}(\lay,\tau,e)$ & $\mathsf{enc}(2,\lay,\tau,0,e)$\\
-$\mathsf{tw}_{\mathrm{node}}(\lay,\tau,\lambda,j)$ & $\mathsf{enc}(3,\lay,\tau,\lambda,j)$\\
-$\mathsf{tw}_{\mathrm{enc}}(\lay,\tau,e)$ & $\mathsf{enc}(4,\lay,\tau,0,e)$\\
-$\mathsf{tw}_{\mathrm{ftsprf}}(\idx,\kappa,j)$ & $\mathsf{enc}(5,\kappa,\idx,0,j)$\\
-$\mathsf{tw}_{\mathrm{ftsleaf}}(\idx,\kappa,j)$ & $\mathsf{enc}(6,\kappa,\idx,0,j)$\\
-$\mathsf{tw}_{\mathrm{ftsnode}}(\idx,\kappa,\lambda,j)$ & $\mathsf{enc}(7,\kappa,\idx,\lambda,j)$\\
-$\mathsf{tw}_{\mathrm{ftsroots}}(\idx)$ & $\mathsf{enc}(8,0,\idx,0,0)$\\
-$\mathsf{tw}_{\mathrm{msg}}$ & $\mathsf{enc}(9,0,0,0,0)$\\
-$\mathsf{tw}_{\mathrm{parameter}}$ & $\mathsf{enc}(10,0,0,0,0)$\\
-$\mathsf{tw}_{\mathrm{rnd}}(a)$ & $\mathsf{enc}(12,0,0,a,0)$\\
-\bottomrule
-\end{tabular}
-\end{center}
-
-In the chain tweak, $\mu\in\{1,\ldots,7\}$ is the destination position, so the step from $\mu-1$ to $\mu$ uses $p=8i+\mu-1$. Types $0$, $5$, $10$ and $12$ are reserved for seed derivation.
-
-\bibliographystyle{alphaurl}
+\bibliographystyle{plain}
 \bibliography{refs}
 
 \end{document}

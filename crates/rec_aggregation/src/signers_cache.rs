@@ -201,7 +201,7 @@ fn compute_sphincs_signer(index: usize) -> CachedSphincsSignature {
     let mut rng = StdRng::seed_from_u64(0x5F1A_C500 ^ index as u64);
     let (secret_key, public_key) = sphincs::key_gen(&mut rng);
     let message = sphincs_message(index);
-    let signature = sphincs::sign(&secret_key, &message).expect("sign");
+    let signature = sphincs::sign(&secret_key, &message);
     (public_key, message, signature)
 }
 
@@ -214,12 +214,12 @@ fn sphincs_footprint() -> u64 {
     sphincs_message(0).hash(&mut hasher);
     sphincs_message(1).hash(&mut hasher);
     (
-        sphincs::MASTER_SECRET_LEN,
-        sphincs::V,
+        sphincs::SECRET_KEY_SIZE,
+        sphincs::LEN1,
+        sphincs::LEN2,
         sphincs::W,
-        sphincs::TARGET_SUM,
         sphincs::D,
-        sphincs::HEIGHTS,
+        sphincs::SUBTREE_H,
         sphincs::A,
         sphincs::K,
     )
@@ -227,8 +227,8 @@ fn sphincs_footprint() -> u64 {
     // The tweakable hash itself, so a change to it invalidates the file.
     sphincs::th(
         &[0xA5; sphincs::PUBLIC_PARAM_LEN],
-        &sphincs::tweak(1, 2, 3, 4, 5),
-        &[0x3C; 16],
+        &sphincs::Adrs::new(1, 2, 3, 4, 5, 6),
+        &[[0x3C; sphincs::N]],
     )
     .hash(&mut hasher);
     hasher.finish()
