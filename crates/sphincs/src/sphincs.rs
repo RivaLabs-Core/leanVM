@@ -99,8 +99,8 @@ pub struct SphincsSignature {
 }
 
 impl SphincsSignature {
-    /// The verifier's blob, exactly [`SIG_SIZE`] bytes: `R ‖ k secrets ‖ k·a path
-    /// nodes ‖ d × [l chains ‖ h' path nodes]`.
+    /// The verifier's blob, exactly [`SIG_SIZE`] bytes: `R ‖ k × [secret ‖ a path
+    /// nodes] ‖ d × [l chains ‖ h' path nodes]`.
     pub fn to_bytes(&self) -> [u8; SIG_SIZE] {
         let mut out = [0; SIG_SIZE];
         let mut at = 0;
@@ -109,8 +109,10 @@ impl SphincsSignature {
             at += bytes.len();
         };
         put(&self.randomizer);
-        self.fors_secrets.iter().for_each(|s| put(s));
-        self.fors_paths.iter().flatten().for_each(|s| put(s));
+        for (secret, path) in self.fors_secrets.iter().zip(&self.fors_paths) {
+            put(secret);
+            path.iter().for_each(|s| put(s));
+        }
         for layer in &self.layers {
             layer.chains.iter().for_each(|s| put(s));
             layer.path.iter().for_each(|s| put(s));
@@ -128,8 +130,9 @@ impl SphincsSignature {
         };
         let digest = || -> Digest { take(N).try_into().unwrap() };
         let randomizer = digest();
-        let fors_secrets = std::array::from_fn(|_| digest());
-        let fors_paths = std::array::from_fn(|_| std::array::from_fn(|_| digest()));
+        let trees: [(Digest, [Digest; A]); K] = std::array::from_fn(|_| (digest(), std::array::from_fn(|_| digest())));
+        let fors_secrets = trees.map(|(secret, _)| secret);
+        let fors_paths = trees.map(|(_, path)| path);
         let layers = std::array::from_fn(|_| {
             let chains = std::array::from_fn(|_| digest());
             let path = std::array::from_fn(|_| digest());
@@ -210,9 +213,10 @@ pub fn sign(sk: &SphincsSecretKey, message: &Message) -> SphincsSignature {
 }
 
 /// Key generation and signing on the three seeds given directly, as FIPS 205
-/// and NiceTry's reference signer (`scripts/sphincs_v2_reference.py`) state them.
-/// For reproducing reference vectors: a key made this way has no master secret,
-/// so use [`key_gen`] / [`key_gen_from_seed`] for real keys.
+/// states them, with the PRF and `R` of NiceTry's v2 reference signer
+/// (`scripts/sphincs_v2_reference.py`). For reproducing reference vectors: a key
+/// made this way has no master secret, so use [`key_gen`] / [`key_gen_from_seed`]
+/// for real keys.
 pub fn sign_with_seeds(
     sk_seed: [u8; N],
     sk_prf: [u8; N],
@@ -282,7 +286,7 @@ pub fn verify_trace(pk: &SphincsPublicKey, message: &Message, signature: &Sphinc
     signed[0] = fors_pk_from_sig(pp, ht_idx, &indices, &signature.fors_secrets, &signature.fors_paths);
     for (layer, sig) in signature.layers.iter().enumerate() {
         let (tree, leaf) = ht_position(ht_idx, layer);
-        digits_of[layer] = digits(&wots_digest(pp, layer as u32, tree, leaf, &signed[layer]));
+        digits_of[layer] = digits(&signed[layer]);
         let wots_pk = wots_pk_from_sig(pp, layer as u32, tree, leaf, &signed[layer], &sig.chains);
         signed[layer + 1] = tree_fold(pp, layer as u32, tree, leaf, wots_pk, &sig.path);
     }
@@ -295,7 +299,7 @@ pub fn verify_trace(pk: &SphincsPublicKey, message: &Message, signature: &Sphinc
     }
 }
 
-/// `Ver`, `SphincsVerifier_v2.verify` on the signature's blob.
+/// `Ver`, `SphincsVerifier.verify` on the signature's blob.
 pub fn verify(
     pk: &SphincsPublicKey,
     message: &Message,

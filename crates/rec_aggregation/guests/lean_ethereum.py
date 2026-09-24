@@ -349,10 +349,12 @@ DIGITS_PER_WORD = V / 2
 TIP_CELLS = WORDS_PER_VALUE * V
 
 # ------------------------------------------------------ SPHINCS+ (host-supplied)
-# The NiceTry "SPHINCS- v2" profile (`SphincsVerifier_v2.sol`): standard FORS
-# under a standard WOTS+ hypertree, every hash Keccak-256 over 32-byte words,
-# every address the FIPS 205 32-byte ADRS (big-endian fields), every digest read
-# as a big-endian uint256 with fields taken least significant first.
+# The "sphincs-g" parameter set, compact H_msg revision (`SphincsVerifier`):
+# standard FORS under a standard WOTS+ hypertree, every tweakable hash
+# Keccak-256 over 32-byte words, every address the FIPS 205 32-byte ADRS
+# (big-endian fields), the message digest read as a big-endian uint256 with
+# fields taken least significant first, and a WOTS key signing its node's
+# nibbles, most significant first.
 SP_K = SP_K_PLACEHOLDER               # FORS trees
 SP_A = SP_A_PLACEHOLDER               # FORS tree height
 SP_D = SP_D_PLACEHOLDER               # hypertree layers, layer 0 at the bottom
@@ -2347,18 +2349,17 @@ def sp_walk(value, adrs_a, adrs_b, pp, k: Const):
 
 
 def sp_wots_pk(adrs_a, kp, pp, msg):
-    # One layer's WOTS+ verification: the digest of `msg`, its len1 base-16 digits
-    # and the len2 digits of their checksum, the chains walked from the revealed
-    # values, and the key they compress to. `adrs_a` is the layer's (layer, tree)
-    # cell and `kp` the key pair placed in word1. Called once per layer, so the
-    # dispatch tables are compiled once.
-    dw = StackBuf(SHA3_STATE)
-    keccak([pp, 0, adrs_a, kp, msg, 0], dw)
+    # One layer's WOTS+ verification: the len1 base-16 digits of `msg` and the
+    # len2 digits of their checksum, the chains walked from the revealed values,
+    # and the key they compress to. `adrs_a` is the layer's (layer, tree) cell and
+    # `kp` the key pair placed in word1. Called once per layer, so the dispatch
+    # tables are compiled once.
 
     # Each digit is hinted in the exponent, range checked and dispatched, arm e
     # walking the w-1-e remaining steps and returning e. The message digits are
-    # the digest's low 128 bits, its cell 1: digit i is the nibble at byte
-    # 15 - i/2, low half first, so weighing each e at that nibble rebuilds the cell.
+    # `msg`'s own nibbles, most significant first: digit i is byte i/2's high
+    # nibble when i is even and its low one when odd, so weighing each e at that
+    # nibble rebuilds the cell.
     tips = StackBuf(SP_L)
     exponent = 1
     acc = 0
@@ -2369,18 +2370,19 @@ def sp_wots_pk(adrs_a, kp, pp, msg):
         adrs_b = kp + const(i * SP_BYTE11)
         tips[i], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
         exponent = exponent * digit
-        acc += e * COORD_BASIS[8 * (15 - i // 2) + 4 * (i % 2)]
-    assert acc == dw[1]
-    # The checksum digits c_j satisfy sum(digits) + sum_j 16^j c_j = len1 (w - 1),
-    # which in the exponent is one product: each c_j < 16, so the base-16
-    # representation of the checksum, and hence each c_j, is unique.
+        acc += e * COORD_BASIS[8 * (i // 2) + 4 * (1 - i % 2)]
+    assert acc == msg
+    # The checksum digits c_j, most significant first, satisfy sum(digits) +
+    # sum_j 16^(len2-1-j) c_j = len1 (w - 1), which in the exponent is one
+    # product: each c_j < 16, so the base-16 representation of the checksum, and
+    # hence each c_j, is unique.
     for j in unroll(0, SP_LEN2):
         digit = hint_witness("sp_digits")
         assert log(digit) < SP_W
         chain_start = hint_witness("sp_chain_starts")
         adrs_b = kp + const((SP_LEN1 + j) * SP_BYTE11)
         tips[SP_LEN1 + j], e = match(log(digit), range(0, SP_W), lambda k: sp_walk(chain_start, adrs_a, adrs_b, pp, k))
-        exponent = exponent * digit ** (SP_W ** j)
+        exponent = exponent * digit ** (SP_W ** (SP_LEN2 - 1 - j))
     assert exponent == GEN ** SP_MAX_CSUM
 
     # The WOTS key: keccak(pp | ADRS(WOTS_PK) | 35 tips), 1184 bytes.
@@ -2398,10 +2400,11 @@ def verify_sig_sphincs(signer):
     pp = signer[GEN]
 
     # ---- the message digest, which picks the FORS instance and its leaves ----
-    # H_msg = keccak(pkSeed | pkRoot | R | M | 0xFF..FF), 160 bytes in two blocks.
+    # H_msg = keccak(0xFF..FF | R | pkSeed | pkRoot | M), 112 bytes in one block,
+    # the 16-byte fields packed one cell each.
     r = hint_witness("sp_rand")
     digest = StackBuf(SHA3_STATE)
-    keccak([pp, 0, root, 0, r, 0, signer[GEN ** 2], signer[GEN ** 3], SP_ONES, SP_ONES], digest)
+    keccak([SP_ONES, SP_ONES, r, pp, root, signer[GEN ** 2], signer[GEN ** 3]], digest)
 
     # Every index below is a bit field of that digest, so its last 24 bytes are
     # advice-decomposed here and bound lane by lane; every address is built from

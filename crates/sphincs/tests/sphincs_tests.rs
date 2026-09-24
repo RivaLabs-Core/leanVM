@@ -17,15 +17,14 @@ fn field(json: &str, key: &str) -> Vec<u8> {
     hex_bytes(&rest[open..close])
 }
 
-/// NiceTry's reference vector (Post-Quantum-AA-Infra ed41aa7,
-/// `test/vectors/sphincs-v2-reference-0.json`, written by
-/// `scripts/sphincs_v2_reference.py` and accepted by `SphincsVerifier_v2` in
-/// `test/SphincsVerifier_v2.t.sol`). It verifies here, and the same seeds
-/// (`SK.seed = 0x11…`, `SK.prf = 0x22…`, `PK.seed = 0x5eed…`) reproduce the key and
-/// the signature byte for byte.
+/// A known-answer vector on the seeds of NiceTry's v2 reference vector
+/// (`SK.seed = 0x11…`, `SK.prf = 0x22…`, `PK.seed = 0x5eed…`), signed by this
+/// crate and accepted by the sphincs-g `SphincsVerifier` (compact `H_msg`
+/// revision) when it was pinned. It verifies here, and the seeds reproduce the
+/// key and the signature byte for byte.
 #[test]
 fn matches_the_reference_vector() {
-    let json = include_str!("vectors/sphincs-v2-reference-0.json");
+    let json = include_str!("vectors/sphincs-g-reference-0.json");
     let (pk_seed, pk_root) = (field(json, "pkSeed"), field(json, "pkRoot"));
     assert_eq!((&pk_seed[N..], &pk_root[N..]), (&[0; N][..], &[0; N][..]));
     let pk = SphincsPublicKey {
@@ -81,9 +80,13 @@ fn trace_matches_the_signature() {
         trace.digest,
         h_msg(&pk.public_param, &pk.root, &signature.randomizer, &message)
     );
-    for digits in &trace.digits {
+    for (digits, node) in trace.digits.iter().zip(&trace.signed) {
+        let rebuilt: Digest = std::array::from_fn(|b| digits[2 * b] << LOG_W | digits[2 * b + 1]);
+        assert_eq!(&rebuilt, node);
         let sum: usize = digits[..LEN1].iter().map(|&d| usize::from(d)).sum();
-        let csum: usize = (0..LEN2).map(|j| usize::from(digits[LEN1 + j]) << (LOG_W * j)).sum();
+        let csum: usize = (0..LEN2)
+            .map(|j| usize::from(digits[LEN1 + j]) << (LOG_W * (LEN2 - 1 - j)))
+            .sum();
         assert_eq!(sum + csum, MAX_CSUM);
     }
 }

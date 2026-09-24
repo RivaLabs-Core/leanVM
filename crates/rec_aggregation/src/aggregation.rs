@@ -117,7 +117,7 @@ const _: () = assert!((2 + xmss::V).is_multiple_of(4));
 // sized `HeapBuf` gets no compile-time index check, so a wider digest would read
 // indices from cells nothing writes.
 const _: () = assert!(sphincs::K * sphincs::A + sphincs::H <= 3 * 64);
-// The WOTS digits are exactly the digest's low 128 bits, the cell the guest
+// The WOTS digits are exactly the signed node's 128 bits, the cell the guest
 // rebuilds from them.
 const _: () = assert!(sphincs::LEN1 * sphincs::LOG_W == 128 && sphincs::W == 16);
 // The guest places a FORS tree index in two bytes of word3, shifting it down a
@@ -5190,7 +5190,7 @@ def main():
     /// The guest's SPHINCS checks, one tampered witness at a time, past the host's
     /// own verification. Every poke must stop the proof. The two digit pokes keep
     /// every chain top intact (the digit goes up by one and the revealed value
-    /// walks one step to match), so only the digit's binding to the WOTS digest
+    /// walks one step to match), so only the digit's binding to the signed node
     /// (a message digit) or the checksum identity (a checksum digit) can catch
     /// them.
     #[test]

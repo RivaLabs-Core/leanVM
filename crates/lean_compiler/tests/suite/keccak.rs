@@ -2,7 +2,7 @@
 //! cells, one block up to 128 bytes and the 136-byte-rate sponge past that, where
 //! odd blocks start mid-cell and lane 16 carries message data. Every case is
 //! checked against [`primitives::hash::keccak256`] by execution, and the
-//! multi-block shapes the SPHINCS+ verifier hashes are also proven.
+//! shapes the SPHINCS+ verifier hashes past `F` and `H` are also proven.
 
 use lean_compiler::{compile, parse};
 use lean_vm::cpu::{prove, verify};
@@ -130,9 +130,21 @@ fn single_block_hashes() {
     run(&[Data(0), Zero], Some((1, 4)), false, false);
 }
 
-/// `H_msg`: 160 bytes, two blocks, the all-ones domain word spanning lane 16.
+/// `H_msg`: 112 bytes, one block, the all-ones domain word first.
 #[test]
 fn message_digest_shape() {
+    run(
+        &[Ones, Ones, Data(0), Data(1), Data(2), Data(3), Data(4)],
+        None,
+        false,
+        true,
+    );
+}
+
+/// A head alone past one block: 160 bytes, two blocks, a constant cell split
+/// across lane 16.
+#[test]
+fn two_block_head() {
     let head = [
         Data(0),
         Zero,

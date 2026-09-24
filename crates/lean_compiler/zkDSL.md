@@ -471,7 +471,7 @@ The step, Keccak-f\[1600\] after XORing the padding's last bit into lane 16, is 
 ```python
 d = StackBuf(2)
 keccak([pp, 0, adrs_a, adrs_b, value, 0], d)          # 96 bytes, one block
-keccak([pp, 0, root, 0, r, 0, m0, m1, ONES, ONES], d)  # 160 bytes, two blocks
+keccak([ONES, ONES, r, pp, root, m0, m1], d)          # 112 bytes, one block
 keccak([pp, 0, adrs_a, adrs_b], d, words=tips)         # 64 + 32·len(tips) bytes
 ```
 

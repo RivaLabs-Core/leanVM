@@ -1,5 +1,6 @@
-//! SPHINCS+ in the NiceTry "SPHINCS- v2" profile: the stateless scheme whose EVM
-//! verifier is `SphincsVerifier_v2.sol` (RivaLabs-Core/Post-Quantum-AA-Infra),
+//! SPHINCS+ in the "sphincs-g" parameter set, compact `H_msg` revision: the
+//! stateless scheme whose EVM verifier is `SphincsVerifier` (`PARAMETER_SET =
+//! "sphincs-g"`, format pinned to Sphincs-G `bea9447d`, `ledger_prepared_16_20`),
 //! specified in `doc/sphincs/main.tex`.
 //!
 //! Standard FORS under a five-layer standard WOTS+ hypertree over Keccak-256:
@@ -7,15 +8,17 @@
 //! `l = 32 + 3 = 35`. No grinding anywhere. A public key is `(pkSeed, pkRoot)`,
 //! a signature 6,176 bytes.
 //!
-//! Every hash is `keccak256` of 32-byte words: an `n`-byte value `v` enters as
-//! `v ‖ 0^16` (top-aligned in a `bytes32`), the 32-byte FIPS 205 address as is,
-//! and outputs are truncated to their first 16 bytes. Digests are read as
-//! big-endian 256-bit integers, fields LSB-first (`(d >> (i·a)) & (2^a - 1)`).
+//! Every tweakable hash is `keccak256` of 32-byte words: an `n`-byte value `v`
+//! enters as `v ‖ 0^16` (top-aligned in a `bytes32`), the 32-byte FIPS 205
+//! address as is, and outputs are truncated to their first 16 bytes. The message
+//! digest packs its `n`-byte fields instead ([`h_msg`]) and is read as a
+//! big-endian 256-bit integer, fields LSB-first (`(d >> (i·a)) & (2^a - 1)`). A
+//! WOTS key signs its node's 32 nibbles directly, most significant first.
 //!
-//! The verifier is the specification. The signer mirrors the reference signer
-//! (`scripts/sphincs_v2_reference.py`) byte for byte: from the same three seeds
-//! ([`sign_with_seeds`]) both produce the same signature. A real key is one
-//! 32-byte master secret the three seeds are derived from ([`key_gen_from_seed`]).
+//! The verifier is the specification. The signer derives its secrets (the three
+//! seeds, the PRF, `R`) as NiceTry's v2 reference signer does; no verifier sees
+//! that derivation. A real key is one 32-byte master secret the three seeds are
+//! derived from ([`key_gen_from_seed`]).
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -76,23 +79,27 @@ pub const A: usize = 9;
 /// `k`: FORS trees.
 pub const K: usize = 19;
 
-/// `H_msg`'s domain word, `0xFF…FF`: 160 bytes of hash input where every
-/// tweakable hash takes 96 or 128.
+/// `H_msg`'s domain word, `0xFF…FF`, its first 32 bytes.
 pub const HMSG_DOMAIN: [u8; 32] = [0xFF; 32];
+/// `H_msg`'s input, `0xFF…FF ‖ R ‖ pkSeed ‖ pkRoot ‖ M`: 112 bytes, one Keccak
+/// block, where every tweakable hash takes 96 or more.
+pub const HMSG_INPUT_BYTES: usize = 32 + RANDOMIZER_LEN + PUBLIC_PARAM_LEN + N + MESSAGE_LEN;
 
 /// `(pkSeed, pkRoot)`.
 pub const PUB_KEY_SIZE: usize = N + PUBLIC_PARAM_LEN;
 /// A secret key is its master secret; the seeds and the root are derived.
 pub const SECRET_KEY_SIZE: usize = MASTER_SECRET_LEN;
+/// One FORS tree of a signature: the opened secret, then its path.
+pub const FORS_TREE_SIZE: usize = N + A * N;
 /// One hypertree layer of a signature: the chains, then the path.
 pub const LAYER_SIZE: usize = L * N + SUBTREE_H * N;
-/// `R ‖ k secrets ‖ k paths ‖ d layers`.
-pub const SIG_SIZE: usize = RANDOMIZER_LEN + K * N + K * A * N + D * LAYER_SIZE;
+/// `R ‖ k trees ‖ d layers`.
+pub const SIG_SIZE: usize = RANDOMIZER_LEN + K * FORS_TREE_SIZE + D * LAYER_SIZE;
 
 /// Hash calls a verification makes outside the chains: `H_msg`, the FORS
-/// leaves, nodes and roots, and per layer the digest, the WOTS key and the path.
-/// Each chain adds `w - 1 - digit` calls, data-dependent.
-pub const VERIFY_FIXED_HASHES: usize = 1 + K * (1 + A) + 1 + D * (1 + 1 + SUBTREE_H);
+/// leaves, nodes and roots, and per layer the WOTS key and the path. Each chain
+/// adds `w - 1 - digit` calls, data-dependent.
+pub const VERIFY_FIXED_HASHES: usize = 1 + K * (1 + A) + 1 + D * (1 + SUBTREE_H);
 
 /// Keccak-f calls Keccak-256 makes on `len` bytes.
 pub const fn keccak_blocks(len: usize) -> usize {
@@ -104,4 +111,5 @@ const _: () = assert!(K * A + H <= 256);
 const _: () = assert!(PUB_KEY_SIZE == 32);
 const _: () = assert!(LAYER_SIZE == 624);
 const _: () = assert!(SIG_SIZE == 6176);
-const _: () = assert!(VERIFY_FIXED_HASHES == 222);
+const _: () = assert!(HMSG_INPUT_BYTES == 112 && keccak_blocks(HMSG_INPUT_BYTES) == 1);
+const _: () = assert!(VERIFY_FIXED_HASHES == 217);

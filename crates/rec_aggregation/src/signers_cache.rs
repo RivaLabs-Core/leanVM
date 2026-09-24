@@ -234,6 +234,11 @@ fn sphincs_footprint() -> u64 {
         &[[0x3C; sphincs::N]],
     )
     .hash(&mut hasher);
+    // Key derivation, the message digest, the WOTS encoding and the signature
+    // layout, which verifying a cached signature would only catch as a failure.
+    let (public_key, _, signature) = compute_sphincs_signer(0);
+    public_key.hash(&mut hasher);
+    signature.to_bytes().hash(&mut hasher);
     hasher.finish()
 }
 
