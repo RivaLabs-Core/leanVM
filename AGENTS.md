@@ -67,7 +67,7 @@ Heavy benches and measurement harnesses are `#[ignore]`d; run by name with `-- -
 The benchmarks we care about:
 
 - `cargo run --release -- aggregate --xmss 470 --log-inv-rate 1 --repeat 3`
-- `cargo run --release -- aggregate --sphincs 75 --log-inv-rate 1 --repeat 3` (one node holds at most 79 SPHINCS signatures: past about 2^17 SHA3 instructions the committed witness outgrows `MAX_MU`, and `cpu::prove` refuses)
+- `cargo run --release -- aggregate --sphincs 75 --log-inv-rate 1 --repeat 3` (one node holds about 320 SPHINCS signatures: past about 2^19 SHA3 instructions the committed witness outgrows `MAX_MU = 30` and `prove` returns an error; memory grows with it, about 57 GiB at 100 signatures)
 - `cargo run --release -- recursion --n 2 --xmss-per-leaf 450 --log-inv-rate 2 --repeat 3`
 
 `aggregate` takes a count per scheme, both defaulting to zero, so either alone or a mix of the two is one command; `recursion --sphincs-per-leaf` likewise puts both schemes in one tree. One SPHINCS verification uses about 1,600 Keccak-f permutations (data-dependent: 222 hash calls plus the WOTS chain steps) against XMSS's 138; use the benchmark output to compare complete VM cycle counts. `aggregate --blobs` adds LeanDA blobs, and `recursion --blobs-per-leaf` includes them in each child.
