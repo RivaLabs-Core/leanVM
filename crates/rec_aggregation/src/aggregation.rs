@@ -51,7 +51,7 @@ use std::ops::Range;
 use lean_compiler::{compile, parse_with_replacements};
 use lean_da::{BLOB_SYMBOLS, CELL_SYMBOLS, CELLS_PER_ROW, CODEWORD_SYMBOLS};
 pub use lean_da::{DA_LOG_CELL, DA_LOG_K, DA_MAX_ROWS};
-use lean_vm::cpu::{Program, prove, verify};
+use lean_vm::cpu::{Program, ProveError, prove, verify};
 use lean_vm::leaf::{Block, Coord};
 use lean_vm::transcript::FiatShamirState;
 use primitives::field::{F64, F192, G, g_pow};
@@ -506,6 +506,10 @@ pub enum AggregationError {
     /// compiled with. Small aggregates are padded up to the floor, so this means
     /// a child too big: more signatures than one node can hold.
     ChildOutOfRange { log_committed: usize },
+    /// This node's own proof would commit `2^log_committed` words, more than any
+    /// verifier accepts: too many signatures (or blobs) for one proof. Aggregate
+    /// fewer here and combine the proofs recursively.
+    ProofTooLarge { log_committed: usize },
 }
 
 impl std::fmt::Display for AggregateVerifyError {
@@ -554,6 +558,12 @@ impl std::fmt::Display for AggregationError {
                     "a child commits 2^{log_committed} words, outside the guest's opening arms"
                 )
             }
+            Self::ProofTooLarge { log_committed } => write!(
+                f,
+                "this proof would commit 2^{log_committed} words, above the verifiable 2^{}: \
+                 too many signatures for one proof, aggregate fewer and combine the proofs recursively",
+                lean_vm::pcs::MAX_MU
+            ),
         }
     }
 }
@@ -2344,7 +2354,10 @@ pub(crate) fn aggregate_tampered(
     program.min_log_committed = MU_MIN;
     tamper(&mut hints);
     hints.install(&mut program);
-    let (proof, stats) = prove(&program, public_input, log_inv_rate);
+    let (proof, stats) = prove(&program, public_input, log_inv_rate).map_err(|e| match e {
+        ProveError::InvalidRate { log_inv_rate } => AggregationError::InvalidRate { log_inv_rate },
+        ProveError::WitnessOutOfRange { log_committed } => AggregationError::ProofTooLarge { log_committed },
+    })?;
     Ok((
         EthereumProof {
             xmss_signers: cover.declared().to_vec(),

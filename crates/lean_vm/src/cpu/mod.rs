@@ -299,6 +299,32 @@ impl Program {
 /// channels (see [`crate::transcript::Proof`]).
 pub use crate::transcript::Proof;
 
+/// Why [`prove`] produced no proof.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProveError {
+    /// `log_inv_rate` is outside the range the WHIR configuration accepts (1, 2, 3 or 4).
+    InvalidRate { log_inv_rate: usize },
+    /// The committed witness is `2^log_committed` words, outside the
+    /// `2^MIN_MU..=2^MAX_MU` every verifier accepts
+    WitnessOutOfRange { log_committed: usize },
+}
+
+impl std::fmt::Display for ProveError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidRate { log_inv_rate } => write!(f, "log_inv_rate {log_inv_rate} is not supported"),
+            Self::WitnessOutOfRange { log_committed } => write!(
+                f,
+                "the committed witness would be 2^{log_committed} words, outside the verifiable 2^{}..=2^{}",
+                pcs::MIN_MU,
+                pcs::MAX_MU
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProveError {}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CpuError {
     Bus(leaf::Error),
@@ -495,11 +521,14 @@ impl Stats {
 /// Prove the program on the given public input: run it (witness generation),
 /// then emit everything the verifier needs through the returned [`Proof`]
 /// (scalar stream + PCS commitment / opening hints). Returns the proof and the
-/// run [`Stats`]. `log_inv_rate` selects the PCS rate and is announced in the
-/// Fiat-Shamir transcript before the commitment.
+/// run [`Stats`], or why no proof was made ([`ProveError`]). `log_inv_rate`
+/// selects the PCS rate and is announced in the Fiat-Shamir transcript before
+/// the commitment.
 #[tracing::instrument(name = "Prove", skip_all, fields(log_inv_rate))]
-pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> (Proof, Stats) {
-    ::pcs::whir::validate_log_inv_rate(log_inv_rate).expect("valid log_inv_rate");
+pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) -> Result<(Proof, Stats), ProveError> {
+    if ::pcs::whir::validate_log_inv_rate(log_inv_rate).is_err() {
+        return Err(ProveError::InvalidRate { log_inv_rate });
+    }
     // One proof is one arena phase: every transient buffer below is bump-allocated
     // and reclaimed wholesale here, rather than faulted in and unmapped again per
     // proof. Bound first so it outlives them; inert unless `init_prover` opted in.
@@ -523,6 +552,11 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     );
     let cycles = exec.cycles;
     let w = crate::stage!("Build witness", || program.build(&exec));
+    if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&w.layout.shape.mu) {
+        return Err(ProveError::WitnessOutOfRange {
+            log_committed: w.layout.shape.mu,
+        });
+    }
     let counts = w.layout.taus.map(|t| 1usize << t);
     let committed_size = w.committed_size();
     // The public statement (program digest + input) seeds the transcript, so
@@ -611,7 +645,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
     let offset = w.layout.placements[QFLOCK].offset;
     let ring = crate::hash_flock::ring_switch_open(n_blocks, offset, &reduced);
     crate::stage!("PCS open", || { pcs::open(&mut ps, &committed, &w.q, &slots, &ring) });
-    (
+    Ok((
         ps.into_proof(),
         Stats {
             cycles,
@@ -621,7 +655,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             log_mem: w.log_mem,
             mem_used: exec.mem_used,
         },
-    )
+    ))
 }
 
 /// Everything the PCS has to open, in the ORDER that feeds the batch's weights:

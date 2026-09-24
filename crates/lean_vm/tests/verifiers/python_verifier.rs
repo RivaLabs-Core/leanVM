@@ -108,7 +108,7 @@ fn test_python_verifier() {
     let ast = parse_with_replacements(SOURCE, &replacements).expect("parse zkDSL program");
     let program = compile(&ast);
     let public_input = public_input();
-    let (proof, stats) = prove(&program, public_input, 1);
+    let (proof, stats) = prove(&program, public_input, 1).unwrap();
     // Python reads the RAW proof: same protocol, each query carrying its own
     // full Merkle path instead of one octopus over the batch. A Rust verify
     // expands the wire form, so the pruning is written once.

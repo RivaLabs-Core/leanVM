@@ -51,7 +51,7 @@ def main():
         let public = [F192::from(sum), F192::from(g_pow(end))];
         assert!(program.execute(public).unconstrained_reads.is_empty());
         if end == 9 {
-            let (proof, _) = prove(&program, public, lean_vm::pcs::TEST_LOG_INV_RATE);
+            let (proof, _) = prove(&program, public, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
             verify(&program, &public, &proof).unwrap();
         }
     }
@@ -123,7 +123,7 @@ def main():
     for bound in ["GEN ** 2", "public[GEN]"] {
         let program = compile(&parse(&source.replace("STOP", bound)).unwrap());
         assert!(program.execute(public).unconstrained_reads.is_empty());
-        let (proof, _) = prove(&program, public, lean_vm::pcs::TEST_LOG_INV_RATE);
+        let (proof, _) = prove(&program, public, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
         verify(&program, &public, &proof).unwrap();
     }
 }
