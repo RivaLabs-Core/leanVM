@@ -42,17 +42,14 @@ impl SphincsPublicKey {
     }
 }
 
-/// The 32-byte master secret, and what it derives: FIPS 205's three seeds
-/// (`SK.seed`, `SK.prf`, `PK.seed`) and the root (the top layer's tree, `2^h'`
-/// WOTS keys). Only the master is secret key material; the rest is recomputed
-/// by [`Self::from_bytes`].
+/// The 32-byte master secret, the only secret key material. FIPS 205's three
+/// seeds are derived from it each time they are needed (see [`key_gen_from_seed`]);
+/// the public key is kept alongside, the root being a whole tree to rebuild.
 #[derive(Clone)]
 pub struct SphincsSecretKey {
     pub public_param: PublicParam,
     pub root: Digest,
     master: MasterSecret,
-    sk_seed: [u8; N],
-    sk_prf: [u8; N],
 }
 
 impl std::fmt::Debug for SphincsSecretKey {
@@ -179,23 +176,28 @@ pub fn key_gen(rng: &mut impl CryptoRng) -> (SphincsSecretKey, SphincsPublicKey)
     key_gen_from_seed(rng.random())
 }
 
-/// Deterministic `Gen`: the master secret is `master`, and each of the three
-/// seeds is `keccak256(tag ‖ master)[..16]`, `tag` one of `"SPHINCS-v2 SK.seed"`,
+/// `SK.seed`, `SK.prf` and `PK.seed` from a master secret: each
+/// `keccak256(tag ‖ master)[..16]`, `tag` one of `"SPHINCS-v2 SK.seed"`,
 /// `"SPHINCS-v2 SK.prf"`, `"SPHINCS-v2 PK.seed"`: three hash domains, so the
 /// seeds are independent. (Signer-private: no verifier sees the derivation.)
-pub fn key_gen_from_seed(master: MasterSecret) -> (SphincsSecretKey, SphincsPublicKey) {
-    let seed = |tag: &[u8]| truncate(&primitives::hash::keccak256(&[tag, &master].concat()));
-    let (sk_seed, sk_prf, public_param) = (
+fn derive_seeds(master: &MasterSecret) -> ([u8; N], [u8; N], PublicParam) {
+    let seed = |tag: &[u8]| truncate(&primitives::hash::keccak256(&[tag, master].concat()));
+    (
         seed(b"SPHINCS-v2 SK.seed"),
         seed(b"SPHINCS-v2 SK.prf"),
         seed(b"SPHINCS-v2 PK.seed"),
-    );
+    )
+}
+
+/// Deterministic `Gen` on the master secret `master`. The three seeds are each
+/// `keccak256(tag ‖ master)[..16]`, `tag` one of `"SPHINCS-v2 SK.seed"`,
+/// `"SPHINCS-v2 SK.prf"`, `"SPHINCS-v2 PK.seed"`.
+pub fn key_gen_from_seed(master: MasterSecret) -> (SphincsSecretKey, SphincsPublicKey) {
+    let (sk_seed, _, public_param) = derive_seeds(&master);
     let sk = SphincsSecretKey {
         public_param,
         root: root_of(&public_param, &sk_seed),
         master,
-        sk_seed,
-        sk_prf,
     };
     let pk = sk.public_key();
     (sk, pk)
@@ -208,7 +210,8 @@ fn root_of(public_param: &PublicParam, sk_seed: &[u8; N]) -> Digest {
 
 /// Sign. Deterministic and stateless.
 pub fn sign(sk: &SphincsSecretKey, message: &Message) -> SphincsSignature {
-    sign_with(&sk.public_param, &sk.root, &sk.sk_seed, &sk.sk_prf, message)
+    let (sk_seed, sk_prf, _) = derive_seeds(&sk.master);
+    sign_with(&sk.public_param, &sk.root, &sk_seed, &sk_prf, message)
 }
 
 /// Key generation and signing on the three seeds given directly, as FIPS 205

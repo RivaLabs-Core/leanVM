@@ -13,7 +13,6 @@ fn main() {
     setup_prover();
     let rng = &mut rand::rng();
 
-    // Each signer has its own key and signs its own 32-byte message.
     let signatures: Vec<_> = (0..N_SIGNERS)
         .map(|i| {
             let (secret_key, public_key) = sphincs::key_gen(rng);
@@ -26,13 +25,13 @@ fn main() {
 
     let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap();
 
-    // The proof travels as bytes; the receiver learns which keys signed which messages.
     let bytes = proof.to_bytes();
     let received = EthereumProof::from_bytes(&bytes).unwrap();
-    received.verify().unwrap();
+    received.verify().unwrap(); // verify the snark is valid
 
     println!(
-        "{} SPHINCS+ signatures ({} bytes each) aggregated into a {}-byte proof",
+        "{} SPHINCS+ signatures ({} x {} bytes = {}) aggregated into a {}-byte proof",
+        received.sphincs_signers().len(),
         received.sphincs_signers().len(),
         sphincs::SIG_SIZE,
         bytes.len()
