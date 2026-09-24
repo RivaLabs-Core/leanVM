@@ -42,22 +42,16 @@ impl SphincsPublicKey {
     }
 }
 
-/// The 32-byte master secret, the only secret key material. FIPS 205's three
-/// seeds are derived from it each time they are needed (see [`key_gen_from_seed`]);
-/// the public key is kept alongside, the root being a whole tree to rebuild.
+/// A secret key: its 32-byte master secret and nothing else. FIPS 205's three
+/// seeds and the public key are derived from it (see [`key_gen_from_seed`]).
 #[derive(Clone)]
 pub struct SphincsSecretKey {
-    pub public_param: PublicParam,
-    pub root: Digest,
     master: MasterSecret,
 }
 
 impl std::fmt::Debug for SphincsSecretKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("SphincsSecretKey")
-            .field("public_param", &self.public_param)
-            .field("root", &self.root)
-            .finish_non_exhaustive()
+        f.debug_struct("SphincsSecretKey").finish_non_exhaustive()
     }
 }
 
@@ -67,15 +61,18 @@ impl SphincsSecretKey {
         self.master
     }
 
-    /// Inverse of [`Self::to_bytes`], costing what [`key_gen_from_seed`] costs.
+    /// Inverse of [`Self::to_bytes`].
     pub fn from_bytes(bytes: &[u8; SECRET_KEY_SIZE]) -> Self {
-        key_gen_from_seed(*bytes).0
+        Self { master: *bytes }
     }
 
+    /// The public key, derived: the root is the top layer's tree, `2^h'` WOTS
+    /// keys, so this costs about a fifth of a signature.
     pub fn public_key(&self) -> SphincsPublicKey {
+        let (sk_seed, _, public_param) = derive_seeds(&self.master);
         SphincsPublicKey {
-            root: self.root,
-            public_param: self.public_param,
+            root: root_of(&public_param, &sk_seed),
+            public_param,
         }
     }
 }
@@ -193,12 +190,7 @@ fn derive_seeds(master: &MasterSecret) -> ([u8; N], [u8; N], PublicParam) {
 /// `keccak256(tag ‖ master)[..16]`, `tag` one of `"SPHINCS-v2 SK.seed"`,
 /// `"SPHINCS-v2 SK.prf"`, `"SPHINCS-v2 PK.seed"`.
 pub fn key_gen_from_seed(master: MasterSecret) -> (SphincsSecretKey, SphincsPublicKey) {
-    let (sk_seed, _, public_param) = derive_seeds(&master);
-    let sk = SphincsSecretKey {
-        public_param,
-        root: root_of(&public_param, &sk_seed),
-        master,
-    };
+    let sk = SphincsSecretKey { master };
     let pk = sk.public_key();
     (sk, pk)
 }
@@ -209,9 +201,12 @@ fn root_of(public_param: &PublicParam, sk_seed: &[u8; N]) -> Digest {
 }
 
 /// Sign. Deterministic and stateless.
+///
+/// The key's root is rebuilt first ([`SphincsSecretKey::public_key`]), since
+/// the message digest depends on it.
 pub fn sign(sk: &SphincsSecretKey, message: &Message) -> SphincsSignature {
-    let (sk_seed, sk_prf, _) = derive_seeds(&sk.master);
-    sign_with(&sk.public_param, &sk.root, &sk_seed, &sk_prf, message)
+    let (sk_seed, sk_prf, public_param) = derive_seeds(&sk.master);
+    sign_with_seeds(sk_seed, sk_prf, public_param, message).1
 }
 
 /// Key generation and signing on the three seeds given directly, as FIPS 205

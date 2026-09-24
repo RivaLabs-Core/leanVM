@@ -7,7 +7,7 @@
 use leanvm::*;
 
 const N_SIGNERS: usize = 8;
-const LOG_INV_RATE: usize = 2;
+const LOG_INV_RATE: usize = 2; // 1 = bigger proof, faster proving. 4 = smaller proof, slower proving.
 
 fn main() {
     setup_prover();
@@ -29,11 +29,12 @@ fn main() {
     let received = EthereumProof::from_bytes(&bytes).unwrap();
     received.verify().unwrap(); // verify the snark is valid
 
+    let n = received.sphincs_signers().len();
+    let kib = |bytes: usize| bytes as f64 / 1024.0;
     println!(
-        "{} SPHINCS+ signatures ({} x {} bytes = {}) aggregated into a {}-byte proof",
-        received.sphincs_signers().len(),
-        received.sphincs_signers().len(),
-        sphincs::SIG_SIZE,
-        bytes.len()
+        "{n} SPHINCS+ signatures ({n} x {:.1} KiB = {:.1} KiB) aggregated into a {:.1} KiB proof",
+        kib(sphincs::SIG_SIZE),
+        kib(n * sphincs::SIG_SIZE),
+        kib(bytes.len())
     );
 }
