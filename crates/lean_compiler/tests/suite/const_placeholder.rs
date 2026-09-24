@@ -209,10 +209,7 @@ fn const_is_transparent_where_the_reading_is_already_integer() {
     // An `unroll` count keeps its expression for the lowerer to fold, in either
     // spelling, so the baseline is the unwrapped expression rather than a literal.
     let count = |b: &str| format!("def main():\n    for i in unroll(0, {b}):\n        v = 1\n    return\n");
-    let unrolled = |b: &str| {
-        let program = compile(&parse(&count(b)).unwrap_or_else(|e| panic!("{b}: {e}")));
-        program.fn_ranges.iter().map(|(_, _, len)| *len as usize).sum::<usize>()
-    };
+    let unrolled = |b: &str| compile(&parse(&count(b)).unwrap_or_else(|e| panic!("{b}: {e}"))).code_len();
     assert_eq!(
         unrolled("const(1 + 1)"),
         unrolled("1 + 1"),

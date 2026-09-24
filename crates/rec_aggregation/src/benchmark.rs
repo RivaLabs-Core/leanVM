@@ -184,11 +184,7 @@ pub fn run_recursion(
     let all = signers(0, n * per_leaf);
     let all_sphincs = sphincs_signers(0, n * sphincs_per_leaf);
     let started = std::time::Instant::now();
-    let guest_instructions: usize = crate::aggregation::unified_guest()
-        .fn_ranges
-        .iter()
-        .map(|(_, _, len)| *len as usize)
-        .sum();
+    let guest_instructions = crate::aggregation::unified_guest().code_len();
     let compile_time = started.elapsed();
 
     let children: Vec<EthereumProof> = (0..n)

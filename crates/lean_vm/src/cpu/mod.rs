@@ -266,6 +266,15 @@ impl Program {
         }
     }
 
+    /// Instructions before the pad to a power of two: the compiled functions, or
+    /// the whole bytecode of a hand-assembled program.
+    pub fn code_len(&self) -> usize {
+        match self.fn_ranges.as_slice() {
+            [] => self.prog.len(),
+            ranges => ranges.iter().map(|&(_, _, len)| len as usize).sum(),
+        }
+    }
+
     /// The compiled function containing `pc`. [`Self::site_at`] wraps this with
     /// the source line when one is known.
     pub fn fn_at(&self, pc: u32) -> &str {
@@ -478,13 +487,15 @@ pub struct Stats {
     /// Cells actually touched, before the pad to `2^log_mem`, i.e. the real memory
     /// footprint (`log2` is fractional).
     pub mem_used: usize,
+    /// Bytecode instructions, before the pad to a power of two ([`Program::code_len`]).
+    pub bytecode: usize,
 }
 
 impl Stats {
     /// Table names in `counts` order.
     pub const TABLES: [&'static str; tables::N_TABLES] = ["XOR", "MUL", "SET", "DEREF", "JUMP", "BLAKE2S"];
 
-    /// One line of per-table instruction counts and shares, largest first, followed by memory and committed-witness sizes.
+    /// One line of per-table instruction counts and shares, largest first, followed by memory, bytecode and committed-witness sizes.
     ///
     /// The counts are `base_counts`, the work the program itself does, since the proven
     /// `counts` are all exact powers of two once the fill blocks have run (`filler`) and
@@ -513,6 +524,7 @@ impl Stats {
             .collect();
         let log2 = |n: usize| primitives::pretty_f64((n.max(1) as f64).log2());
         parts.push(format!("MEMORY 2^{}", log2(self.mem_used)));
+        parts.push(format!("BYTECODE 2^{}", log2(self.bytecode)));
         parts.push(format!("TOTAL_COMMITTED 2^{}", log2(self.committed)));
         parts.join("  ")
     }
@@ -654,6 +666,7 @@ pub fn prove(program: &Program, public_input: [F192; 2], log_inv_rate: usize) ->
             committed: committed_size,
             log_mem: w.log_mem,
             mem_used: exec.mem_used,
+            bytecode: program.code_len(),
         },
     ))
 }
