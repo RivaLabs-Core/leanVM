@@ -7,7 +7,7 @@
 //! duplicating their knowledge of what a dummy row looks like.
 
 use lean_compiler::{compile, parse};
-use lean_vm::cpu::{CpuError, Proof, prove, verify};
+use lean_vm::cpu::{CpuError, Proof, ProveError, prove, verify};
 use lean_vm::vmhash::compress;
 use primitives::field::{F64, F192};
 
@@ -36,7 +36,7 @@ fn hashing_pi() -> [F192; 2] {
 fn hashing_proof() -> (lean_vm::cpu::Program, [F192; 2], Proof) {
     let program = compile(&parse(HASHING).expect("parse"));
     let pi = hashing_pi();
-    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &pi, &proof).expect("honest proof verifies");
     (program, pi, proof)
 }
@@ -91,7 +91,7 @@ fn a_proof_does_not_verify_against_another_program() {
     let program = compile(&parse(&src(5)).expect("parse"));
     let other = compile(&parse(&src(6)).expect("parse"));
     let pi = [F192::ZERO, F192::ZERO];
-    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, pi, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &pi, &proof).expect("honest proof verifies");
     assert!(
         verify(&other, &pi, &proof).is_err(),
@@ -126,5 +126,16 @@ fn a_proof_roundtrips_through_bytes() {
     assert!(
         matches!(verify(&program, &pi, &sub_floor), Err(CpuError::PublicInput)),
         "the announced SHA3 height must reach flock's instance floor"
+    );
+}
+
+/// An unsupported rate is an error, not a panic.
+#[test]
+fn an_unsupported_rate_is_an_error() {
+    let program = compile(&parse(HASHING).expect("parse"));
+    let rate = lean_vm::pcs::MAX_LOG_INV_RATE + 1;
+    assert_eq!(
+        prove(&program, hashing_pi(), rate).err(),
+        Some(ProveError::InvalidRate { log_inv_rate: rate })
     );
 }

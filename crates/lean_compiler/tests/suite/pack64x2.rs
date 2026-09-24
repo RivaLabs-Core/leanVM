@@ -23,7 +23,7 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::new(5, 7, 0), F192::new(5, 7, 0)];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     let counts = mix(src, want);
     assert_eq!(
         (counts[0], counts[1], counts[4]),

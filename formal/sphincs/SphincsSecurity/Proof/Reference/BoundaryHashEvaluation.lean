@@ -82,7 +82,7 @@ theorem boundaryEval_bind {α β : Type} (parameter : PublicParameter)
   rfl
 
 theorem boundaryEval_tweakableHash (parameter : PublicParameter) (f : QueryImpl HashSpec Id)
-    (domain : HashDomain) (payload : HashInput) (hmessage : (hashDomainFields domain).tag ≠ 9#8) :
+    (domain : HashDomain) (payload : HashInput) (hmessage : (hashDomainFields domain).tag ≠ 12#8) :
     boundaryEval parameter f (tweakableHash parameter domain payload) =
       (truncateHash (f (tweakableHashInput parameter domain payload)), FreeMonoid.of none) := by
   have hn : ¬ FtsProbeSimulation.MessageHashInput parameter (tweakableHashInput parameter domain payload) := by

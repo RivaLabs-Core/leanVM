@@ -23,6 +23,6 @@ def main():
 ";
     let program = compile(&parse(src).expect("parse"));
     let want = [F192::from(F64(5) * primitives::field::g_pow(1)), F192::from(F64(3))];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &want, &proof).expect("prints must not disturb proving");
 }

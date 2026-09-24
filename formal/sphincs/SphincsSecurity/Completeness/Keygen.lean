@@ -30,7 +30,7 @@ theorem Avoids.keygen_of (seed : MasterSeed) (target : HashInput)
   Avoids.keygenFromSeed f target seed (hkey _ _) (fun _ _ _ _ => hchain _ _ _ _ _ _)
     (fun _ _ => hleaf _ _ _ _) (fun _ _ _ => hnode _ _ _ _ _) (fun _ _ => hkey _ _)
 
-theorem keygenDomain_tag_ne (domain : KeygenDomain) (tag : Nat) (htag : tag = 4 ∨ tag = 9 ∨ tag = 12) :
+theorem keygenDomain_tag_ne (domain : KeygenDomain) (tag : Nat) (htag : tag = 4 ∨ tag = 7 ∨ tag = 12) :
     (keygenDomainFields domain).tag ≠ BitVec.ofNat 8 tag := by
   rcases htag with rfl | rfl | rfl <;> cases domain <;> simp [keygenDomainFields, tweakFields]
 
@@ -48,27 +48,27 @@ theorem keygen_fresh (seed : MasterSeed) (r : (PublicKey × Seeded.SecretKey) ×
       (Avoids.keygen_of seed _ ?_ ?_ ?_ ?_)⟩
   · intro parameter domain h
     exact fieldInput_ne_of_tag_ne' parameter r.1.2.parameter
-      (fields1 := keygenDomainFields domain) (fields2 := ⟨12#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
-      (keygenDomain_tag_ne domain 12 (by simp)) _ _
+      (fields1 := keygenDomainFields domain) (fields2 := ⟨7#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
+      (keygenDomain_tag_ne domain 7 (by simp)) _ _
       (by simpa only [keygenHashInput, randInput, randomizerHashInput, List.append_assoc] using h)
   · intro parameter tree leaf chainIdx step payload h
     exact fieldInput_ne_of_tag_ne' parameter r.1.2.parameter
       (fields1 := hashDomainFields (.chain topLayer tree leaf chainIdx step))
-      (fields2 := ⟨12#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
+      (fields2 := ⟨7#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
       (by simp [hashDomainFields, tweakFields]) _ _
       (by simpa only [tweakableHashInput, tweakBytes, randInput, randomizerHashInput,
         List.append_assoc] using h)
   · intro parameter tree leaf payload h
     exact fieldInput_ne_of_tag_ne' parameter r.1.2.parameter
       (fields1 := hashDomainFields (.leaf topLayer tree leaf))
-      (fields2 := ⟨12#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
+      (fields2 := ⟨7#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
       (by simp [hashDomainFields, tweakFields]) _ _
       (by simpa only [tweakableHashInput, tweakBytes, randInput, randomizerHashInput,
         List.append_assoc] using h)
   · intro parameter tree level nodeIdx payload h
     exact fieldInput_ne_of_tag_ne' parameter r.1.2.parameter
       (fields1 := hashDomainFields (.node topLayer tree level nodeIdx))
-      (fields2 := ⟨12#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
+      (fields2 := ⟨7#8, 0#8, 0#32, BitVec.ofNat 32 s, 0#32⟩)
       (by simp [hashDomainFields, tweakFields]) _ _
       (by simpa only [tweakableHashInput, tweakBytes, randInput, randomizerHashInput,
         List.append_assoc] using h)

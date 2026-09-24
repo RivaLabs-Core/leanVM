@@ -155,10 +155,10 @@ def hashDomainFields : HashDomain → TweakFields
   | .leaf lay tree leaf => tweakFields 2 lay tree 0 leaf
   | .node lay tree level nodeIdx => tweakFields 3 lay tree level nodeIdx
   | .encoding lay tree leaf => tweakFields 4 lay tree 0 leaf
-  | .ftsLeaf index tree leaf => tweakFields 6 tree index 0 leaf
-  | .ftsNode index tree level nodeIdx => tweakFields 7 tree index level nodeIdx
-  | .ftsRoots index => tweakFields 8 0 index 0 0
-  | .message => tweakFields 9 0 0 0 0
+  | .ftsLeaf index tree leaf => tweakFields 9 tree index 0 leaf
+  | .ftsNode index tree level nodeIdx => tweakFields 10 tree index level nodeIdx
+  | .ftsRoots index => tweakFields 11 0 index 0 0
+  | .message => tweakFields 12 0 0 0 0
 
 /-- The exact 16 bytes supplied by the specification as a hash tweak. -/
 def tweakBytes (domain : HashDomain) : HashInput :=
@@ -169,10 +169,10 @@ def tweakableHashInput (parameter : PublicParameter) (domain : HashDomain)
     (message : HashInput) : HashInput :=
   tweakBytes domain ++ bytesLE 16 parameter ++ message
 
-/-- `tweak(12, 0, 0, trial, 0) || P || S || m`. -/
+/-- `tweak(7, 0, 0, trial, 0) || P || S || m`. -/
 def randomizerHashInput (parameter : PublicParameter) (seed : MasterSeed)
     (message : Message) (trial : BitVec 32) : HashInput :=
-  fieldBytes ⟨12#8, 0#8, 0#32, trial, 0#32⟩ ++
+  fieldBytes ⟨7#8, 0#8, 0#32, trial, 0#32⟩ ++
     bytesLE 16 parameter ++ bytesLE 32 seed ++ bytesLE 32 message
 
 inductive KeygenDomain where
@@ -182,9 +182,9 @@ inductive KeygenDomain where
 deriving DecidableEq
 
 def keygenDomainFields : KeygenDomain → TweakFields
-  | .parameter => tweakFields 10 0 0 0 0
+  | .parameter => tweakFields 5 0 0 0 0
   | .ots lay tree leaf chain => tweakFields 0 lay tree chain leaf
-  | .fts index tree leaf => tweakFields 5 tree index 0 leaf
+  | .fts index tree leaf => tweakFields 8 tree index 0 leaf
 
 /-- `tweak || P || S`; parameter derivation uses `P = 0`. -/
 def keygenHashInput (parameter : PublicParameter) (domain : KeygenDomain)

@@ -46,7 +46,7 @@ fn a_dispatched_frame_is_sized_for_the_arm_taken() {
     assert!(used[0] - used[3] >= 15 * 13, "{used:?}");
     for digit in [0, 15] {
         let p = compile(&parse(&program(digit)).expect("parse"));
-        let (proof, _) = prove(&p, [F192::ZERO; 2], lean_vm::pcs::TEST_LOG_INV_RATE);
+        let (proof, _) = prove(&p, [F192::ZERO; 2], lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
         verify(&p, &[F192::ZERO; 2], &proof).expect("an exact-size frame proves");
     }
 }

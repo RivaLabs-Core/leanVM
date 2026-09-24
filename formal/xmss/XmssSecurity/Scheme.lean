@@ -122,10 +122,10 @@ def tweakableHashInput (parameter : PublicParameter) (domain : HashDomain)
     (message : HashInput) : HashInput :=
   tweakBytes domain ++ bytesLE 16 parameter ++ message
 
-/-- `tweak(12, trial, epoch) || P || S || m`. -/
+/-- `tweak(7, trial, epoch) || P || S || m`. -/
 def randomizerHashInput (parameter : PublicParameter) (seed : MasterSeed)
     (epoch : Epoch) (message : Message) (trial : BitVec 32) : HashInput :=
-  fieldBytes ⟨12#8, trial, BitVec.ofNat 32 epoch.val⟩ ++
+  fieldBytes ⟨7#8, trial, BitVec.ofNat 32 epoch.val⟩ ++
     bytesLE 16 parameter ++ bytesLE 32 seed ++ bytesLE 32 message
 
 inductive KeygenDomain where
@@ -134,7 +134,7 @@ inductive KeygenDomain where
 deriving DecidableEq
 
 def keygenDomainFields : KeygenDomain → TweakFields
-  | .parameter => tweakFields 10 0 0
+  | .parameter => tweakFields 5 0 0
   | .chain epoch chain => tweakFields 0 chain epoch
 
 /-- `tweak || P || S`; parameter derivation uses `P = 0`. -/

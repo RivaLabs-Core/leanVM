@@ -50,7 +50,7 @@ def main():
     let o = f3 * f5;
     let want = [F192::from(x), F192::from(y + o)];
 
-    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &want, &proof).expect("expression-position inline calls compute correctly");
 
     let mut bad = want;

@@ -119,7 +119,7 @@ def probe(v):
     let mut program = compile(&parse(src).expect("parse"));
     program.set_witness("v", vec![vec![F192::from(F64(V))]]);
     let want = [F192::from(F64(V)), F192::from(F64::ONE)];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &want, &proof).expect("the pointer reads the frame run");
     let bad = [F192::from(F64(V + 1)), F192::from(F64::ONE)];
     assert!(verify(&program, &bad, &proof).is_err(), "a wrong value is rejected");
@@ -236,7 +236,7 @@ def main():
     );
     let program = compile(&parse(&src).expect("parse"));
     let want = [F192::from(F64(V)), F192::from(F64::ONE)];
-    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
     verify(&program, &want, &proof).expect("the slice decomposition verifies");
     // No more DEREFs than the unsliced buffer: only the published cells.
     let unsliced = src

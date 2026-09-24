@@ -109,7 +109,7 @@ fn run(head: &[Cell], words: Option<(usize, usize)>, heap_words: bool, prove_it:
         "a wrong digest must not execute:\n{src}"
     );
     if prove_it {
-        let (proof, _) = prove(&program, digest, lean_vm::pcs::TEST_LOG_INV_RATE);
+        let (proof, _) = prove(&program, digest, lean_vm::pcs::TEST_LOG_INV_RATE).unwrap();
         verify(&program, &digest, &proof).expect("keccak proof verifies");
     }
 }
