@@ -42,11 +42,15 @@ impl SphincsPublicKey {
     }
 }
 
-/// The three seeds. The root is derived (the top layer's tree, `2^h'` WOTS keys).
+/// The 32-byte master secret, and what it derives: FIPS 205's three seeds
+/// (`SK.seed`, `SK.prf`, `PK.seed`) and the root (the top layer's tree, `2^h'`
+/// WOTS keys). Only the master is secret key material; the rest is recomputed
+/// by [`Self::from_bytes`].
 #[derive(Clone)]
 pub struct SphincsSecretKey {
     pub public_param: PublicParam,
     pub root: Digest,
+    master: MasterSecret,
     sk_seed: [u8; N],
     sk_prf: [u8; N],
 }
@@ -61,19 +65,14 @@ impl std::fmt::Debug for SphincsSecretKey {
 }
 
 impl SphincsSecretKey {
-    /// SECRET KEY MATERIAL: `SK.seed ‖ SK.prf ‖ PK.seed`.
+    /// SECRET KEY MATERIAL: the master secret.
     pub fn to_bytes(&self) -> [u8; SECRET_KEY_SIZE] {
-        let mut out = [0; SECRET_KEY_SIZE];
-        out[..N].copy_from_slice(&self.sk_seed);
-        out[N..2 * N].copy_from_slice(&self.sk_prf);
-        out[2 * N..].copy_from_slice(&self.public_param);
-        out
+        self.master
     }
 
-    /// Inverse of [`Self::to_bytes`]; rebuilds the root.
+    /// Inverse of [`Self::to_bytes`], costing what [`key_gen_from_seed`] costs.
     pub fn from_bytes(bytes: &[u8; SECRET_KEY_SIZE]) -> Self {
-        let part = |i: usize| bytes[i * N..(i + 1) * N].try_into().unwrap();
-        key_gen_from_seeds(part(0), part(1), part(2)).0
+        key_gen_from_seed(*bytes).0
     }
 
     pub fn public_key(&self) -> SphincsPublicKey {
@@ -175,34 +174,26 @@ pub fn ht_position(ht_idx: u32, layer: usize) -> (u64, u32) {
     (u64::from(below >> SUBTREE_H), below & ((1 << SUBTREE_H) - 1))
 }
 
-/// `Gen` on a fresh key: the three seeds come from `rng`.
+/// `Gen` on a fresh key: the master secret comes from `rng`.
 pub fn key_gen(rng: &mut impl CryptoRng) -> (SphincsSecretKey, SphincsPublicKey) {
-    key_gen_from_seeds(rng.random(), rng.random(), rng.random())
+    key_gen_from_seed(rng.random())
 }
 
-/// Deterministic `Gen` from seed material: `keccak256(tag ‖ material)[..16]` for
-/// each seed, `tag` one of `"SPHINCS-v2 SK.seed"`, `"SPHINCS-v2 SK.prf"`,
-/// `"SPHINCS-v2 PK.seed"`. (Signer-private: any derivation of three independent
-/// seeds serves.)
-pub fn key_gen_from_seed(material: MasterSecret) -> (SphincsSecretKey, SphincsPublicKey) {
-    let seed = |tag: &[u8]| truncate(&primitives::hash::keccak256(&[tag, &material].concat()));
-    key_gen_from_seeds(
+/// Deterministic `Gen`: the master secret is `master`, and each of the three
+/// seeds is `keccak256(tag ‖ master)[..16]`, `tag` one of `"SPHINCS-v2 SK.seed"`,
+/// `"SPHINCS-v2 SK.prf"`, `"SPHINCS-v2 PK.seed"`: three hash domains, so the
+/// seeds are independent. (Signer-private: no verifier sees the derivation.)
+pub fn key_gen_from_seed(master: MasterSecret) -> (SphincsSecretKey, SphincsPublicKey) {
+    let seed = |tag: &[u8]| truncate(&primitives::hash::keccak256(&[tag, &master].concat()));
+    let (sk_seed, sk_prf, public_param) = (
         seed(b"SPHINCS-v2 SK.seed"),
         seed(b"SPHINCS-v2 SK.prf"),
         seed(b"SPHINCS-v2 PK.seed"),
-    )
-}
-
-/// `Gen` on given seeds, the reference signer's `keygen`.
-pub fn key_gen_from_seeds(
-    sk_seed: [u8; N],
-    sk_prf: [u8; N],
-    public_param: PublicParam,
-) -> (SphincsSecretKey, SphincsPublicKey) {
-    let root = subtree_levels(&public_param, &sk_seed, (D - 1) as u32, 0)[SUBTREE_H][0];
+    );
     let sk = SphincsSecretKey {
         public_param,
-        root,
+        root: root_of(&public_param, &sk_seed),
+        master,
         sk_seed,
         sk_prf,
     };
@@ -210,26 +201,55 @@ pub fn key_gen_from_seeds(
     (sk, pk)
 }
 
+/// The public root: the top layer's single tree.
+fn root_of(public_param: &PublicParam, sk_seed: &[u8; N]) -> Digest {
+    subtree_levels(public_param, sk_seed, (D - 1) as u32, 0)[SUBTREE_H][0]
+}
+
 /// Sign. Deterministic and stateless.
 pub fn sign(sk: &SphincsSecretKey, message: &Message) -> SphincsSignature {
-    let pp = &sk.public_param;
-    let randomizer = randomizer(&sk.sk_prf, message);
-    let d = h_msg(pp, &sk.root, &randomizer, message);
+    sign_with(&sk.public_param, &sk.root, &sk.sk_seed, &sk.sk_prf, message)
+}
+
+/// Key generation and signing on the three seeds given directly, as FIPS 205
+/// and NiceTry's reference signer (`scripts/sphincs_v2_reference.py`) state them.
+/// For reproducing reference vectors: a key made this way has no master secret,
+/// so use [`key_gen`] / [`key_gen_from_seed`] for real keys.
+pub fn sign_with_seeds(
+    sk_seed: [u8; N],
+    sk_prf: [u8; N],
+    public_param: PublicParam,
+    message: &Message,
+) -> (SphincsPublicKey, SphincsSignature) {
+    let root = root_of(&public_param, &sk_seed);
+    let signature = sign_with(&public_param, &root, &sk_seed, &sk_prf, message);
+    (SphincsPublicKey { root, public_param }, signature)
+}
+
+fn sign_with(
+    pp: &PublicParam,
+    root: &Digest,
+    sk_seed: &[u8; N],
+    sk_prf: &[u8; N],
+    message: &Message,
+) -> SphincsSignature {
+    let randomizer = randomizer(sk_prf, message);
+    let d = h_msg(pp, root, &randomizer, message);
     let ht_idx = ht_index(&d);
-    let (fors_secrets, fors_paths, fors_pk) = fors_sign(pp, &sk.sk_seed, ht_idx, &fors_indices(&d));
+    let (fors_secrets, fors_paths, fors_pk) = fors_sign(pp, sk_seed, ht_idx, &fors_indices(&d));
 
     let mut node = fors_pk;
     let layers = std::array::from_fn(|layer| {
         let (tree, leaf) = ht_position(ht_idx, layer);
-        let chains = wots_sign(pp, &sk.sk_seed, layer as u32, tree, leaf, &node);
-        let levels = subtree_levels(pp, &sk.sk_seed, layer as u32, tree);
+        let chains = wots_sign(pp, sk_seed, layer as u32, tree, leaf, &node);
+        let levels = subtree_levels(pp, sk_seed, layer as u32, tree);
         node = levels[SUBTREE_H][0];
         HtLayer {
             chains,
             path: auth_path(&levels, leaf),
         }
     });
-    debug_assert_eq!(node, sk.root);
+    debug_assert_eq!(&node, root);
 
     SphincsSignature {
         randomizer,

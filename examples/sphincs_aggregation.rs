@@ -24,7 +24,6 @@ fn main() {
         })
         .collect();
 
-    // One proof for all of them: no children, no XMSS signatures, no blobs.
     let proof = aggregate(&[], vec![], signatures, &[], None, LOG_INV_RATE).unwrap();
 
     // The proof travels as bytes; the receiver learns which keys signed which messages.

@@ -14,7 +14,8 @@
 //!
 //! The verifier is the specification. The signer mirrors the reference signer
 //! (`scripts/sphincs_v2_reference.py`) byte for byte: from the same three seeds
-//! both produce the same signature.
+//! ([`sign_with_seeds`]) both produce the same signature. A real key is one
+//! 32-byte master secret the three seeds are derived from ([`key_gen_from_seed`]).
 
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 
@@ -35,7 +36,7 @@ pub type Digest = [u8; N];
 pub const PUBLIC_PARAM_LEN: usize = 16;
 pub type PublicParam = [u8; PUBLIC_PARAM_LEN];
 
-/// Seed material [`key_gen_from_seed`] derives a key from.
+/// The master secret a key is derived from ([`key_gen_from_seed`]).
 pub const MASTER_SECRET_LEN: usize = 32;
 pub type MasterSecret = [u8; MASTER_SECRET_LEN];
 
@@ -81,8 +82,8 @@ pub const HMSG_DOMAIN: [u8; 32] = [0xFF; 32];
 
 /// `(pkSeed, pkRoot)`.
 pub const PUB_KEY_SIZE: usize = N + PUBLIC_PARAM_LEN;
-/// `SK.seed ‖ SK.prf ‖ PK.seed`; the root is derived.
-pub const SECRET_KEY_SIZE: usize = 3 * N;
+/// A secret key is its master secret; the seeds and the root are derived.
+pub const SECRET_KEY_SIZE: usize = MASTER_SECRET_LEN;
 /// One hypertree layer of a signature: the chains, then the path.
 pub const LAYER_SIZE: usize = L * N + SUBTREE_H * N;
 /// `R ‖ k secrets ‖ k paths ‖ d layers`.

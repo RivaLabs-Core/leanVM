@@ -43,9 +43,9 @@ fn matches_the_reference_vector() {
     other[31] ^= 1;
     assert_eq!(verify(&pk, &other, &reference), Err(SphincsVerifyError::RootMismatch));
 
-    let (sk, derived) = key_gen_from_seeds([0x11; N], [0x22; N], pk.public_param);
+    let (derived, signature) = sign_with_seeds([0x11; N], [0x22; N], pk.public_param, &message);
     assert_eq!(derived, pk);
-    assert_eq!(sign(&sk, &message), reference);
+    assert_eq!(signature, reference);
 }
 
 #[test]
@@ -62,6 +62,7 @@ fn keygen_sign_verify_roundtrip() {
     assert_eq!(SphincsPublicKey::from_bytes(&pk.flatten()), pk);
     let (seed_word, root_word) = pk.to_bytes32();
     assert_eq!((&seed_word[N..], &root_word[N..]), (&[0; N][..], &[0; N][..]));
+    assert_eq!(sk.to_bytes().len(), MASTER_SECRET_LEN);
     assert_eq!(SphincsSecretKey::from_bytes(&sk.to_bytes()).public_key(), pk);
     assert_eq!(
         key_gen_from_seed([3; MASTER_SECRET_LEN]).1,

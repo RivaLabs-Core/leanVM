@@ -37,7 +37,7 @@ pub mod sphincs {
     pub use ::sphincs::{
         Digest, HtLayer, MASTER_SECRET_LEN, MESSAGE_LEN, MasterSecret, Message, PUB_KEY_SIZE, PublicParam,
         SECRET_KEY_SIZE, SIG_SIZE, SphincsPublicKey, SphincsSecretKey, SphincsSignature, SphincsVerifyError, key_gen,
-        key_gen_from_seed, key_gen_from_seeds, sign, verify,
+        key_gen_from_seed, sign, sign_with_seeds, verify,
     };
 }
 

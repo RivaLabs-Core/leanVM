@@ -192,13 +192,19 @@ A signature opens tree $i$ at index $u_i$: its secret and its nine-node path.
 \section{The scheme}
 \label{sec:scheme}
 
-\paragraph{Keys.} The secret key is three 16-byte seeds $(\skseed,\skprf,\seed)$, with
-$\PRF(\ADRS)=\trunc(\K(\slot(\skseed)\concat\ADRS))$. The public key is $(\seed,\pkroot)$,
-$\pkroot$ the root of the layer-4 tree. On chain both are top-aligned words, and a word
-whose low 16 bytes are nonzero is rejected.\footnote{\texttt{crates/sphincs} derives the
-three seeds from 32 bytes of seed material $S$ as $\trunc(\K(\mathit{tag}\concat S))$
-with ASCII tags \texttt{SPHINCS-v2 SK.seed}, \texttt{SPHINCS-v2 SK.prf},
-\texttt{SPHINCS-v2 PK.seed}. Any derivation of independent seeds serves.}
+\paragraph{Keys.} The secret key is a 32-byte master secret $S$. It derives FIPS~205's
+three 16-byte seeds in separate hash domains,
+\[
+  \skseed,\ \skprf,\ \seed=\trunc\!\left(\K(\mathit{tag}\concat S)\right),
+\]
+$\mathit{tag}$ being the ASCII strings \texttt{SPHINCS-v2 SK.seed},
+\texttt{SPHINCS-v2 SK.prf} and \texttt{SPHINCS-v2 PK.seed} respectively,
+with $\PRF(\ADRS)=\trunc(\K(\slot(\skseed)\concat\ADRS))$. The public key is
+$(\seed,\pkroot)$, $\pkroot$ the root of the layer-4 tree. On chain both are
+top-aligned words, and a word whose low 16 bytes are nonzero is rejected.\footnote{The
+derivation of the seeds is the signer's own and no verifier sees it. NiceTry's reference
+script takes the three seeds directly, and \texttt{sphincs::sign\_with\_seeds} does
+the same to reproduce its vector.}
 
 \paragraph{Signing $M$.}
 \begin{enumerate}
