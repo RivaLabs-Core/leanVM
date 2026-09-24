@@ -96,7 +96,7 @@ pub const VERIFY_FIXED_HASHES: usize = 1 + K * (1 + A) + 1 + D * (1 + SUBTREE_H)
 
 /// Keccak-f calls Keccak-256 makes on `len` bytes.
 pub const fn keccak_blocks(len: usize) -> usize {
-    len / primitives::hash::RATE + 1
+    len / primitives::keccak::RATE + 1
 }
 
 const _: () = assert!(LEN1 == 32 && MAX_CSUM < 1 << (LOG_W * LEN2) && MAX_CSUM >= 1 << (LOG_W * (LEN2 - 1)));

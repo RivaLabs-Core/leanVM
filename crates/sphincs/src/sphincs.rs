@@ -181,7 +181,7 @@ pub fn key_gen(rng: &mut impl CryptoRng) -> (SphincsSecretKey, SphincsPublicKey)
 /// `"SPHINCS-v2 SK.prf"`, `"SPHINCS-v2 PK.seed"`: three hash domains, so the
 /// seeds are independent. (Signer-private: no verifier sees the derivation.)
 fn derive_seeds(master: &MasterSecret) -> ([u8; N], [u8; N], PublicParam) {
-    let seed = |tag: &[u8]| truncate(&primitives::hash::keccak256(&[tag, master].concat()));
+    let seed = |tag: &[u8]| truncate(&primitives::keccak::keccak256(&[tag, master].concat()));
     (
         seed(b"SPHINCS-v2 SK.seed"),
         seed(b"SPHINCS-v2 SK.prf"),

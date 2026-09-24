@@ -2,7 +2,7 @@
 //! address, the message digest, and the signer's secret derivation.
 
 use crate::*;
-use primitives::hash::keccak256;
+use primitives::keccak::keccak256;
 
 /// An `n`-byte value as the word it is hashed as: top-aligned, `v ‖ 0^16`.
 pub fn word(v: &[u8; N]) -> [u8; 32] {

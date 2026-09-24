@@ -1,7 +1,7 @@
 //! `keccak(head, out, words=run)`: Keccak-256 (the EVM's `keccak256`) of whole
 //! cells, one block up to 128 bytes and the 136-byte-rate sponge past that, where
 //! odd blocks start mid-cell and lane 16 carries message data. Every case is
-//! checked against [`primitives::hash::keccak256`] by execution, and the
+//! checked against [`primitives::keccak::keccak256`] by execution, and the
 //! multi-block shapes the SPHINCS+ verifier hashes are also proven.
 
 use lean_compiler::{compile, parse};
@@ -65,7 +65,7 @@ fn case(head: &[Cell], words: Option<(usize, usize)>, heap_words: bool) -> (Stri
             bytes.extend([0u8; 16]);
         }
     }
-    let d = primitives::hash::keccak256(&bytes);
+    let d = primitives::keccak::keccak256(&bytes);
     let word = |o: usize| u64::from_le_bytes(d[o..o + 8].try_into().unwrap());
     let digest = [F192::new(word(0), word(8), 0), F192::new(word(16), word(24), 0)];
 
