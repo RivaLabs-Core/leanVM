@@ -506,10 +506,9 @@ pub enum AggregationError {
     /// compiled with. Small aggregates are padded up to the floor, so this means
     /// a child too big: more signatures than one node can hold.
     ChildOutOfRange { log_committed: usize },
-    /// This node's own proof would commit `2^log_committed` words, more than any
-    /// verifier accepts: too many signatures (or blobs) for one proof. Aggregate
-    /// fewer here and combine the proofs recursively.
-    ProofTooLarge { log_committed: usize },
+    /// The prover made no proof of this node (for instance its witness is larger
+    /// than any verifier accepts: too many signatures for one proof).
+    ProofError(ProveError),
 }
 
 impl std::fmt::Display for AggregateVerifyError {
@@ -558,12 +557,7 @@ impl std::fmt::Display for AggregationError {
                     "a child commits 2^{log_committed} words, outside the guest's opening arms"
                 )
             }
-            Self::ProofTooLarge { log_committed } => write!(
-                f,
-                "this proof would commit 2^{log_committed} words, above the verifiable 2^{}: \
-                 too many signatures for one proof, aggregate fewer and combine the proofs recursively",
-                lean_vm::pcs::MAX_MU
-            ),
+            Self::ProofError(e) => write!(f, "proving failed: {e}"),
         }
     }
 }
@@ -572,6 +566,7 @@ impl std::error::Error for AggregationError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::InvalidChild(e) => Some(e),
+            Self::ProofError(e) => Some(e),
             _ => None,
         }
     }
@@ -2354,10 +2349,7 @@ pub(crate) fn aggregate_tampered(
     program.min_log_committed = MU_MIN;
     tamper(&mut hints);
     hints.install(&mut program);
-    let (proof, stats) = prove(&program, public_input, log_inv_rate).map_err(|e| match e {
-        ProveError::InvalidRate { log_inv_rate } => AggregationError::InvalidRate { log_inv_rate },
-        ProveError::WitnessOutOfRange { log_committed } => AggregationError::ProofTooLarge { log_committed },
-    })?;
+    let (proof, stats) = prove(&program, public_input, log_inv_rate).map_err(AggregationError::ProofError)?;
     Ok((
         EthereumProof {
             xmss_signers: cover.declared().to_vec(),

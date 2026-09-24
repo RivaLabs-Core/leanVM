@@ -10,7 +10,7 @@ pub use rec_aggregation::{
 };
 
 pub use lean_vm::{
-    cpu::CpuError,
+    cpu::{CpuError, ProveError},
     pcs::{MAX_LOG_INV_RATE, MIN_LOG_INV_RATE},
 };
 
