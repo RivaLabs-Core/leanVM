@@ -1045,16 +1045,14 @@ fn fill_blocks_carry_no_source_line() {
     );
 }
 
-/// A dispatched `match` join reads one cell per bound name, but a callee
-/// returning a `StackBuf` flattens it into several ABI cells, so the name would
-/// silently bind the run's FIRST cell and the rest would be written where
-/// nothing reads them. The guard against that is `all(is scalar)`; negating it
-/// as `all(is not scalar)` rather than `any(is not scalar)` left it firing only
-/// when EVERY return is a buffer, so a `(scalar, StackBuf)` pair walked through
-/// and no existing test noticed.
+/// A `match` join reads one cell per bound name, so a multi-cell `StackBuf`
+/// return would bind only the run's FIRST cell and leave the rest where nothing
+/// reads them. The guard must check every return, not all of them at once:
+/// testing `all(is not scalar)` rather than `any(is not scalar)` fired only when
+/// EVERY return was a buffer, so a `(scalar, StackBuf)` pair walked through.
 #[test]
-#[should_panic(expected = "StackBuf return cannot cross a dispatched join")]
-fn a_mixed_stack_buf_return_cannot_cross_a_dispatched_join() {
+#[should_panic(expected = "StackBuf return cannot cross a match join")]
+fn a_mixed_stack_buf_return_cannot_cross_a_match_join() {
     let src = "\
 @inline
 def f(k: Const):

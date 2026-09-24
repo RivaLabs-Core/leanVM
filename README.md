@@ -14,7 +14,7 @@
 <table align="center">
   <tr>
     <td><a href="#xmss-aggregation">leanXMSS aggregation</a></td>
-    <td align="right"><b>1.2K/s</b></td>
+    <td align="right"><b>1.6K/s</b></td>
   </tr>
   <tr>
     <td><a href="#sphincs-aggregation">leanSPHINCS aggregation</a></td>
@@ -77,12 +77,12 @@ cargo run --release -- aggregate --xmss 900 --log-inv-rate 1 --repeat 3
 
 ```
 aggregation, 900 XMSS signatures
-  cycles (VM steps)           : 1,573,849 = 2^20.586
-    details                   : DEREF 2^18.947 (32.1%)  SET 2^18.528 (24.0%)  MUL 2^18.259 (19.9%)  BLAKE2S 2^16.989 (8.3%) XOR 2^16.979 (8.2%)  JUMP 2^16.839 (7.4%)  MEMORY 2^21.305  TOTAL_COMMITTED 2^26.195
-  proof size                  : 295.4 KiB
-  proving time                : 0.749 s ± 2.1%      peak memory 8.769 GiB
-  per signature               : 1,201.795 signatures/s
-  verifying                   : 3.799 ms
+  cycles (VM steps)           : 995,578 = 2^19.925
+    details                   : DEREF 2^17.878 (24.2%)  MUL 2^17.689 (21.2%)  SET 2^17.425 (17.7%)  BLAKE2S 2^16.989 (13.1%)  XOR 2^16.979 (13.0%)  JUMP 2^16.722 (10.9%)  MEMORY 2^20.674  BYTECODE 2^17.737  TOTAL_COMMITTED 2^25.801
+  proof size                  : 315.8 KiB
+  proving time                : 0.563 s ± 5.2%      peak memory 7.438 GiB
+  per signature               : 1,599.383 signatures/s
+  verifying                   : 4.443 ms
 ```
 
 ### SPHINCS aggregation

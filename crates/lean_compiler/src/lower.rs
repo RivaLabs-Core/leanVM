@@ -626,7 +626,10 @@ impl FnLower<'_> {
         // Calls with identical runtime args share one callee frame and a
         // two-instruction trampoline per arm. Const args select specializations;
         // see `lower_dispatched_call` for the shared argument/return layout checks.
-        if arms.iter().all(|a| matches!(a, Expr::Call(..))) {
+        // `@inline` arms instead expand into this frame, below.
+        let inline_arm =
+            |s: &Self, a: &Expr| matches!(a, Expr::Call(f, _) if s.defs.get(f.as_str()).is_some_and(|d| d.inline));
+        if arms.iter().all(|a| matches!(a, Expr::Call(..)) && !inline_arm(self, a)) {
             let specialized: Vec<(String, Vec<&Expr>)> = arms
                 .iter()
                 .map(|a| {
@@ -701,12 +704,13 @@ impl FnLower<'_> {
         kset
     }
 
-    /// The `n` trampoline slots themselves, each `SET c = k(j); JUMP c`.
-    /// Returns the table's start; slot `j` has its `SET` at `start + 2*j`.
+    /// The `n` trampoline slots themselves, each `SET c = k(j); JUMP c`, sharing
+    /// `c` since one slot runs. Returns the table's start; slot `j` has its
+    /// `SET` at `start + 2*j`.
     fn emit_slots(&mut self, n: usize, one: Off, of: Off, k: impl Fn(usize) -> KVal) -> usize {
         let start = self.code.len();
+        let c = self.fresh();
         for j in 0..n {
-            let c = self.fresh();
             self.set(c, k(j));
             self.emit(LOp::Jump { oc: one, od: c, of });
         }
@@ -717,6 +721,8 @@ impl FnLower<'_> {
     /// `d = g^T · x²` (slot `j` of the two-instruction table at bytecode base
     /// `T`), then to `body(j)`'s code; every non-final body exits to the
     /// join. `body` lowers arm `j`, with its own branch-local scope.
+    ///
+    /// One arm runs, so the arms allocate their locals over the same cells.
     fn lower_match_dispatch(&mut self, xo: Off, n: usize, mut body: impl FnMut(&mut Self, usize)) {
         // Hoisted on purpose: these SETs must dominate the join.
         let sfp = self.self_fp();
@@ -730,7 +736,10 @@ impl FnLower<'_> {
         self.patch_local(kset, self.code.len());
         let start = self.emit_slots(n, one, sfp, |_| KVal::Local(0));
         // The arm blocks, each exiting to the join (the last falls through).
+        let arms_base = self.next;
+        let mut arms_end = arms_base;
         for j in 0..n {
+            self.next = arms_base;
             self.patch_local(start + 2 * j, self.code.len());
             body(self, j);
             if j + 1 != n {
@@ -740,7 +749,11 @@ impl FnLower<'_> {
                     of: sfp,
                 });
             }
+            arms_end = arms_end.max(self.next);
+            // The next arm may reuse these cells for something other than a `HeapBuf`.
+            self.heap_sizes.retain(|&o, _| o < arms_base);
         }
+        self.next = arms_end;
         self.patch_local(jset, self.code.len());
     }
 

@@ -493,3 +493,48 @@ def main():
         ],
     });
 }
+
+/// An `@inline` arm expands into the dispatching frame, its locals over cells the
+/// other arms share, where a plain one fuses into a real call. Both must accept
+/// the same trials. Arm `n` allocates `n` locals and the join allocates after
+/// them, so a cell the arms or the join wrongly share shows up here.
+#[test]
+fn an_inline_match_arm_and_a_called_one_agree() {
+    let body = "\
+def main():
+    v = StackBuf(3)
+    hint_witness(v, \"w\")
+    assert log(v[0]) < 4
+    r, e = match(log(v[0]), range(0, 4), lambda i: pw(v[1], i))
+    t = r * e
+    assert t == v[2]
+    p = GEN ** 0
+    p[1] = v[0]
+    p[GEN] = t
+    return
+
+
+@INLINE
+def pw(x, n: Const):
+    y = x
+    for j in unroll(0, n):
+        y = y * x
+    return y, GEN ** n
+";
+    // Arm n publishes t = x^(n+1)·g^n.
+    let arm = |n: usize, x: usize, t: usize| Trial::new([g(n), g(t)]).stream("w", vec![vec![g(n), g(x), g(t)]]);
+    check_pair(&Pair {
+        name: "an_inline_match_arm_and_a_called_one_agree",
+        why: "zkDSL.md §`@inline`: an inlined arm is a call-site expansion, not a change of meaning.",
+        a: &body.replace("@INLINE\n", "@inline\n"),
+        b: &body.replace("@INLINE\n", ""),
+        trials: vec![
+            arm(2, 1, 5),
+            arm(0, 3, 3),
+            arm(3, 2, 11),
+            arm(2, 1, 6),
+            arm(1, 1, 5),
+            arm(4, 1, 9),
+        ],
+    });
+}

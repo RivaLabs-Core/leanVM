@@ -144,7 +144,7 @@ def compress(cv: StackBuf(2), block: StackBuf(2)):
 
 Those cells arrive **already written**, unlike a local `StackBuf`'s, so a store into one is the write-once equality *assertion* rather than a fresh store. That is what makes a callee able to pin its caller's values: `s[k] = <checked value>` inside the callee asserts that the caller's cell already held it. It also means a run parameter initializes nothing, so passing a partly-written buffer passes its unwritten cells, which the prover then chooses, exactly as anywhere else.
 
-A `match` arm cannot pass one: the fused dispatch writes one cell per argument, so give such arms `Const` arguments and let each specialize instead. This is otherwise the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
+A fused `match` arm cannot pass one: the fused dispatch writes one cell per argument, so give such arms `Const` arguments and let each specialize instead, or make the callee `@inline`. This is otherwise the same mechanism a `StackBuf` **return** already used, in the other direction: the argument area is a width rather than a count, and a run occupies the cells its size asks for. Without it a two-cell value could come out of a function whole but only go in through a `HeapBuf` pointer or an `@inline` expansion, which grows the caller's frame at every call site.
 
 ### `Const` parameters
 
@@ -181,7 +181,7 @@ An `@inline` function may also **return a `StackBuf`**: the caller's binding ali
 
 An `@inline` call may also sit in **expression position**: embedded in arithmetic, as a store's RHS, or as a single-target `match` arm. An aliased return (a folded g-address) then materializes into a plain cell (free for a var; one `MUL` for a shifted pointer); a multi-cell `StackBuf` return still needs a `let` binding, since only a name can alias a cell run.
 
-An `@inline` function that also takes a `Const` parameter and is used as a `match` arm is specialized rather than expanded: the fused dispatch enters one real function, so `@inline` is simply not honoured there. One without a `Const` parameter has no entry to dispatch to and is rejected.
+An `@inline` `match` arm expands into the dispatching frame like any other call site, specialized on its `Const` arguments, so it can take a `StackBuf` and write the caller's cells directly. The arms of one `match` share their local cells, one of them running.
 
 Because the body runs in the *caller's* frame, a `Const` parameter whose `if`s fold (below) bakes straight-line, per-case code, the idiom for a `match` arm that must specialize on the arm value. The trade-off is frame cells: each call site gets its own copy, so `@inline` pays off for small, hot callees; inlining a large body at many sites grows the committed witness (more data memory), so it is opt-in, not automatic.
 
@@ -319,7 +319,7 @@ The one dispatch construct. It matches the **log** of a g-power scrutinee agains
 
 Arms produce VALUES: every arm writes its results into the same cells, which is sound under write-once because exactly one arm runs. A target may be a name, bound after the join, or a **`StackBuf` element**, which the arms write into directly and which costs one instruction less than a name plus a store. The ABI returns into cells the CALLER picks, the same reason `sb[i] = f(x)` never needed a temporary, so reach for the element form wherever a returned value's home is a buffer slot. A target index must be a compile-time integer inside the buffer, both errors naming the line; a `HeapBuf` element is not a target, its cells not being frame cells. Multiple targets take a multi-return call as the arm body.
 
-A branch body with statements in it goes in a function, and the arm calls it: that is the idiom the recursion guest uses throughout (`lambda k: walk(chain_start, tweaks, pp, k)`), and it names the body instead of inlining it. Where the arms only PRODUCE values, as there, this costs nothing. Where each arm's real work is a WRITE, it costs: the writer function needs a return value and the statement a target, both dead, and the natural translation measures about twice the instructions of a body inlined into the dispatching frame. An arm cannot take a `StackBuf` parameter either, so it cannot hash or hint into the caller's frame buffer. If that shape matters to a program, dispatch on a value and write after the join.
+A branch body with statements in it goes in a function, and the arm calls it. A plain function fuses (below), so each taken arm still pays the shared frame's argument and return plumbing, and cannot take a `StackBuf`. An `@inline` one expands into the dispatching frame instead: no frame, no plumbing, and its `StackBuf` arguments alias, so an arm can hash or hint straight into the caller's buffers (the XMSS chain walk in the recursion guest, `lambda k: walk(chain_start, chain_tweaks, pp, md, tips, i, k)`). The price is code size, a copy of every arm at each `match`.
 
 **Lowering** is two jumps through a *trampoline table* in the bytecode: the dispatch jumps to `g^T · x²`, the j-th two-instruction slot (`SET` the arm's address, `JUMP` to it) of a table at base `T`, and the slot jumps to the arm, which can sit anywhere, unaligned and of any length. Cost is about 7 cycles, independent of the arm count.
 
@@ -327,7 +327,7 @@ A branch body with statements in it goes in a function, and the arm calls it: th
 
 **Soundness**: nothing in the dispatch bounds `x`, so a scrutinee outside `[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first (`assert log(x) < n`, 3 cycles), as in leanVM.
 
-**Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
+**Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. An `@inline` callee does not fuse: it expands, as above.
 
 Statements without effect are rejected.
 
@@ -513,7 +513,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | `assert a != b` | 3 (`XOR`, `MUL`, `SET`), no branch, one hinted inverse |
 | `assert log x < k` | 3 (+1 `SET` amortized per bound per frame; a runtime bound costs 1 `MUL` instead) |
 | `if a == b: …` | 3 (+2 to skip a non-empty `else`; +2 amortized `self-fp` per branching function); **0 if the condition is compile-time** |
-| `… = match(log(x), …)` | ≈ 7 for the dispatch + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP` |
+| `… = match(log(x), …)` | ≈ 7 for the dispatch + the arm; results written into the targets directly. Uniform-call arms (`lambda k: f(a, b, k)`) **fuse**: one shared frame + dispatch to entry, each arm just `SET`+`JUMP`; `@inline` arms run in place, with no frame |
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |

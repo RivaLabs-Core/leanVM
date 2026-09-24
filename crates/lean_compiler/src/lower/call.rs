@@ -242,19 +242,6 @@ impl FnLower<'_> {
         // ([`Self::call_into`]), so leaving it out here means one source is rejected
         // by one lowering of `match` and silently miscompiled by the other.
         for callee in callees {
-            // A fused dispatch enters ONE real function per arm, so an `@inline`
-            // callee has no entry pc to jump to: it is expanded at a call site
-            // and never lowered on its own. This path does not consult
-            // `try_inline`, so without saying so the call reached the assembler
-            // and died there indexing a HashMap, with no line and no name.
-            if self.defs.get(callee.as_str()).is_some_and(|d| d.inline) {
-                self.fail(format!(
-                    "`@inline {callee}` cannot be a `match` arm's callee: the arms dispatch to \
-                     one real function, and an `@inline` body is expanded at its call site rather \
-                     than lowered. Drop `@inline`, or give the arms `Const` arguments so each \
-                     specializes instead of fusing"
-                ))
-            }
             // Arguments for the same reason as returns below: the shared frame
             // is sized to the largest callee, so a callee expecting more than
             // the arms supply reads a cell that exists and nothing writes.

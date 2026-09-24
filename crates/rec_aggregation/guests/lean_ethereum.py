@@ -354,7 +354,7 @@ XM_INDEX_WEIGHT = XM_INDEX_WEIGHT_PLACEHOLDER
 # Digits packed per digest lane: W bits each in GF(2^64)'s monomial budget (the
 # lane's leftover top bits are ground to zero by the signer).
 DIGITS_PER_WORD = V / 2
-TIP_CELLS = WORDS_PER_VALUE * V
+TIP_CELLS = 2 * V  # tip i at cell 2i, beside the unread upper half of its last hash
 WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells a block
 
 # ------------------------------------------------------ SPHINCS+ (host-supplied)
@@ -2261,13 +2261,15 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     blake2s(rand_block, [0, 0], digest, cv=after_msg, counter=96, final=1)
 
     # V WOTS chains. Per chain the digit is hinted in the exponent (g^{e_i}), range
-    # checked and dispatched once; arm k walks the remaining CHAIN_STEPS-k steps and
-    # returns the tip cell plus the digit literal. The product of the digits is the
-    # target sum (g^{Σe_i}); the digits, weighted by CHAIN_LENGTH^i inside their own
-    # 64-bit lane (DIGITS_PER_WORD digits a lane, GF(2^64)'s monomial budget, each
-    # lane's leftover top bits ground to zero by the signer), reconstruct D's first
-    # cell as `acc_lo + acc_hi·Y`.
+    # checked and dispatched once into this frame; arm k walks the remaining
+    # CHAIN_STEPS-k steps into `tips` and returns e_i = k weighted by CHAIN_LENGTH^i
+    # inside its own 64-bit lane (DIGITS_PER_WORD digits a lane, GF(2^64)'s monomial
+    # budget, each lane's leftover top bits ground to zero by the signer). The product
+    # of the digits is the target sum (g^{Σe_i}), and the weighted digits reconstruct
+    # D's first cell as `acc_lo + acc_hi·Y`.
     tips = StackBuf(TIP_CELLS)
+    step_md = StackBuf(1)
+    step_md[0] = MD_FINAL + 48  # SET once here, not in every arm
     chain_tweaks = tweak_table * GEN ** WORDS_PER_VALUE  # chain i at cell 1 + CHAIN_STEPS·i
     digit_product = 1
     acc_lo = 0
@@ -2276,9 +2278,8 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
         digit = hint_witness("digits")
         assert log(digit) < CHAIN_LENGTH
         chain_start = hint_witness("chain_starts")
-        tips[i], e = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, k))
+        term = match(log(digit), range(0, CHAIN_LENGTH), lambda k: walk(chain_start, chain_tweaks, pp, step_md[0], tips, i, k))
         digit_product = digit_product * digit
-        term = e * CHAIN_LENGTH ** (i % DIGITS_PER_WORD)  # e_i in its monomial subspace
         if i // DIGITS_PER_WORD == 0:
             acc_lo = acc_lo + term
         else:
@@ -2290,10 +2291,10 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     # WOTS public-key leaf = standard BLAKE2s over prefix + V tips: WOTS_PK_BLOCKS
     # full blocks, carrying the chaining value between instructions.
     leaf = StackBuf(WORDS_PER_BLOCK)
-    blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)], pp], tips[0:2], leaf, counter=64, final=0)
+    blake2s([tweak_table[GEN ** (WORDS_PER_VALUE * WOTS_PK_TWEAK_IDX)], pp], [tips[0], tips[2]], leaf, counter=64, final=0)
     for q in unroll(1, WOTS_PK_BLOCKS):
         next_leaf = StackBuf(WORDS_PER_BLOCK)
-        blake2s(tips[4 * q - 2:4 * q], tips[4 * q:4 * q + 2], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
+        blake2s([tips[8 * q - 4], tips[8 * q - 2]], [tips[8 * q], tips[8 * q + 2]], next_leaf, cv=leaf, counter=64 * (q + 1), final=(q + 1) // WOTS_PK_BLOCKS)
         leaf = next_leaf
 
     # Merkle path from the leaf to the root: the epoch bit orders the two children at
@@ -2309,15 +2310,21 @@ def verify_sig(message, tweak_table, merkle_bits, pk_ptr):
     return
 
 
-def walk(value, chain_tweaks, pp, k: Const):
-    # Walk WOTS chain steps k..CHAIN_STEPS-1: value' = H(tweak|pp, value|0). Step s
-    # reads its tweak at cell s off the chain's subtable, a compile-time offset.
-    word = value
-    for s in unroll(k, CHAIN_STEPS):
-        out = StackBuf(WORDS_PER_BLOCK)
-        blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * s)], pp], [word, 0], out, counter=48, final=1)
-        word = out[0]
-    return word, k
+@inline
+def walk(value, chain_tweaks, pp, md, tips, i: Const, k: Const):
+    # Walk chain i's steps k..CHAIN_STEPS-1, value' = H(tweak|pp, value|0), the tip
+    # landing in tips[2i]. Step s reads its tweak at cell s off the chain's subtable,
+    # a compile-time offset.
+    if const(k == CHAIN_STEPS):
+        tips[2 * i] = value
+    else:
+        word = value
+        for s in unroll(k, CHAIN_STEPS - 1):
+            out = StackBuf(WORDS_PER_BLOCK)
+            blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * s)], pp], [word, 0], out, md=md)
+            word = out[0]
+        blake2s([chain_tweaks[GEN ** (WORDS_PER_VALUE * (CHAIN_STEPS - 1))], pp], [word, 0], tips[2 * i:2 * i + 2], md=md)
+    return const(k * CHAIN_LENGTH ** (i % DIGITS_PER_WORD))
 
 
 # ========================== SPHINCS+ signature verification =========================

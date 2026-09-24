@@ -90,6 +90,43 @@ def sq(x):
     });
 }
 
+/// An `@inline` arm runs in the dispatching frame, so it writes the caller's
+/// `StackBuf` directly and returns its own `Const`. A poke that selects another
+/// arm or changes the written value must be caught.
+#[test]
+fn inline_arms_write_the_callers_buffer() {
+    check_case(&Case {
+        name: "inline_arms_write_the_callers_buffer",
+        src: "\
+def main():
+    v = StackBuf(2)
+    hint_witness(v, \"w\")
+    assert log(v[0]) < 4
+    out = StackBuf(1)
+    e = match(log(v[0]), range(0, 4), lambda i: put(out, v[1], i))
+    p = GEN ** 0
+    p[1] = out[0]
+    p[GEN] = e
+    return
+
+
+@inline
+def put(out, x, n: Const):
+    out[0] = x * GEN ** n
+    return const(n + 1)
+",
+        // Arm 2: out = g^5·g^2, e = 3.
+        valid: Trial::new([g(7), k(3)]).stream("w", vec![vec![g(2), g(5)]]),
+        pokes: vec![
+            wit("w", 0, g(4)),
+            wit("w", 0, g(1)),
+            wit("w", 1, g(6)),
+            pi(0, g(8)),
+            pi(1, k(2)),
+        ],
+    });
+}
+
 /// `if`/`else` communicating through a write-once heap cell: only one arm runs,
 /// so both may write it and the join reads it back. A lowering that lets the
 /// join read anything other than the taken arm's value shows up as a poke that
