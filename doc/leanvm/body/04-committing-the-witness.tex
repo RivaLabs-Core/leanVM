@@ -11,7 +11,11 @@ zero-padded to length $2^{M}$, with $\nstack:=\textstyle\sum_i 2^{\kappa_i}$ the
 \[
   \widetilde P_i(z)\;=\;\widetilde q(z,\mathsf{sel}_i)\qquad(z\in\cube{\kappa_i}).
 \]
-An evaluation claim $\widetilde P_i(\zeta)=c$ is therefore a claim on the stack,
+Conversely, a claim on the stack splits along its pieces: writing $\zeta=(\zeta_{<\kappa},\zeta_{\ge\kappa})$ for the split of $\zeta\in\E^{M}$ after $\kappa$ coordinates,
+\begin{equation}\label{eq:stack-split}
+  \widetilde q(\zeta)\;=\;\sum_i\eq(\mathsf{sel}_i,\zeta_{\ge\kappa_i})\,\widetilde P_i(\zeta_{<\kappa_i}),
+\end{equation}
+the zero padding contributing nothing. An evaluation claim $\widetilde P_i(\zeta)=c$ is therefore a claim on the stack,
 \[
   \widetilde q(\zeta,\mathsf{sel}_i)\;=\;\sum_{w\in\cube{M}}\eq\bigl((\zeta,\mathsf{sel}_i),w\bigr)\,\widetilde q(w)\;=\;c,
 \]

@@ -64,8 +64,13 @@ pub(crate) fn stack_offsets(kappas: &[Option<usize>]) -> (Vec<usize>, usize) {
     let mut offsets = vec![0usize; n];
     let mut off = 0usize;
     for &i in &order {
+        let kappa = kappas[i].unwrap();
+        assert!(
+            kappa < usize::BITS as usize,
+            "kappa {kappa} is a log-size, not a length"
+        );
         offsets[i] = off;
-        off += 1 << kappas[i].unwrap();
+        off += 1 << kappa;
     }
     (offsets, off)
 }
