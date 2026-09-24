@@ -211,3 +211,40 @@ def main():
 ";
     compile(&parse(src).expect("parse")).execute([F192::ZERO; 2]);
 }
+
+/// A compile-time slice of a `StackBuf` is a frame bit buffer too, so one run can
+/// hold several decompositions side by side (the SPHINCS digest keeps three
+/// lanes in one 192-cell run).
+#[test]
+fn a_stack_slice_takes_a_decomposition() {
+    let src = format!(
+        "\
+def main():
+    bits = StackBuf(16)
+    hint_decompose_bits(bits[8:16], {V}, 8)
+    acc = 0
+    for i in unroll(0, 8):
+        b = bits[8 + i]
+        bits[8 + i] = b * b
+        acc += b * (2 ** i)
+    assert acc == {V}
+    p = 1
+    p[1] = acc
+    p[GEN] = 1
+    return
+"
+    );
+    let program = compile(&parse(&src).expect("parse"));
+    let want = [F192::from(F64(V)), F192::from(F64::ONE)];
+    let (proof, _) = prove(&program, want, lean_vm::pcs::TEST_LOG_INV_RATE);
+    verify(&program, &want, &proof).expect("the slice decomposition verifies");
+    // No more DEREFs than the unsliced buffer: only the published cells.
+    let unsliced = src
+        .replace("StackBuf(16)", "StackBuf(8)")
+        .replace("bits[8:16]", "bits")
+        .replace("8 + i", "i");
+    assert_eq!(
+        crate::common::mix(&src, want)[deref_index()],
+        crate::common::mix(&unsliced, want)[deref_index()]
+    );
+}

@@ -293,8 +293,10 @@ impl FnLower<'_> {
         let sfp = self.self_fp();
 
         let nfp = self.fresh();
-        self.pending.push(Hint::AllocFrameMax {
+        // Sized for the arm the scrutinee selects, known by the time this runs.
+        self.pending.push(Hint::AllocFrameIndexed {
             ptr: nfp,
+            index: xo,
             callees: callees.to_vec(),
         });
         for (i, &ao) in arg_offs.iter().enumerate() {

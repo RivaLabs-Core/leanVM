@@ -327,7 +327,7 @@ A branch body with statements in it goes in a function, and the arm calls it: th
 
 **Soundness**: nothing in the dispatch bounds `x`, so a scrutinee outside `[0, n)` jumps to an arbitrary pc. A hinted value must be range-checked first (`assert log(x) < n`, 3 cycles), as in leanVM.
 
-**Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
+**Dispatched-call fusion.** When *every* arm is a call to the same function with identical runtime arguments (the common `lambda k: f(a, b, k)`, where only a `Const` argument varies), the compiler builds the callee frame **once** and the dispatch jumps straight into the selected specialization's entry, which returns past the join. That shared frame is allocated at run time for the arm the scrutinee selects (frame addresses are prover-chosen, so only the memory footprint depends on it): a short arm does not pay for the longest one's cells. Each taken arm is then just the trampoline's two instructions (`SET entry; JUMP`) instead of a full call: no per-arm frame setup, call jump, or return jump. (The `walk`-per-digit dispatch in the XMSS verifier is the motivating case.)
 
 Statements without effect are rejected.
 
@@ -477,7 +477,7 @@ keccak([pp, 0, adrs_a, adrs_b], d, words=tips)         # 64 + 32·len(tips) byte
 
 `keccak(head, out, words=run)` is Keccak-256, the EVM's `keccak256` (padding byte `0x01`, not SHA3's `0x06`), of the byte string `head ‖ words`, a whole number of cells. It is here for the SPHINCS+ profile, whose on-chain verifier fixes the hash. `head` is a list of at least one cell: a literal `0` is known to be zero and any other integer literal is a constant (at most 128 bits). `words=` (optional) is a stack or heap run whose every cell enters as a 32-byte word, the cell then 16 zero bytes: an `n`-byte value top-aligned in a `bytes32`. `out` is as for `sha3`, and a pre-written `out` asserts the digest.
 
-Up to 128 bytes the statement is exactly one `sha3` block with Keccak's padding byte, sharing a six-cell `[0x01, 0, 0, 0, 0, 0]` run per frame. Past that the 136-byte rate does not divide into cells. Block `j` starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message data in every block but the last:
+Up to 128 bytes the statement is exactly one `sha3` block with Keccak's padding byte, sharing a six-cell `[0x01, 0, 0, 0, 0, 0]` run per frame. With more than four head cells, the four tail cells are evaluated straight into the fresh tail run, so a computed cell such as `node + m` costs its own instruction and no copy. Past that the 136-byte rate does not divide into cells. Block `j` starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message data in every block but the last:
 
 - a non-final block XORs the padding's last bit into lane 16 itself, cancelling the one the instruction always sets there, and passes a fresh five-cell `cap` run (one `XOR`, four copies);
 - a cell a mid-cell block splits is taken apart into its 64-bit lanes: a hinted low lane `lo`, the high lane `(x + lo)·y⁻¹`, both proved in `K` by one `assert_in_k` (three instructions a cell, once per cell), and each block cell repacked as `hi + y·lo'` (one or two instructions);
@@ -518,7 +518,7 @@ Three builtins have the prover compute the values at witness generation instead 
 - `hint_decompose_bits_exponent(bits, x, nbits)`: writes the `nbits` bits of the exponent `n` where `x = GEN ** n` into `bits` (a bounded dlog at witness generation).
 - `g = hint_log2_ceil(bits, nbits, floor)`: returns `GEN ** log2_ceil(v)` for the value `v` held bitwise in the `nbits`-bit buffer `bits`, floored at `floor`.
 
-`bits` is a `HeapBuf` or a `StackBuf` (of at least `nbits` cells). Prefer the `StackBuf`: a frame cell is addressed directly, so `bits[i]` at a compile-time index is free where a heap read is a `DEREF`, and the booleanity pin `bits[i] = b * b` is then one `MUL` rather than a `MUL` and a `DEREF`. Use `addr` below where the run must also be indexed at runtime or reached from elsewhere.
+`bits` is a `HeapBuf`, a `StackBuf` (of at least `nbits` cells), or a compile-time slice `sb[lo:hi]` of one, so a single frame run can hold several decompositions. Prefer the `StackBuf`: a frame cell is addressed directly, so `bits[i]` at a compile-time index is free where a heap read is a `DEREF`, and the booleanity pin `bits[i] = b * b` is then one `MUL` rather than a `MUL` and a `DEREF`. Use `addr` below where the run must also be indexed at runtime or reached from elsewhere.
 
 ## Cost cheat sheet
 

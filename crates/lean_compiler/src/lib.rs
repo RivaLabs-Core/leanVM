@@ -174,9 +174,10 @@ fn compile_inner(ast: &Ast, with_filler: bool) -> Program {
                             ptr,
                             size: frame_size[&callee],
                         },
-                        Hint::AllocFrameMax { ptr, callees } => RHint::Alloc {
+                        Hint::AllocFrameIndexed { ptr, index, callees } => RHint::AllocIndexed {
                             ptr,
-                            size: callees.iter().map(|c| frame_size[c]).max().unwrap(),
+                            index,
+                            sizes: callees.iter().map(|c| frame_size[c]).collect(),
                         },
                         Hint::AllocBuffer { ptr, size } => RHint::Alloc { ptr, size },
                         Hint::AllocBufferDyn { ptr, size } => RHint::AllocDyn { ptr, size },

@@ -86,7 +86,7 @@ impl FnLower<'_> {
             )),
         });
         let out = self.sha3_out(&args[2]);
-        self.emit_sha3_block(block, tail_run, state, final_len, out.state, Pad::Sha3);
+        self.emit_sha3_block(block, tail_run, state, final_len, out.state, Pad::Sha3, false);
         self.sha3_finish(out);
     }
 
@@ -122,7 +122,7 @@ impl FnLower<'_> {
             let (cells, base) = chunk(self, 8 * c, 8);
             let next = self.alloc_stack(STATE_CELLS);
             let block: [SpongeCell; 8] = cells.try_into().unwrap();
-            self.emit_sha3_block(block, base.map(|b| b + 4), state, None, next, Pad::Sha3);
+            self.emit_sha3_block(block, base.map(|b| b + 4), state, None, next, Pad::Sha3, false);
             state = Some(next);
         }
         let last = n - 8 * nonfinal;
@@ -130,7 +130,7 @@ impl FnLower<'_> {
         let mut block = [SpongeCell::Zero; 8];
         block[..last as usize].copy_from_slice(&cells);
         let tail_run = if last == 8 { base.map(|b| b + 4) } else { None };
-        self.emit_sha3_block(block, tail_run, state, Some(16 * last), out.state, Pad::Sha3);
+        self.emit_sha3_block(block, tail_run, state, Some(16 * last), out.state, Pad::Sha3, false);
         self.sha3_finish(out);
     }
 
@@ -162,6 +162,34 @@ impl FnLower<'_> {
         let Expr::ListLit(head) = &args[0] else {
             self.fail("keccak's head is a list of at least one cell, `[a, 0, b, ...]`")
         };
+        // One block with a tail: the tail run is fresh anyway, so its cells are
+        // evaluated straight into it (a computed cell costs no copy), the padding
+        // cell included, and the block goes out with its tail in place.
+        if !kwargs.contains_key("words") && head.len() > 4 && head.len() <= 8 {
+            let len = 16 * head.len() as u32;
+            let mut block = [SpongeCell::Zero; 8];
+            for (slot, w) in block[..4].iter_mut().zip(head) {
+                *slot = match self.try_const_int(w) {
+                    Some(0) => SpongeCell::Zero,
+                    Some(v) => SpongeCell::Const(F192::new(v as u64, (v >> 64) as u64, 0)),
+                    None => SpongeCell::Cell(self.expr(w)),
+                };
+            }
+            let tail = self.alloc_stack(4);
+            for j in 0..4u32 {
+                let pos = 4 + j as usize;
+                match head.get(pos) {
+                    Some(w) => self.expr_into(w, tail + j),
+                    None if pos == head.len() => self.set_const(tail + j, Pad::Keccak.value()),
+                    None => self.set_const(tail + j, F192::ZERO),
+                }
+                block[pos] = SpongeCell::Cell(tail + j);
+            }
+            let out = self.sha3_out(&args[1]);
+            self.emit_sha3_block(block, Some(tail), None, Some(len), out.state, Pad::Keccak, true);
+            self.sha3_finish(out);
+            return;
+        }
         let mut msg: Vec<SpongeCell> = head
             .iter()
             .map(|w| match self.try_const_int(w) {
@@ -189,7 +217,7 @@ impl FnLower<'_> {
         if len <= 128 {
             let mut block = [SpongeCell::Zero; 8];
             block[..msg.len()].copy_from_slice(&msg);
-            self.emit_sha3_block(block, None, None, Some(len), out.state, Pad::Keccak);
+            self.emit_sha3_block(block, None, None, Some(len), out.state, Pad::Keccak, false);
         } else {
             self.emit_keccak_blocks(&msg, out.state);
         }
@@ -445,13 +473,16 @@ impl FnLower<'_> {
         final_len: Option<u32>,
         c: Off,
         pad_kind: Pad,
+        pad_placed: bool,
     ) {
         // Padding in lane 16, the lone cell: only a final block of 128 bytes.
+        // Below that the padding byte goes into the message, unless the caller
+        // (`pad_placed`) already wrote it there.
         let mut lone_pad = false;
         if let Some(len) = final_len {
             if len == 128 {
                 lone_pad = true;
-            } else {
+            } else if !pad_placed {
                 let (cell, byte) = ((len / 16) as usize, len % 16);
                 let pad = u64::from(pad_kind.byte()) << (8 * (byte % 8));
                 let v = if byte < 8 {
@@ -709,7 +740,15 @@ impl FnLower<'_> {
     /// [`Self::cell_run`]: these builtins take a bare `HeapBuf` and carry the
     /// length in `nbits`, where a cell run would demand a slice.
     pub(super) fn bits_dest(&mut self, e: &Expr, nbits: u32, what: &str) -> BitsDest {
-        match self.stack_of(e) {
+        // A `StackBuf`, or a compile-time slice of one: a run of frame cells.
+        let stack = match e {
+            Expr::Slice(arr, ..) if self.stack_of(arr).is_some() => match self.cell_run(e) {
+                CellRun::Stack { base, len } => Some((base, len)),
+                CellRun::Heap { .. } => unreachable!("a StackBuf slice is a stack run"),
+            },
+            _ => self.stack_of(e),
+        };
+        match stack {
             Some((base, len)) => {
                 if len < nbits {
                     self.fail(format!(

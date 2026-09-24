@@ -120,8 +120,10 @@ const _: () = assert!(sphincs::K * sphincs::A + sphincs::H <= 3 * 64);
 // The WOTS digits are exactly the digest's low 128 bits, the cell the guest
 // rebuilds from them.
 const _: () = assert!(sphincs::LEN1 * sphincs::LOG_W == 128 && sphincs::W == 16);
-// The guest places a FORS tree index in two bytes of word3, and the checksum
-// takes exactly `LEN2` base-16 digits.
+// The guest places a FORS tree index in two bytes of word3, shifting it down a
+// level at a time with its top bit alone in byte 14 (so `a = 9`), and the
+// checksum takes exactly `LEN2` base-16 digits.
+const _: () = assert!(sphincs::A == 9);
 const _: () = assert!(((sphincs::K - 1) << sphincs::A) < 1 << 16);
 const _: () = assert!(sphincs::MAX_CSUM < 1 << (4 * sphincs::LEN2));
 
@@ -2919,6 +2921,13 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
     ps("SP_LEN1", sphincs::LEN1.to_string());
     ps("SP_LEN2", sphincs::LEN2.to_string());
     ps("SP_MAX_CSUM", sphincs::MAX_CSUM.to_string());
+    let bit_index: Vec<String> = (0..3 * 64)
+        .map(|b| {
+            let byte = 31 - b / 8;
+            (64 * (byte / 8 - 1) + 8 * (byte % 8) + b % 8).to_string()
+        })
+        .collect();
+    ps("SP_BIT_INDEX", format!("[{}]", bit_index.join(", ")));
     rep
 }
 

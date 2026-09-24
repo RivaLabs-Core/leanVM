@@ -197,6 +197,12 @@ pub enum RHint {
     /// `Alloc` with the cell count read at runtime as the g-power exponent of
     /// `m[fp+size]`.
     AllocDyn { ptr: Off, size: Off },
+    /// `Alloc` of `sizes[j]` cells where `m[fp+index] = g^j`: a fused dispatch's
+    /// callee frame, sized for the arm that will run rather than the largest one
+    /// (the largest when the scrutinee is not a small g-power, which a failing
+    /// range check will reject anyway). Frame addresses are prover-chosen, so this
+    /// changes the memory footprint and nothing a verifier checks.
+    AllocIndexed { ptr: Off, index: Off, sizes: Vec<u32> },
     /// Pop stream `name`'s next entry (`len` values) into frame cells `fp+base+k`.
     WitnessStack { name: String, base: Off, len: u32 },
     /// Pop stream `name`'s next entry (`len` values) into heap cells `m[fp+ptr]·g^{lo+k}`.

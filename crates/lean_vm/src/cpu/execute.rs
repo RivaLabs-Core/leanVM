@@ -425,6 +425,7 @@ impl Program {
                         RHint::AllocFrames { .. } => "AllocFrames",
                         RHint::Alloc { .. } => "Alloc",
                         RHint::AllocDyn { .. } => "AllocDyn",
+                        RHint::AllocIndexed { .. } => "AllocIndexed",
                         RHint::WitnessStack { .. } => "WitnessStack",
                         RHint::WitnessHeap { .. } => "WitnessHeap",
                         RHint::Log2Ceil { .. } => "Log2Ceil",
@@ -451,8 +452,18 @@ impl Program {
                         // A fresh region: write its base `g^{next_free}` into the
                         // pointer cell (once) and reserve `size` cells. `AllocDyn`
                         // reads the size from a cell at runtime.
-                        RHint::Alloc { .. } | RHint::AllocDyn { .. } | RHint::AllocFrames { .. } => {
+                        RHint::Alloc { .. }
+                        | RHint::AllocDyn { .. }
+                        | RHint::AllocFrames { .. }
+                        | RHint::AllocIndexed { .. } => {
                             let (ptr, size) = match *h {
+                                RHint::AllocIndexed { ptr, index, ref sizes } => {
+                                    let largest = *sizes.iter().max().expect("a dispatch has arms");
+                                    g.grow_to(sizes.len());
+                                    let arm = as_addr(m.get(fp + index))
+                                        .and_then(|x| (0..sizes.len()).find(|&j| g.pow(j) == x));
+                                    (ptr, arm.map_or(largest, |j| sizes[j]))
+                                }
                                 RHint::Alloc { ptr, size } => (ptr, size),
                                 RHint::AllocFrames {
                                     ptr,
