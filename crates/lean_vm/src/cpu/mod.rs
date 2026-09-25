@@ -173,7 +173,7 @@ fn read_public(vs: &mut VerifierState, prog: &Program, public_input: &[F192; 2])
     {
         return Err(CpuError::PublicInput);
     }
-    let l = layout(&prog.prog, log_mem, taus, *public_input);
+    let l = layout::layout_of(prog.bytecode_cols(), log_mem, taus, *public_input);
     // The caps bound each announced log on its own; what the PCS is configured for
     // is the stacked size they imply, which they do not bound.
     if !(pcs::MIN_MU..=pcs::MAX_MU).contains(&l.shape.mu) {
@@ -228,6 +228,11 @@ pub struct Program {
     /// announced table heights, so neither the verifier nor the guest needs a new
     /// parameter to certify. Prover-side only.
     pub min_log_committed: usize,
+    /// The public bytecode columns, built at the first proof or verification and
+    /// shared by every later one: at production sizes they are tens of megabytes
+    /// to allocate and fill, per layout. Trusted to match `prog` as
+    /// `bytecode_hash` is.
+    bytecode_cols: std::sync::OnceLock<[std::sync::Arc<Vec<F64>>; 12]>,
 }
 
 /// The bytecode digest reinterprets the stacked table as bytes, which is its
@@ -257,7 +262,15 @@ impl Program {
             fn_ranges: Vec::new(),
             src_lines: Vec::new(),
             min_log_committed: 0,
+            bytecode_cols: std::sync::OnceLock::new(),
         }
+    }
+
+    /// See the `bytecode_cols` field: the columns every layout of this program
+    /// reads ([`layout::bytecode_columns`]).
+    pub(crate) fn bytecode_cols(&self) -> &[std::sync::Arc<Vec<F64>>; 12] {
+        self.bytecode_cols
+            .get_or_init(|| layout::bytecode_columns(&self.prog).map(std::sync::Arc::new))
     }
 
     /// Where `pc` came from: `"verify_sub (line 2204)"` when the compiler left a
@@ -1045,10 +1058,10 @@ mod tests {
     }
 
     /// A hand-built straight-line program with one SHA3 row: two message cells
-    /// (2, 3) read twice as `m`, a four-cell `tail` (4..8), a zero five-cell `cap`
-    /// (8..13), and the output run (13..26), padded with filler SETs so the last
-    /// executed instruction lands one before the sentinel.
-    fn sha3_program(a: F192, b: F192, tail: [F192; 4]) -> Program {
+    /// (2, 3) read twice as the first four `m`, four more cells (4..8) as the rest,
+    /// a zero five-cell `cap` (8..13), and the output run (13..26), padded with
+    /// filler SETs so the last executed instruction lands one before the sentinel.
+    fn sha3_program(a: F192, b: F192, tail: [F192; 4], digest: bool) -> Program {
         let mut prog = vec![Op::Set { o: 2, k: a }, Op::Set { o: 3, k: b }];
         for (i, &t) in tail.iter().enumerate() {
             prog.push(Op::Set { o: 4 + i as u32, k: t });
@@ -1060,10 +1073,10 @@ mod tests {
             });
         }
         prog.push(Op::Sha3 {
-            m: [2, 3, 2, 3],
-            tail: 4,
+            m: [2, 3, 2, 3, 4, 5, 6, 7],
             cap: 8,
             out: 13,
+            digest,
         });
         // 16 slots: 12 executed, then 3 filler SETs step the pc to 15, whose slot is
         // the never-executed sentinel.
@@ -1078,10 +1091,25 @@ mod tests {
         Program::from_bytecode(prog, 32)
     }
 
+    /// A digest step writes the first two output cells, the same digest a full
+    /// step writes there, and never touches the other eleven: the image leaves
+    /// them at zero where the full step's state is nonzero.
+    #[test]
+    fn sha3_digest_step_writes_the_digest_alone() {
+        let a = F192::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0);
+        let pad = F192::new(primitives::keccak::PAD_FIRST as u64, 0, 0);
+        let tail = [pad, F192::ZERO, F192::ZERO, F192::ZERO];
+        let full = sha3_program(a, a, tail, false).execute([w(7), w(11)]);
+        let digest = sha3_program(a, a, tail, true).execute([w(7), w(11)]);
+        assert_eq!(&digest.mem[13..15], &full.mem[13..15]);
+        assert!(full.mem[15..26].iter().all(|c| *c != F192::ZERO));
+        assert!(digest.mem[15..26].iter().all(|c| *c == F192::ZERO));
+    }
+
     /// The opcode's execution semantics: the thirteen output cells hold the step
     /// of the thirteen input cells, the two `m` pairs aliasing one another. With a
-    /// zero `cap` and the padding in `tail`, the first two output cells are the
-    /// hash of the 64 message bytes. Proving a program is exercised from
+    /// zero `cap` and the padding in the last four `m`, the first two output cells
+    /// are the hash of the 64 message bytes. Proving a program is exercised from
     /// `lean_compiler`'s tests, which can compile one whose tables come out powers
     /// of two.
     #[test]
@@ -1089,7 +1117,7 @@ mod tests {
         let a = F192::new(0x0123_4567_89ab_cdef, 0xfedc_ba98_7654_3210, 0);
         let b = F192::new(0xdead_beef_cafe_babe, 0x0bad_f00d_0bad_f00d, 0);
         let pad = F192::new(primitives::keccak::PAD_FIRST as u64, 0, 0);
-        let program = sha3_program(a, b, [pad, F192::ZERO, F192::ZERO, F192::ZERO]);
+        let program = sha3_program(a, b, [pad, F192::ZERO, F192::ZERO, F192::ZERO], false);
         let exec = program.execute([w(7), w(11)]);
 
         let mut input = [F192::ZERO; crate::hash_flock_keccak::STATE_CELLS];
@@ -1117,14 +1145,14 @@ mod tests {
     #[test]
     #[should_panic(expected = "SHA3 input cell 0 is not a canonical 128-bit embedding")]
     fn sha3_requires_zero_third_limb() {
-        let _ = sha3_program(F192::new(0, 0, 1), F192::ZERO, [F192::ZERO; 4]).execute([w(7), w(11)]);
+        let _ = sha3_program(F192::new(0, 0, 1), F192::ZERO, [F192::ZERO; 4], false).execute([w(7), w(11)]);
     }
 
     /// The lone lane-16 cell carries `(lo, 0, 0)`, read with two literal zeros.
     #[test]
     #[should_panic(expected = "SHA3 input cell 8 is not a canonical 64-bit embedding")]
     fn sha3_requires_zero_lone_high_lane() {
-        let mut program = sha3_program(F192::ZERO, F192::ZERO, [F192::ZERO; 4]);
+        let mut program = sha3_program(F192::ZERO, F192::ZERO, [F192::ZERO; 4], false);
         program.prog[6] = Op::Set {
             o: 8,
             k: F192::new(0, 1, 0),

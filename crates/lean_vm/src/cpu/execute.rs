@@ -886,7 +886,7 @@ impl Program {
                 }
                 Op::Sha3 { .. } => {
                     use crate::hash_flock_keccak::{CELL_LANES, ROW_CELLS, STATE_CELLS};
-                    let cells = crate::tables::sha3_cells(&self.prog, pc, fp);
+                    let (cells, digest) = crate::tables::sha3_cells(&self.prog, pc, fp);
                     let input: [F192; STATE_CELLS] = std::array::from_fn(|c| m.get(cells[c]));
                     // A cell carries two lanes, the lone lane-16 cell one: the table
                     // reads them with literal zeros above, so anything else could
@@ -908,12 +908,26 @@ impl Program {
                     // by flock, §hash_flock_keccak); the interpreter still computes it
                     // so the output cells are consistent for any later read.
                     let output = crate::hash_flock_keccak::step_cells(&input);
-                    for (c, &v) in output.iter().enumerate() {
+                    // A digest step writes the digest alone and never touches the
+                    // rest of its output run.
+                    let written = if digest {
+                        crate::tables::SHA3_DIGEST_CELLS
+                    } else {
+                        STATE_CELLS
+                    };
+                    for (c, &v) in output.iter().enumerate().take(written) {
                         m.put(cells[STATE_CELLS + c], v);
                     }
                     // In flush order, so a cell two operands alias still pairs each
-                    // read with its own count.
-                    let r: [F64; ROW_CELLS] = std::array::from_fn(|c| m.bump_access_count(cells[c]));
+                    // read with its own count. A skipped cell's pair cancels whatever
+                    // its count, but the count channel still wants it nonzero.
+                    let r: [F64; ROW_CELLS] = std::array::from_fn(|c| {
+                        if c < STATE_CELLS + written {
+                            m.bump_access_count(cells[c])
+                        } else {
+                            F64::ONE
+                        }
+                    });
                     sha3.push(Krow {
                         pc,
                         fp,

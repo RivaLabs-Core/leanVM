@@ -60,9 +60,10 @@ pub(crate) struct Brow {
 }
 
 /// `SHA3` row: the per-cell memory access counts, in the order the table flushes
-/// them (`tables::sha3_cells`): the four `m` cells, the four `tail` cells, the five
-/// `cap` cells, then the thirteen output cells. The fifty flock lanes are those
-/// cells' lanes, read back from the final memory image.
+/// them (`tables::sha3_cells`): the eight `m` cells, the five `cap` cells, then the
+/// thirteen output cells (zero past the digest for a `digest` row, whose other
+/// output cells go untouched). The fifty flock lanes are the input cells' lanes,
+/// read back from the final memory image, and their step.
 pub(crate) struct Krow {
     pub(crate) pc: u32,
     pub(crate) fp: u32,

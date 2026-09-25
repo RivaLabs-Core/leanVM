@@ -468,7 +468,7 @@ The compression, including its chaining value and metadata, is proven by the flo
 h = StackBuf(13)
 sha3(a, b, h)                       # the hash of the 64 bytes (a, b); h[0:2] is the digest
 d = StackBuf(2)
-sha3(a, b, d)                       # just the digest, copied out of a fresh state
+sha3(a, b, d)                       # just the digest
 sha3(t[0:2], t[x:x + 2], t[4:6])    # slices of one large StackBuf
 sha3(h[0:2], hb[0:2], hb[2:4])      # HeapBuf slices, input and output
 sha3([tweak, pp], [word, 0], out, len=48)  # a 48-byte message, the padding in b's second cell
@@ -484,7 +484,7 @@ sha3_cells(run, out)                # the hash of the whole run, however many bl
 
 The hash is SHA3-256 in the **cell encoding** (`primitives::keccak::hash`): plain SHA3-256 of messages up to 128 bytes, and past that, SHA3-256 of the message with the fixed eight bytes `00 00 00 00 00 00 00 80` after every 128. That makes one block eight whole 16-byte cells where SHA3's 136-byte rate would split a cell, and those gap bytes land in lane 16, the one lane the instruction supplies itself.
 
-The three positional arguments form a **statement**: one `SHA3` instruction absorbs the block `a ‖ b ‖ tail` (two, two and four cells; `tail` omitted is zero) and writes the 13-cell sponge state into `out`, whose first two cells are the digest. With no keywords it computes the hash of exactly `a ‖ b`, 64 bytes (128 with `tail`). A 2-cell `out` receives just the digest, at two copies.
+The three positional arguments form a **statement**: one `SHA3` instruction absorbs the block `a ‖ b ‖ tail` (two, two and four cells; `tail` omitted is zero) and writes the 13-cell sponge state into `out`, whose first two cells are the digest. With no keywords it computes the hash of exactly `a ‖ b`, 64 bytes (128 with `tail`). A 2-cell `out` receives just the digest.
 
 The optional keywords, all compile-time except `state`:
 
@@ -494,13 +494,13 @@ The optional keywords, all compile-time except `state`:
 
 With neither `len` nor `final`, a block is the final one and its message fills the operands given.
 
-The instruction reads thirteen canonical cells: its four `m` cells independently addressed, then two consecutive runs, the four `tail` cells and the five `cap` cells (lane 16 alone, then the capacity). A fresh block's constant `tail` and `cap` windows all come out of one six-cell run `[pad, 0, 0, 0, 0, 0]`, which each runtime path of a function emits once and reuses (six `SET`s, reverted at a join like every lazily-set constant).
+The instruction reads thirteen canonical cells: the block's eight message cells `a ‖ b ‖ tail`, each addressed independently, then one consecutive run, the five `cap` cells (lane 16 alone, then the capacity). A fresh block's zero and padding message cells and its constant `cap` window all come out of one six-cell run `[pad, 0, 0, 0, 0, 0]`, which each runtime path of a function emits once and reuses (six `SET`s, reverted at a join like every lazily-set constant).
 
 Operands:
 
 - an **input operand written as a list**, `sha3([a, b], [c, d], out)`, names its words directly and allocates nothing: the opcode addresses `m` independently, so an operand whose words live in different places never has to be gathered into a consecutive run;
 - **stack operands** are read in place, at zero copies; a self-hash `sha3(h, h, out)` names one 2-cell pair as both inputs;
-- `tail` is one opcode offset and so must be consecutive: a list or a heap slice there is assembled into a fresh run, one instruction a cell;
+- `tail` takes the same forms, its four cells addressed independently like the others;
 - **heap slices** are bridged through the stack: +1 `DEREF` per heap cell, a heap `state` and a 13-cell heap `out` included, which is what lets a loop frame carry a hash's state to the next through a heap chain.
 
 `sha3_cells(run, out)` hashes a whole run of compile-time length, eight cells a block, the last block padded where the run ends.
@@ -520,7 +520,7 @@ keccak([pp, 0, adrs_a, adrs_b], d, words=tips)         # 64 + 32·len(tips) byte
 
 `keccak(head, out, words=run)` is Keccak-256, the EVM's `keccak256` (padding byte `0x01`, not SHA3's `0x06`), of the byte string `head ‖ words`, a whole number of cells. It is here for the SPHINCS+ profile, whose on-chain verifier fixes the hash. `head` is a list of at least one cell: a literal `0` is known to be zero and any other integer literal is a constant (at most 128 bits). `words=` (optional) is a stack or heap run whose every cell enters as a 32-byte word, the cell then 16 zero bytes: an `n`-byte value top-aligned in a `bytes32`. `out` is as for `sha3`, and a pre-written `out` asserts the digest.
 
-Up to 128 bytes the statement is exactly one `sha3` block with Keccak's padding byte, sharing a six-cell `[0x01, 0, 0, 0, 0, 0]` run per frame. With more than four head cells, the four tail cells are evaluated straight into the fresh tail run, so a computed cell such as `node + m` costs its own instruction and no copy. Past that the 136-byte rate does not divide into cells. Block `j` starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message data in every block but the last:
+Up to 128 bytes the statement is exactly one `sha3` block with Keccak's padding byte, sharing a six-cell `[0x01, 0, 0, 0, 0, 0]` run per frame: every head cell is read where it lies, so a computed cell such as `node + m` costs its own instruction and no copy. Past that the 136-byte rate does not divide into cells. Block `j` starts at byte `136 j`, mid-cell when `j` is odd, and lane 16 is message data in every block but the last:
 
 - a non-final block XORs the padding's last bit into lane 16 itself, cancelling the one the instruction always sets there, and passes a fresh five-cell `cap` run (one `XOR`, four copies);
 - a cell a mid-cell block splits is taken apart into its 64-bit lanes: a hinted low lane `lo`, the high lane `(x + lo)·y⁻¹`, both proved in `K` by one `assert_in_k` (three instructions a cell, once per cell), and each block cell repacked as `hi + y·lo'` (one or two instructions);
@@ -581,7 +581,7 @@ Three builtins have the prover compute the values at witness generation instead 
 | function call | ≈ `n_args + n_returns + 4` (0 when the callee is `@inline`) |
 | `mul_range` iteration | body + ≈ 1 `MUL` + 1 `XOR` + call overhead |
 | `unroll` iteration | body only (compile-time replication) |
-| `sha3(a, b, out, ...)` | 1; plus six `SET`s once per frame for the padding run (a fresh block), one `XOR` per nonzero message cell of a later block, one for a padding byte in a program cell, +1 `DEREF` per heap cell, +2 copies into a 2-cell `out`, +1 `MUL` per runtime slice start |
+| `sha3(a, b, out, ...)` | 1; plus six `SET`s once per frame for the padding run (a fresh block), one `XOR` per nonzero message cell of a later block, one for a padding byte in a program cell, +1 `DEREF` per heap cell, +1 `MUL` per runtime slice start |
 | `keccak(head, out, words=run)` | up to 128 bytes: as one `sha3` block. Past that: 1 per 136-byte block; per block about 4 to 8 `XOR`s absorbing the message, 5 for lane 16 and the capacity of a non-final block; about 4 per nonzero cell split by a mid-cell block |
 | `blake2s(a, b, out, ...)` | 1; plus one `SET` once per frame per distinct metadata value (nothing with `md=`, which costs whatever building the word costs), and two more when `cv` is omitted; message/CV words are read in place, +1 `DEREF` per heap input or CV word, +1 `MUL` per runtime slice start |
 | `hint_witness(dest, "name")` | 0 (+1 `MUL` for a runtime slice start) |

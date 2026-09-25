@@ -78,14 +78,14 @@ pub(crate) enum LOp {
         c: Off,
         md: Off,
     },
-    /// `SHA3`: one sponge step. The four `m` cells are addressed independently,
-    /// `tail` (4 cells), `cap` (5 cells) and the output `c` (13 cells) are
-    /// consecutive runs.
+    /// `SHA3`: one sponge step. The eight `m` cells are addressed independently,
+    /// `cap` (5 cells) and the output `c` (13 cells, or with `digest` the 2-cell
+    /// digest alone) are consecutive runs.
     Sha3 {
-        m: [Off; 4],
-        tail: Off,
+        m: [Off; 8],
         cap: Off,
         c: Off,
+        digest: bool,
     },
 }
 

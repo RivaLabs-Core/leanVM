@@ -162,9 +162,10 @@ struct Scope {
     blake2s_iv: Option<Off>,
     /// Per padding ([`builtins::Pad`]: SHA3's `0x06`, Keccak's `0x01`), six
     /// consecutive frame cells holding `[pad, 0, 0, 0, 0, 0]`, `pad` the
-    /// padding's first byte at the start of a cell: every constant `tail` and
-    /// `cap` a fresh `sha3` or `keccak` block needs is a window of it. Emitted
-    /// lazily at the first dominating fresh hash in this control-flow scope.
+    /// padding's first byte at the start of a cell: every zero or padding message
+    /// cell and every constant `cap` a fresh `sha3` or `keccak` block needs is one
+    /// of its cells or a window of it. Emitted lazily at the first dominating
+    /// fresh hash in this control-flow scope.
     sha3_pad: [Option<Off>; 2],
 }
 
@@ -509,10 +510,10 @@ impl FnLower<'_> {
                         // otherwise only picks which state the dummy permutes, which
                         // nothing reads (`lean_vm::cpu::filler`).
                         FillerOp::Sha3 => LOp::Sha3 {
-                            m: [fr::SHA3_IN, fr::SHA3_IN + 1, fr::SHA3_IN + 2, fr::SHA3_IN + 3],
-                            tail: fr::SHA3_IN,
+                            m: std::array::from_fn(|i| fr::SHA3_IN + i as u32 % 4),
                             cap: fr::SHA3_IN,
                             c: fr::SHA3_OUT,
+                            digest: false,
                         },
                     });
                 }

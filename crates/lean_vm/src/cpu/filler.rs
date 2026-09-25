@@ -71,8 +71,8 @@ pub struct Block {
 /// so spans `SCRATCH..SCRATCH+2`; and the digest, placed clear of it so that a digest
 /// never becomes the next traversal's chaining value. `DIGEST+2..DIGEST+6` are the
 /// message cells, never written, so every traversal compresses the same input. After
-/// them, the `SHA3` dummy's input, five cells never written that serve as its `m`,
-/// `tail` and `cap` alike, so every traversal permutes the same state, and its output.
+/// them, the `SHA3` dummy's input, five cells never written that serve as its `m`
+/// and `cap` alike, so every traversal permutes the same state, and its output.
 pub mod frame {
     /// Where the closing jump goes, and in which frame.
     pub const DEST: u32 = 0;

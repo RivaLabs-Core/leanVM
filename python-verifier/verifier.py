@@ -719,6 +719,12 @@ class Flushes:
     def memory_cols(self, address: Form, count: int, *columns: int) -> None:
         self.memory(address, count, [_col(column) for column in columns] + [_const(ZERO)] * (3 - len(columns)))
 
+    def memory_unless(self, skip: int, address: Form, count: int, values: Sequence[Form]) -> None:
+        # No access when column `skip` is 1: the push then carries the count unadvanced, count*(g + skip*(g+1)),
+        # so it equals the pull and the pair cancels. `skip` rides the bytecode, so the program decides.
+        advanced = _col(count, 1) + _prod(skip, count, 1) + _prod(skip, count)
+        self.pair((_const(SEP_MEM), address, advanced, *values), (_const(SEP_MEM), address, _col(count), *values))
+
 
 # The instruction tables ------------------------------------------------------
 
@@ -832,28 +838,33 @@ def _flushes_blake2s() -> Flushes:
 # The lanes each of a sponge state's thirteen cells holds: lanes 0..16 two to a cell,
 # then lane 16 alone (its high lane a literal zero), then the capacity lanes 17..25.
 SHA3_CELL_LANES = tuple((2 * c, 2 * c + 1) if c < 8 else (16,) if c == 8 else (2 * c - 1, 2 * c) for c in range(13))
+# Output cells every SHA3 step writes: the digest. A digest step writes these alone.
+SHA3_DIGEST_CELLS = 2
 
 
 def _flushes_sha3() -> Flushes:
     pc, fp, cnt_bc = _cols(SHA3_COLUMNS, "pc", "fp", "cnt_bc")
-    o_m = _cols(SHA3_COLUMNS, "o_m0", "o_m1", "o_m2", "o_m3")
-    o_tail, o_cap, o_out = _cols(SHA3_COLUMNS, "o_tail", "o_cap", "o_out")
+    o_m = _cols(SHA3_COLUMNS, *(f"o_m{cell}" for cell in range(8)))
+    o_cap, o_out, digest = _cols(SHA3_COLUMNS, "o_cap", "o_out", "digest")
     flushes = Flushes()
     flushes.state_step(pc, fp)
-    flushes.bytecode(pc, cnt_bc, OP_SHA3, tuple(_col(i) for i in (*o_m, o_tail, o_cap, o_out)))
+    flushes.bytecode(pc, cnt_bc, OP_SHA3, tuple(_col(i) for i in (*o_m, o_cap, o_out, digest)))
 
-    # The thirteen cells read (four addressed ones, then the consecutive tail and cap runs), then
-    # the thirteen written. Each carries its q_flock lanes and zeros above them.
+    # The thirteen cells read (eight addressed ones, then the consecutive cap run), then the thirteen
+    # written, of which a digest step writes the first two alone. Each carries its q_flock lanes and zeros above them.
     def read(cell: int) -> Form:
-        if cell < 4:
-            return _prod(fp, o_m[cell])
-        return _prod(fp, o_tail, cell - 4) if cell < 8 else _prod(fp, o_cap, cell - 8)
+        return _prod(fp, o_m[cell]) if cell < 8 else _prod(fp, o_cap, cell - 8)
 
     for side, lane_prefix in enumerate(("in", "out")):
         for cell, lanes in enumerate(SHA3_CELL_LANES):
             address = read(cell) if side == 0 else _prod(fp, o_out, cell)
             (count,) = _cols(SHA3_COLUMNS, f"cnt_{13 * side + cell}")
-            flushes.memory_cols(address, count, *_cols(SHA3_COLUMNS, *(f"{lane_prefix}_{lane}" for lane in lanes)))
+            values = [_col(i) for i in _cols(SHA3_COLUMNS, *(f"{lane_prefix}_{lane}" for lane in lanes))]
+            values += [_const(ZERO)] * (3 - len(values))
+            if side == 1 and cell >= SHA3_DIGEST_CELLS:
+                flushes.memory_unless(digest, address, count, values)
+            else:
+                flushes.memory(address, count, values)
     return flushes
 
 
@@ -872,7 +883,7 @@ BLAKE2S_COLUMNS = (
     "cnt_m0", "cnt_m1", "cnt_m2", "cnt_m3", "cnt_cv0", "cnt_cv1", "cnt_out0", "cnt_out1", "cnt_md", "cnt_bc",
 )  # fmt: skip
 SHA3_COLUMNS = (
-    "pc", "fp", "o_m0", "o_m1", "o_m2", "o_m3", "o_tail", "o_cap", "o_out",
+    "pc", "fp", *(f"o_m{cell}" for cell in range(8)), "o_cap", "o_out", "digest",
     # These fifty value lanes live in q_flock, not here: each is already a flock witness slot.
     *(f"in_{lane}" for lane in range(25)), *(f"out_{lane}" for lane in range(25)),
     # ...and the read counts, committed here like every other column.

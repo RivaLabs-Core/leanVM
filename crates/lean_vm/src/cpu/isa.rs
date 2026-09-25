@@ -57,19 +57,19 @@ pub enum Op {
     /// Keccak-f of a 25-lane state after XORing the padding's last bit into lane
     /// 16. The state is read from thirteen canonical cells (two lanes each, top
     /// limb zero) and the result written to thirteen, both in the order of
-    /// [`crate::hash_flock_keccak::CELL_LANES`]: four independently addressed cells `m`
-    /// (lanes 0..8, the first 64 bytes of a block), four consecutive cells from
-    /// `tail` (lanes 8..16, the other 64), and five consecutive cells from `cap`
-    /// (lane 16 alone, its high lane zero, then the capacity lanes 17..25).
+    /// [`crate::hash_flock_keccak::CELL_LANES`]: eight independently addressed cells `m`
+    /// (lanes 0..16, the 128 bytes of a block), and five consecutive cells from `cap`
+    /// (lane 16 alone, its high lane zero, then the capacity lanes 17..25). A
+    /// `digest` step writes the first two output cells alone: the digest.
     ///
     /// A fresh hash reads a zero `cap`; a later block reads the previous output's
     /// last five cells there, and XORs its message into the previous output's
-    /// first eight to form `m` and `tail`. The relation is proven by flock.
+    /// first eight to form `m`. The relation is proven by flock.
     Sha3 {
-        m: [u32; 4],
-        tail: u32,
+        m: [u32; 8],
         cap: u32,
         out: u32,
+        digest: bool,
     },
 }
 

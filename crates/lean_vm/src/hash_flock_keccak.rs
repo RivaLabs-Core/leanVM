@@ -10,11 +10,12 @@
 //!
 //! ## The mapping
 //!
-//! The VM's `SHA3(m, tail, cap) -> out` is one [`primitives::keccak::step`] on the
+//! The VM's `SHA3(m, cap) -> out` is one [`primitives::keccak::step`] on the
 //! 25 lanes those thirteen cells hold, written to thirteen cells in the same
 //! order ([`CELL_LANES`]). Every lane is one whole packed word of the instance:
 //! input lane `i` is slot `i`, output lane `i` slot `25 + i`, so the memory
-//! interaction binds every input and output of the relation.
+//! interaction binds every input and output of the relation, bar the output a
+//! `digest` step leaves unwritten, which no cell holds and nothing reads.
 
 use crate::transcript::{ProverState, VerifierState};
 use ::pcs::pack::LOG_PACKING;

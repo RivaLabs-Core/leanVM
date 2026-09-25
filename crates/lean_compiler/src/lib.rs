@@ -247,11 +247,10 @@ pub fn disassemble(prog: &[Op]) -> String {
                     ins[0], ins[1], ins[2], ins[3]
                 )
             }
-            Op::Sha3 { m, tail, cap, out } => {
-                format!(
-                    "SHA3   fp[{out}..+13] = step(fp[{}],fp[{}],fp[{}],fp[{}], tail=fp[{tail}..+4], cap=fp[{cap}..+5])",
-                    m[0], m[1], m[2], m[3]
-                )
+            Op::Sha3 { m, cap, out, digest } => {
+                let m = m.map(|o| format!("fp[{o}]")).join(",");
+                let n = if *digest { 2 } else { 13 };
+                format!("SHA3   fp[{out}..+{n}] = step({m}, cap=fp[{cap}..+5])")
             }
         };
         writeln!(out, "{:>6}  {line}", pretty_integer(pc)).unwrap();
@@ -321,11 +320,11 @@ fn resolve(op: &LOp, entry: &HashMap<String, u32>, sentinel: u32, base: u32, fra
             out: *c,
             md: *md,
         },
-        LOp::Sha3 { m, tail, cap, c } => Op::Sha3 {
+        LOp::Sha3 { m, cap, c, digest } => Op::Sha3 {
             m: *m,
-            tail: *tail,
             cap: *cap,
             out: *c,
+            digest: *digest,
         },
     }
 }

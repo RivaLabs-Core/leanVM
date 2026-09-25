@@ -898,7 +898,7 @@ fn stacked_bytecode() -> &'static [F64] {
 
 /// The slots of the stacked bytecode that are not structurally zero.
 ///
-/// Eight encoding columns sit inside sixteen stacking slots, so half the
+/// Twelve encoding columns sit inside sixteen stacking slots, so a quarter of the
 /// table is zero and contributes nothing to any round of the batching sumcheck.
 /// Read off the table rather than from the column count, so an all-zero column
 /// at the edge only ever shrinks the window.
@@ -3143,7 +3143,6 @@ fn placeholder_map(kbc: usize) -> BTreeMap<String, String> {
 
     // The SPHINCS instance. Its addresses are built per signature from the
     // digest, so the guest receives only the shape.
-    ps("SHA3_STATE", lean_vm::hash_flock_keccak::STATE_CELLS.to_string());
     ps("SP_K", sphincs::K.to_string());
     ps("SP_A", sphincs::A.to_string());
     ps("SP_D", sphincs::D.to_string());
@@ -5512,7 +5511,14 @@ def main():
                 }
             }
             Op::Blake2s { out, .. } => vec![out, out + 1],
-            Op::Sha3 { out, .. } => (out..out + lean_vm::hash_flock_keccak::STATE_CELLS as u32).collect(),
+            Op::Sha3 { out, digest, .. } => {
+                let n = if digest {
+                    2
+                } else {
+                    lean_vm::hash_flock_keccak::STATE_CELLS as u32
+                };
+                (out..out + n).collect()
+            }
             Op::Jump { .. } => vec![],
         };
         let program = unified_guest();

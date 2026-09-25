@@ -374,8 +374,6 @@ WOTS_PK_BLOCKS = (2 + V) / 4  # prefix (tweak, pp) + V tips, four cells a block
 # under a standard WOTS+ hypertree, every tweakable hash Keccak-256 over 32-byte words,
 # every address the FIPS 205 32-byte ADRS (big-endian fields), every digest read
 # as a big-endian uint256 with fields taken least significant first.
-# A `keccak` output is the SHA3_STATE-cell sponge state, the digest its first two cells.
-SHA3_STATE = SHA3_STATE_PLACEHOLDER
 SP_K = SP_K_PLACEHOLDER               # FORS trees
 SP_A = SP_A_PLACEHOLDER               # FORS tree height
 SP_D = SP_D_PLACEHOLDER               # hypertree layers, layer 0 at the bottom
@@ -2420,7 +2418,7 @@ def sp_walk(value, adrs_a, adrs_b, pp, k: Const):
     # zero), the key pair and the chain index; the hash address is a literal.
     word = value
     for s in unroll(k, SP_CHAIN_STEPS):
-        out = StackBuf(SHA3_STATE)
+        out = StackBuf(2)
         keccak([pp, 0, adrs_a, adrs_b + const(s * SP_BYTE15), word, 0], out)
         word = out[0]
     return word, k
@@ -2462,7 +2460,7 @@ def sp_wots_pk(adrs_a, kp, pp, msg):
     assert exponent == GEN ** SP_MAX_CSUM
 
     # The WOTS key: keccak(pp | ADRS(WOTS_PK) | 35 tips), 1184 bytes.
-    key = StackBuf(SHA3_STATE)
+    key = StackBuf(2)
     keccak([pp, 0, adrs_a, kp + const(SP_WOTS_PK * SP_BYTE3)], key, words=tips)
     return key[0]
 
@@ -2478,7 +2476,7 @@ def verify_sig_sphincs(signer):
     # ---- the message digest, which picks the FORS instance and its leaves ----
     # H_msg = keccak(0xFF..FF | R | pkSeed | pkRoot | M), 112 bytes in one block.
     r = hint_witness("sp_rand")
-    digest = StackBuf(SHA3_STATE)
+    digest = StackBuf(2)
     keccak([SP_ONES, SP_ONES, r, pp, root, signer[GEN ** 2], signer[GEN ** 3]], digest)
 
     # Every index below is a bit field of that digest, so its last 24 bytes are
@@ -2510,7 +2508,7 @@ def verify_sig_sphincs(signer):
         # its nine bits big-endian at bytes 14 (bit 8) and 15 (bits 0..7).
         secret = hint_witness("sp_fors_secrets")
         placed = sp_field(bits, i * SP_A, SP_A, 15)
-        leaf = StackBuf(SHA3_STATE)
+        leaf = StackBuf(2)
         keccak([pp, 0, fors_a, fors_b + placed + sp_index(i * 2 ** SP_A), secret, 0], leaf)
         node = leaf[0]
         # index >> z for z >= 1 fits byte 15, where a right shift is a division by
@@ -2526,14 +2524,14 @@ def verify_sig_sphincs(signer):
             sibling = hint_witness("sp_fors_paths")
             m = bits[SP_BIT_INDEX[i * SP_A + z - 1]] * (node + sibling)
             adrs_b = fors_b + shifted + const(z * SP_BYTE11 + (i * 2 ** (SP_A - z)) % 256 * SP_BYTE15 + (i * 2 ** (SP_A - z)) // 256 * 2 ** 112)
-            parent = StackBuf(SHA3_STATE)
+            parent = StackBuf(2)
             keccak([pp, 0, fors_a, adrs_b, node + m, 0, sibling + m, 0], parent)
             node = parent[0]
             if const(z != SP_A):
                 shifted = (shifted + bits[SP_BIT_INDEX[i * SP_A + z]] * COORD_BASIS[120]) / GEN
         roots[i] = node
     # The FORS key: keccak(pp | ADRS(FORS_ROOTS) | 19 roots), 672 bytes.
-    fors_key = StackBuf(SHA3_STATE)
+    fors_key = StackBuf(2)
     keccak([pp, 0, fors_a, fors_kp + const(SP_FORS_ROOTS * SP_BYTE3)], fors_key, words=roots)
     signed = fors_key[0]
 
@@ -2549,7 +2547,7 @@ def verify_sig_sphincs(signer):
             sibling = hint_witness("sp_siblings")
             m = bits[SP_BIT_INDEX[leaf_off + z - 1]] * (node + sibling)
             adrs_b = const(SP_TREE * SP_BYTE3 + z * SP_BYTE11) + sp_field(bits, leaf_off + z, SP_HP - z, 15)
-            parent = StackBuf(SHA3_STATE)
+            parent = StackBuf(2)
             keccak([pp, 0, adrs_a, adrs_b, node + m, 0, sibling + m, 0], parent)
             node = parent[0]
         signed = node
